@@ -459,7 +459,7 @@ public sealed class AiFacesPreparationServiceTests
         Assert.Equal(2, appearance.SampleCount);
         var segment = Assert.Single(batch.Segments);
         Assert.Equal(1d, segment.StartSeconds);
-        Assert.Equal(2d, segment.EndSeconds);
+        Assert.Equal(3d, segment.EndSeconds);
     }
 
     [Fact]
@@ -667,7 +667,7 @@ public sealed class AiFacesPreparationServiceTests
 
         var segment = Assert.Single(batch.Segments);
         Assert.Equal(1d, segment.StartSeconds);
-        Assert.Equal(4d, segment.EndSeconds);
+        Assert.Equal(5d, segment.EndSeconds);
     }
 
     [Fact]
@@ -699,7 +699,7 @@ public sealed class AiFacesPreparationServiceTests
 
         Assert.Single(batch.Faces);
         Assert.Equal(2, batch.Segments.Count);
-        Assert.Equal([(1d, 3d), (80d, 82d)], batch.Segments.Select(static segment => (segment.StartSeconds, segment.EndSeconds ?? segment.StartSeconds)).ToArray());
+        Assert.Equal([(1d, 5d), (80d, 84d)], batch.Segments.Select(static segment => (segment.StartSeconds, segment.EndSeconds ?? segment.StartSeconds)).ToArray());
         Assert.Equal(2, batch.Segments.Select(static segment => segment.Metadata!["trackKey"]).Distinct(StringComparer.Ordinal).Count());
         Assert.All(batch.Detections, detection => Assert.Contains(":span-", detection.GroupKey, StringComparison.Ordinal));
     }

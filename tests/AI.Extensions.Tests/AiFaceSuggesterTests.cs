@@ -172,6 +172,42 @@ public sealed class AiFaceSuggesterTests
         }
     }
 
+    [Fact]
+    public async Task SuggestAsync_ReturnsHostPerformerSuggestionWithoutFaceEmbeddingMatches()
+    {
+        await using var provider = CreateProvider();
+
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            db.Performers.Add(new Performer { Id = 77, Name = "Scene Performer" });
+            db.Scenes.AddRange(
+                new Scene { Id = 7001, Title = "Tagged Scene A" },
+                new Scene { Id = 7002, Title = "Tagged Scene B" });
+            db.Set<ScenePerformer>().AddRange(
+                new ScenePerformer { SceneId = 7001, PerformerId = 77 },
+                new ScenePerformer { SceneId = 7002, PerformerId = 77 });
+            db.Faces.Add(new Face { Id = 5, Label = "No Embedding Face", PrimarySourceKey = "face-0005" });
+            db.Detections.AddRange(
+                CreateFaceDetection(5, DetectionHostType.Scene, 7001, 0.91f, observedAtSec: 12.0),
+                CreateFaceDetection(5, DetectionHostType.Scene, 7002, 0.88f, observedAtSec: 48.0));
+
+            await db.SaveChangesAsync();
+        }
+
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var suggester = scope.ServiceProvider.GetRequiredService<IFaceSuggester>();
+            var suggestions = await suggester.SuggestForAsync(5, 5);
+
+            var suggestion = Assert.Single(suggestions);
+            Assert.Equal(77, suggestion.PerformerId);
+            Assert.Equal("Scene Performer", suggestion.PerformerName);
+            Assert.Contains("Host evidence only", suggestion.Why, StringComparison.Ordinal);
+            Assert.Contains("2 tagged hosts", suggestion.Why, StringComparison.Ordinal);
+        }
+    }
+
     private static ServiceProvider CreateProvider(string? referenceRoot = null)
     {
         var services = new ServiceCollection();
