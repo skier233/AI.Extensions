@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <CoveCoreVersion Condition="'$(CoveCoreVersion)' == ''">0.0.10</CoveCoreVersion>
+    <CoveDataVersion Condition="'$(CoveDataVersion)' == ''">0.0.10</CoveDataVersion>
+    <UseLocalCoveCore Condition="'$(UseLocalCoveCore)' == '' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Core\Cove.Core.csproj')">true</UseLocalCoveCore>
+    <UseLocalCoveCore Condition="'$(UseLocalCoveCore)' == ''">false</UseLocalCoveCore>
+    <UseLocalCoveData Condition="'$(UseLocalCoveData)' == '' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Data\Cove.Data.csproj')">true</UseLocalCoveData>
+    <UseLocalCoveData Condition="'$(UseLocalCoveData)' == ''">false</UseLocalCoveData>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.6" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="coverlet.collector" Version="6.0.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\shared\AI.Extensions.Abstractions\AI.Extensions.Abstractions.csproj" />
+    <ProjectReference Include="..\..\extensions\AI.Core\AI.Core.csproj" />
+    <ProjectReference Include="..\..\extensions\AI.Tagging\AI.Tagging.csproj" />
+    <ProjectReference Include="..\..\extensions\AI.Visual\AI.Visual.csproj" />
+    <ProjectReference Include="..\..\extensions\AI.Audio\AI.Audio.csproj" />
+    <ProjectReference Include="..\..\extensions\AI.Faces\AI.Faces.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseLocalCoveCore)' == 'true' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Core\Cove.Core.csproj')">
+    <ProjectReference Include="..\..\..\cove\src\Cove.Core\Cove.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseLocalCoveCore)' != 'true'">
+    <PackageReference Include="Cove.Core" Version="$(CoveCoreVersion)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseLocalCoveData)' == 'true' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Data\Cove.Data.csproj')">
+    <ProjectReference Include="..\..\..\cove\src\Cove.Data\Cove.Data.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseLocalCoveData)' != 'true'">
+    <PackageReference Include="Cove.Data" Version="$(CoveDataVersion)" />
+  </ItemGroup>
+</Project>

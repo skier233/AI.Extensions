@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>AI.Faces</AssemblyName>
+    <RootNamespace>AI.Faces</RootNamespace>
+    <CoveSdkVersion Condition="'$(CoveSdkVersion)' == ''">0.0.1</CoveSdkVersion>
+    <CoveCoreVersion Condition="'$(CoveCoreVersion)' == ''">0.0.10</CoveCoreVersion>
+    <CoveDataVersion Condition="'$(CoveDataVersion)' == ''">0.0.10</CoveDataVersion>
+    <UseLocalCoveSource Condition="'$(UseLocalCoveSource)' == '' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Sdk\Cove.Sdk.csproj')">true</UseLocalCoveSource>
+    <UseLocalCoveSource Condition="'$(UseLocalCoveSource)' == ''">false</UseLocalCoveSource>
+    <UseLocalCoveCore Condition="'$(UseLocalCoveCore)' == '' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Core\Cove.Core.csproj')">true</UseLocalCoveCore>
+    <UseLocalCoveCore Condition="'$(UseLocalCoveCore)' == ''">false</UseLocalCoveCore>
+    <UseLocalCoveData Condition="'$(UseLocalCoveData)' == '' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Data\Cove.Data.csproj')">true</UseLocalCoveData>
+    <UseLocalCoveData Condition="'$(UseLocalCoveData)' == ''">false</UseLocalCoveData>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\shared\AI.Extensions.Abstractions\AI.Extensions.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseLocalCoveSource)' == 'true' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Sdk\Cove.Sdk.csproj')">
+    <ProjectReference Include="..\..\..\cove\src\Cove.Sdk\Cove.Sdk.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseLocalCoveSource)' != 'true'">
+    <PackageReference Include="Cove.Sdk" Version="$(CoveSdkVersion)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseLocalCoveCore)' == 'true' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Core\Cove.Core.csproj')">
+    <ProjectReference Include="..\..\..\cove\src\Cove.Core\Cove.Core.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseLocalCoveCore)' != 'true'">
+    <PackageReference Include="Cove.Core" Version="$(CoveCoreVersion)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseLocalCoveData)' == 'true' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Data\Cove.Data.csproj')">
+    <ProjectReference Include="..\..\..\cove\src\Cove.Data\Cove.Data.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(UseLocalCoveData)' != 'true'">
+    <PackageReference Include="Cove.Data" Version="$(CoveDataVersion)" />
+  </ItemGroup>
+</Project>

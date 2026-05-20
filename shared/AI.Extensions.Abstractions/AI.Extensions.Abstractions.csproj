@@ -1,0 +1,7 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>AI.Extensions.Abstractions</AssemblyName>
+    <RootNamespace>AI.Extensions.Abstractions</RootNamespace>
+  </PropertyGroup>
+</Project>
+

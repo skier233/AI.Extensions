@@ -1,0 +1,14 @@
+{
+  "id": "cove.ai.tagging",
+  "name": "AI Tagging",
+  "version": "0.1.0",
+  "description": "Tagging capability contributions for image and video AI runs.",
+  "author": "Cove Team",
+  "url": "https://github.com/yourcove/AI.Extensions",
+  "categories": ["ai", "metadata", "automation"],
+  "minCoveVersion": "0.0.10",
+  "entryDll": "AI.Tagging.dll",
+  "dependencies": {
+    "cove.ai.core": ">=0.1.0"
+  }
+}

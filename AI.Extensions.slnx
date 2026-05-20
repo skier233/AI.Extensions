@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/extensions/">
+    <Project Path="extensions/AI.Audio/AI.Audio.csproj" />
+    <Project Path="extensions/AI.Core/AI.Core.csproj" />
+    <Project Path="extensions/AI.Faces/AI.Faces.csproj" />
+    <Project Path="extensions/AI.Full/AI.Full.csproj" />
+    <Project Path="extensions/AI.Tagging/AI.Tagging.csproj" />
+    <Project Path="extensions/AI.Visual/AI.Visual.csproj" />
+  </Folder>
+  <Folder Name="/shared/">
+    <Project Path="shared/AI.Extensions.Abstractions/AI.Extensions.Abstractions.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AI.Extensions.Tests/AI.Extensions.Tests.csproj" />
+  </Folder>
+</Solution>

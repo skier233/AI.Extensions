@@ -1,0 +1,14 @@
+{
+  "id": "cove.ai.visual",
+  "name": "AI Visual",
+  "version": "0.1.0",
+  "description": "Visual detection and region-analysis capability contributions for image and video AI runs.",
+  "author": "Cove Team",
+  "url": "https://github.com/yourcove/AI.Extensions",
+  "categories": ["ai", "metadata", "automation"],
+  "minCoveVersion": "0.0.10",
+  "entryDll": "AI.Visual.dll",
+  "dependencies": {
+    "cove.ai.core": ">=0.1.0"
+  }
+}

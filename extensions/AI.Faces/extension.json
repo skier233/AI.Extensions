@@ -1,0 +1,15 @@
+{
+  "id": "cove.ai.faces",
+  "name": "AI Faces",
+  "version": "0.1.0",
+  "description": "Face-oriented AI capability contributions for image and video analysis.",
+  "author": "Cove Team",
+  "url": "https://github.com/yourcove/AI.Extensions",
+  "categories": ["ai", "metadata", "automation"],
+  "minCoveVersion": "0.0.10",
+  "entryDll": "AI.Faces.dll",
+  "jsBundle": "dist/bundle.js",
+  "dependencies": {
+    "cove.ai.core": ">=0.1.0"
+  }
+}
