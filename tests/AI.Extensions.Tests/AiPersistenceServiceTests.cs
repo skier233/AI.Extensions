@@ -1,5 +1,3 @@
-using System.Text.Json;
-
 using AI.Audio;
 using AI.Extensions.Abstractions;
 using AI.Faces;
@@ -430,7 +428,7 @@ public sealed class AiPersistenceServiceTests
         try
         {
             var imagePath = Path.Combine(tempRoot, "cover-source.jpg");
-            using (var image = new Image<Rgba32>(640, 480))
+            using (var image = new Image<Rgba32>(640, 480, new Rgba32(220, 220, 220)))
             {
                 await image.SaveAsJpegAsync(imagePath);
             }
@@ -480,7 +478,7 @@ public sealed class AiPersistenceServiceTests
         try
         {
             var imagePath = Path.Combine(tempRoot, "cover-source.jpg");
-            using (var image = new Image<Rgba32>(640, 480))
+            using (var image = new Image<Rgba32>(640, 480, new Rgba32(220, 220, 220)))
             {
                 await image.SaveAsJpegAsync(imagePath);
             }
@@ -541,8 +539,13 @@ public sealed class AiPersistenceServiceTests
             Assert.NotEqual(firstBlobId, face.CoverBlobId);
             Assert.False(blobService.StoredBlobs.ContainsKey(firstBlobId));
             Assert.True(blobService.StoredBlobs.ContainsKey(face.CoverBlobId!));
-            var storedQuality = Assert.IsType<JsonElement>(face.CustomFields!["ai.faces.coverBlobQualityScore"]);
-            Assert.Equal(0.95, storedQuality.GetDouble(), precision: 3);
+            var storedQuality = await verifyDb.CustomFieldValues
+                .Include(value => value.Definition)
+                .SingleAsync(value => value.EntityType == CustomFieldEntityTypes.Face
+                    && value.EntityId == face.Id
+                    && value.Definition != null
+                    && value.Definition.Key == "ai.faces.coverBlobQualityScore");
+            Assert.Equal(0.95m, storedQuality.NumberValue!.Value, precision: 3);
         }
         finally
         {

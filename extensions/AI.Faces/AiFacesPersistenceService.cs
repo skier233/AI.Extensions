@@ -146,7 +146,7 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
             ? PersistSegments(db, hostEntityId, batch, facesByKey, request)
             : 0;
         var persistedEmbeddings = PersistEmbeddings(db, batch, facesByKey, request);
-        var persistedFaceCovers = await PersistFaceCoversAsync(scope.ServiceProvider, hostEntityType, batch, facesByKey, ct);
+        var persistedFaceCovers = await PersistFaceCoversAsync(scope.ServiceProvider, db, hostEntityType, batch, facesByKey, ct);
 
         await db.SaveChangesAsync(ct);
 
@@ -438,7 +438,7 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         return inserted;
     }
 
-    private static async Task<int> PersistFaceCoversAsync(IServiceProvider services, string hostEntityType, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, CancellationToken ct)
+    private static async Task<int> PersistFaceCoversAsync(IServiceProvider services, CoveContext db, string hostEntityType, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, CancellationToken ct)
     {
         var blobService = services.GetService<IBlobService>();
         if (blobService is null || batch.Faces.Count == 0)
@@ -457,7 +457,8 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
             }
 
             var incomingCoverQuality = ReadPreparedCoverQuality(preparedFace);
-            if (!ShouldGenerateCover(face, incomingCoverQuality))
+            var currentCoverQuality = await ReadPersistedCoverBlobQualityAsync(db, face.Id, ct);
+            if (!ShouldGenerateCover(face, incomingCoverQuality, currentCoverQuality))
             {
                 continue;
             }
@@ -472,6 +473,7 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
             var previousBlobId = face.CoverBlobId;
             face.CoverBlobId = await blobService.StoreBlobAsync(coverStream, "image/jpeg", ct);
             face.CustomFields = SetCoverBlobQuality(face.CustomFields, incomingCoverQuality);
+            await PersistCoverBlobQualityAsync(db, face.Id, incomingCoverQuality, ct);
             if (!string.IsNullOrWhiteSpace(previousBlobId) && !string.Equals(previousBlobId, face.CoverBlobId, StringComparison.Ordinal))
             {
                 await blobService.DeleteBlobAsync(previousBlobId, ct);
@@ -637,7 +639,7 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         return fields.Count == 0 ? null : fields;
     }
 
-    private static bool ShouldGenerateCover(Face face, double? incomingCoverQuality)
+    private static bool ShouldGenerateCover(Face face, double? incomingCoverQuality, double? persistedCoverQuality)
     {
         if (string.IsNullOrWhiteSpace(face.CoverBlobId))
         {
@@ -649,8 +651,83 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
             return false;
         }
 
-        var currentBlobQuality = ReadCustomDouble(face.CustomFields, CoverBlobQualityScoreField);
+        var currentBlobQuality = persistedCoverQuality ?? ReadCustomDouble(face.CustomFields, CoverBlobQualityScoreField);
         return !currentBlobQuality.HasValue || incomingCoverQuality.Value > currentBlobQuality.Value + CoverReplacementQualityMargin;
+    }
+
+    private static async Task<double?> ReadPersistedCoverBlobQualityAsync(CoveContext db, int faceId, CancellationToken ct)
+    {
+        var row = await db.CustomFieldValues
+            .AsNoTracking()
+            .Include(value => value.Definition)
+            .Where(value => value.EntityType == CustomFieldEntityTypes.Face
+                && value.EntityId == faceId
+                && value.Definition != null
+                && value.Definition.Key == CoverBlobQualityScoreField)
+            .OrderBy(value => value.Position)
+            .Select(value => value.NumberValue)
+            .FirstOrDefaultAsync(ct);
+
+        return row.HasValue ? (double)row.Value : null;
+    }
+
+    private static async Task PersistCoverBlobQualityAsync(CoveContext db, int faceId, double? coverQualityScore, CancellationToken ct)
+    {
+        if (!coverQualityScore.HasValue)
+        {
+            return;
+        }
+
+        var definition = await EnsureCoverBlobQualityDefinitionAsync(db, ct);
+        var existingValues = await db.CustomFieldValues
+            .Where(value => value.EntityType == CustomFieldEntityTypes.Face
+                && value.EntityId == faceId
+                && value.DefinitionId == definition.Id)
+            .ToListAsync(ct);
+        db.CustomFieldValues.RemoveRange(existingValues);
+        db.CustomFieldValues.Add(new CustomFieldValue
+        {
+            DefinitionId = definition.Id,
+            EntityType = CustomFieldEntityTypes.Face,
+            EntityId = faceId,
+            NumberValue = Convert.ToDecimal(coverQualityScore.Value, CultureInfo.InvariantCulture),
+        });
+    }
+
+    private static async Task<CustomFieldDefinition> EnsureCoverBlobQualityDefinitionAsync(CoveContext db, CancellationToken ct)
+    {
+        var definition = await db.CustomFieldDefinitions
+            .FirstOrDefaultAsync(item => item.Key == CoverBlobQualityScoreField, ct);
+        if (definition is null)
+        {
+            definition = new CustomFieldDefinition
+            {
+                Key = CoverBlobQualityScoreField,
+                Label = "AI Faces Cover Quality",
+                Type = CustomFieldTypes.Number,
+                EntityTypes = [CustomFieldEntityTypes.Face],
+                Filterable = false,
+                Sortable = false,
+                DisplayOrder = -1000,
+            };
+            db.CustomFieldDefinitions.Add(definition);
+            await db.SaveChangesAsync(ct);
+            return definition;
+        }
+
+        if (!definition.EntityTypes.Contains(CustomFieldEntityTypes.Face, StringComparer.OrdinalIgnoreCase))
+        {
+            definition.EntityTypes = [.. definition.EntityTypes, CustomFieldEntityTypes.Face];
+        }
+
+        if (!string.Equals(definition.Type, CustomFieldTypes.Number, StringComparison.OrdinalIgnoreCase))
+        {
+            definition.Type = CustomFieldTypes.Number;
+        }
+
+        definition.Filterable = false;
+        definition.Sortable = false;
+        return definition;
     }
 
     private static Dictionary<string, object>? SetCoverBlobQuality(Dictionary<string, object>? current, double? coverQualityScore)

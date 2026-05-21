@@ -23,7 +23,9 @@ internal static class AiFaceQualityScorer
         }
 
         var centroid = BuildCentroid(samples);
-        return samples
+        var candidates = samples.Where(IsPlausibleCoverSample).ToArray();
+        var rankedSamples = candidates.Length > 0 ? candidates : samples;
+        return rankedSamples
             .OrderByDescending(sample => ScoreCoverCandidate(sample, centroid))
             .First();
     }
@@ -114,6 +116,20 @@ internal static class AiFaceQualityScorer
                * occlusionQuality
                * representativeScore
                * normScore;
+    }
+
+    private static bool IsPlausibleCoverSample(FaceFrameSample sample)
+    {
+        var boundingBox = sample.Detection.BoundingBox;
+        var width = Math.Abs(boundingBox.X2 - boundingBox.X1);
+        var height = Math.Abs(boundingBox.Y2 - boundingBox.Y1);
+        if (width <= 0.0 || height <= 0.0)
+        {
+            return false;
+        }
+
+        var aspectRatio = width / height;
+        return aspectRatio is >= 0.45 and <= 1.8;
     }
 
     private static double GetBrightnessQuality(AiEmbeddingObservation embedding)

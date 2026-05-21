@@ -6,6 +6,7 @@ using AI.Extensions.Abstractions;
 using Cove.Core.Interfaces;
 
 using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Advanced;
 using SixLabors.ImageSharp.Formats.Jpeg;
 using SixLabors.ImageSharp.PixelFormats;
 using SixLabors.ImageSharp.Processing;
@@ -19,6 +20,8 @@ internal static class AiFaceCoverGenerator
     private const double CoverScale = 1.8;
     private const double VerticalCenterBias = 0.1;
     private const int VideoFrameExtractWidth = 1280;
+    private const double BlankMeanLumaThreshold = 8.0;
+    private const double BlankLumaVarianceThreshold = 12.0;
     private static readonly TimeSpan FrameExtractionTimeout = TimeSpan.FromSeconds(30);
 
     public static async Task<MemoryStream?> CreateAsync(
@@ -139,9 +142,18 @@ internal static class AiFaceCoverGenerator
         {
             using var image = await Image.LoadAsync<Rgba32>(sourceStream, ct);
             image.Mutate(static context => context.AutoOrient());
+            if (IsNearlyBlankOrBlack(image))
+            {
+                return null;
+            }
 
             var cropRect = BuildCropRectangle(image.Width, image.Height, boundingBox);
             image.Mutate(context => context.Crop(cropRect));
+            if (IsNearlyBlankOrBlack(image))
+            {
+                return null;
+            }
+
             if (image.Width != FaceCoverSize || image.Height != FaceCoverSize)
             {
                 image.Mutate(context => context.Resize(new ResizeOptions
@@ -217,6 +229,37 @@ internal static class AiFaceCoverGenerator
            && boundingBox.Y1 >= 0.0
            && boundingBox.X2 <= 1.000001
            && boundingBox.Y2 <= 1.000001;
+
+    private static bool IsNearlyBlankOrBlack(Image<Rgba32> image)
+    {
+        var stepX = Math.Max(1, image.Width / 64);
+        var stepY = Math.Max(1, image.Height / 64);
+        var count = 0;
+        var sum = 0.0;
+        var sumSquares = 0.0;
+
+        for (var y = 0; y < image.Height; y += stepY)
+        {
+            var row = image.DangerousGetPixelRowMemory(y).Span;
+            for (var x = 0; x < image.Width; x += stepX)
+            {
+                var pixel = row[x];
+                var luma = (0.2126 * pixel.R) + (0.7152 * pixel.G) + (0.0722 * pixel.B);
+                sum += luma;
+                sumSquares += luma * luma;
+                count++;
+            }
+        }
+
+        if (count == 0)
+        {
+            return true;
+        }
+
+        var mean = sum / count;
+        var variance = Math.Max(0.0, (sumSquares / count) - (mean * mean));
+        return mean <= BlankMeanLumaThreshold && variance <= BlankLumaVarianceThreshold;
+    }
 
     private static int Clamp(int value, int min, int max)
         => value < min ? min : value > max ? max : value;

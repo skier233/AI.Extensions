@@ -3,6 +3,8 @@ using System.Text.Json;
 
 using AI.Extensions.Abstractions;
 
+using Cove.Core.Media;
+
 namespace AI.Faces;
 
 internal sealed class AiFacePreparationService
@@ -254,18 +256,20 @@ internal sealed class AiFacePreparationService
 
     private static IReadOnlyList<PreparedFaceTrack> BuildVideoTracks(AiDispatchRequest request)
     {
-        var sliceSpan = request.Result.FrameIntervalSeconds ?? request.Context.FrameIntervalSeconds ?? DefaultFrameSpanSeconds;
         var orderedFrames = request.Result.Frames
             .OrderBy(static frame => frame.TimeSeconds ?? double.MinValue)
             .ThenBy(static frame => frame.Index ?? int.MinValue)
             .ToArray();
+        var sliceSpan = ResolveVideoSliceSpan(request, orderedFrames);
         var openTracks = new List<OpenTrack>();
         var completed = new List<PreparedFaceTrack>();
         var nextTrackId = 1;
+        var frameOrdinal = 0;
 
         foreach (var frame in orderedFrames)
         {
-            var frameOrder = frame.Index ?? nextTrackId;
+            frameOrdinal++;
+            var frameOrder = frameOrdinal;
             var timeSeconds = frame.TimeSeconds ?? (frameOrder * sliceSpan);
             var detections = frame.Analysis.FindDetections("face").ToArray();
             var embeddingsByDetection = frame.Analysis
@@ -342,6 +346,40 @@ internal sealed class AiFacePreparationService
 
         completed.AddRange(openTracks.Select(track => track.Close(sliceSpan)));
         return completed;
+    }
+
+    private static double ResolveVideoSliceSpan(AiDispatchRequest request, IReadOnlyList<AiTemporalSlice> orderedFrames)
+    {
+        var explicitInterval = request.Result.FrameIntervalSeconds ?? request.Context.FrameIntervalSeconds;
+        if (explicitInterval is > 0.0)
+        {
+            return explicitInterval.Value;
+        }
+
+        var timestamps = orderedFrames
+            .Select(static frame => frame.TimeSeconds)
+            .Where(static time => time.HasValue)
+            .Select(static time => time!.Value)
+            .Distinct()
+            .Order()
+            .ToArray();
+        var deltas = new List<double>();
+        for (var index = 1; index < timestamps.Length; index++)
+        {
+            var delta = timestamps[index] - timestamps[index - 1];
+            if (delta > 0.0)
+            {
+                deltas.Add(delta);
+            }
+        }
+
+        var orderedDeltas = deltas
+            .Order()
+            .ToArray();
+
+        return orderedDeltas.Length == 0
+            ? DefaultFrameSpanSeconds
+            : Math.Max(0.25, orderedDeltas[orderedDeltas.Length / 2]);
     }
 
     private static bool TryScoreTrackContinuation(OpenTrack track, FaceFrameSample sample, int frameGap, out double score)
@@ -960,6 +998,7 @@ internal sealed class AiFacePreparationService
                     ["clusterTrackKey"] = track.TrackKey,
                     ["sampleCount"] = (window?.Samples.Count ?? track.Samples.Count).ToString(CultureInfo.InvariantCulture),
                     ["role"] = ResolveKeyframeRole(window?.Samples ?? track.Samples, window?.BestSample ?? track.BestSample, sample),
+                    ["coverQualityScore"] = AiFaceQualityScorer.ScoreCoverQuality(window?.Samples ?? track.Samples, sample).ToString("R", CultureInfo.InvariantCulture),
                 }));
         }
 
@@ -974,118 +1013,28 @@ internal sealed class AiFacePreparationService
         FaceFrameSample bestSample,
         AiFacesSettings settings)
     {
-        if (samples.Count == 0)
+        var options = new BoundingBoxKeyframeSelectionOptions
         {
-            return [];
-        }
+            IoUThreshold = settings.DetectionKeyframeIoUThreshold,
+            MaxKeyframes = settings.MaxDetectionKeyframesPerTrack,
+            MaxGapSeconds = settings.DetectionKeyframeMaxGapSeconds,
+        };
 
-        var orderedSamples = samples
-            .OrderBy(static sample => sample.TimeSeconds ?? double.MinValue)
-            .ThenBy(static sample => sample.FrameOrder)
-            .ToArray();
-
-        var selected = new List<FaceFrameSample> { orderedSamples[0] };
-        var lastMaterialSample = orderedSamples[0];
-
-        foreach (var sample in orderedSamples.Skip(1))
-        {
-            if (!HasMaterialDetectionChange(lastMaterialSample, sample, settings.DetectionKeyframeIoUThreshold))
-            {
-                continue;
-            }
-
-            selected.Add(sample);
-            lastMaterialSample = sample;
-        }
-
-        AddIfMateriallyDistinct(selected, bestSample, settings.DetectionKeyframeIoUThreshold);
-        AddIfMateriallyDistinct(selected, orderedSamples[^1], settings.DetectionKeyframeIoUThreshold);
-
-        return CapDetectionKeyframes(selected, bestSample, settings.MaxDetectionKeyframesPerTrack);
+        return BoundingBoxKeyframeSelector.Select(samples, bestSample, ToBoundingBoxKeyframe, options);
     }
 
-    private static void AddIfMateriallyDistinct(List<FaceFrameSample> selected, FaceFrameSample sample, double iouThreshold)
-    {
-        if (selected.Any(existing => IsSameSample(existing, sample)))
-        {
-            return;
-        }
-
-        if (selected.Any(existing => !HasMaterialDetectionChange(existing, sample, iouThreshold)))
-        {
-            return;
-        }
-
-        selected.Add(sample);
-    }
-
-    private static IReadOnlyList<FaceFrameSample> CapDetectionKeyframes(List<FaceFrameSample> selected, FaceFrameSample bestSample, int maxCount)
-    {
-        var distinct = selected
-            .DistinctBy(GetSampleIdentity)
-            .OrderBy(static sample => sample.TimeSeconds ?? double.MinValue)
-            .ThenBy(static sample => sample.FrameOrder)
-            .ToArray();
-        if (distinct.Length <= maxCount)
-        {
-            return distinct;
-        }
-
-        var required = new List<FaceFrameSample>();
-        AddRequired(required, distinct[0]);
-    AddRequired(required, bestSample);
-        AddRequired(required, distinct[^1]);
-
-        var remainingSlots = Math.Max(0, maxCount - required.Count);
-        var optional = distinct
-            .Where(sample => !required.Any(requiredSample => IsSameSample(requiredSample, sample)))
-            .ToArray();
-
-        if (remainingSlots > 0 && optional.Length > 0)
-        {
-            if (remainingSlots == 1)
-            {
-                AddRequired(required, optional[optional.Length / 2]);
-            }
-            else
-            {
-                for (var index = 0; index < remainingSlots; index++)
-                {
-                    var optionalIndex = (int)Math.Round(index * (optional.Length - 1) / (double)(remainingSlots - 1), MidpointRounding.AwayFromZero);
-                    AddRequired(required, optional[optionalIndex]);
-                }
-            }
-        }
-
-        return required
-            .DistinctBy(GetSampleIdentity)
-            .OrderBy(static sample => sample.TimeSeconds ?? double.MinValue)
-            .ThenBy(static sample => sample.FrameOrder)
-            .ToArray();
-
-        static void AddRequired(List<FaceFrameSample> required, FaceFrameSample sample)
-        {
-            if (!required.Any(existing => IsSameSample(existing, sample)))
-            {
-                required.Add(sample);
-            }
-        }
-    }
+    private static BoundingBoxKeyframe ToBoundingBoxKeyframe(FaceFrameSample sample)
+        => new(
+            sample.Detection.BoundingBox.X1,
+            sample.Detection.BoundingBox.Y1,
+            sample.Detection.BoundingBox.X2,
+            sample.Detection.BoundingBox.Y2,
+            sample.TimeSeconds,
+            sample.FrameOrder,
+            GetSampleIdentity(sample));
 
     private static string GetSampleIdentity(FaceFrameSample sample)
         => $"{sample.FrameOrder}\u001F{sample.TimeSeconds?.ToString("R", CultureInfo.InvariantCulture)}\u001F{FormatBoundingBox(sample.Detection.BoundingBox)}";
-
-    private static bool HasMaterialDetectionChange(FaceFrameSample previous, FaceFrameSample current, double iouThreshold)
-    {
-        var previousBox = previous.Detection.BoundingBox;
-        var currentBox = current.Detection.BoundingBox;
-        if (previousBox.Area <= 0.0 || currentBox.Area <= 0.0)
-        {
-            return true;
-        }
-
-        return ComputeIoU(previousBox, currentBox) < iouThreshold;
-    }
 
     private static bool IsSameSample(FaceFrameSample left, FaceFrameSample right)
         => left.FrameOrder == right.FrameOrder
@@ -1225,6 +1174,9 @@ internal sealed class AiFacePreparationService
                     ["sampleCount"] = window.Samples.Count.ToString(CultureInfo.InvariantCulture),
                     ["retainedSpatialSampleCount"] = windowKeyframes.Length.ToString(CultureInfo.InvariantCulture),
                     ["frameIntervalSec"] = track.FrameIntervalSeconds?.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty,
+                    ["detectionKeyframeIoUThreshold"] = settings.DetectionKeyframeIoUThreshold.ToString("R", CultureInfo.InvariantCulture),
+                    ["detectionKeyframeMaxGapSec"] = settings.DetectionKeyframeMaxGapSeconds.ToString("R", CultureInfo.InvariantCulture),
+                    ["maxDetectionKeyframes"] = settings.MaxDetectionKeyframesPerTrack.ToString(CultureInfo.InvariantCulture),
                     ["bestTimeSec"] = window.BestSample.TimeSeconds?.ToString("R", CultureInfo.InvariantCulture) ?? string.Empty,
                     ["bestScore"] = window.BestSample.Detection.Score.ToString("R", CultureInfo.InvariantCulture),
                     ["bestBbox"] = FormatBoundingBox(window.BestSample.Detection.BoundingBox),
@@ -1483,7 +1435,7 @@ internal sealed class AiFacePreparationService
             $"AI.Faces telemetry: rawTracks={clusterDiagnostics.InputTrackCount}; assetClusters={clusterDiagnostics.ClusterCount}; clusterMerges={clusterDiagnostics.MergedTrackCount}; clusterRejectedConcurrency={clusterDiagnostics.RejectedByConcurrencyCount}; clusterRejectedThreshold={clusterDiagnostics.RejectedByThresholdCount}; clusterRejectedAmbiguous={clusterDiagnostics.RejectedByAmbiguityCount}; createdIdentities={newIdentityCount}; promotedThisRun={promotedIdentityCount}; provisionalClusters={provisionalClusters}; seededMatches={seededMatchCount}; conflictingReferences={conflictingReferenceCount}; unresolvedTracks={unresolvedTracks}; faces={batch.Faces.Count}; detections={batch.Detections.Count}; reconciliationMerges={initialReconciliation.MergedIdentityCount + finalReconciliation.MergedIdentityCount}; reconciliationReferencePromotions={initialReconciliation.ReferencePromotedIdentityCount + finalReconciliation.ReferencePromotedIdentityCount}; reconciliationEvidencePromotions={initialReconciliation.EvidencePromotedIdentityCount + finalReconciliation.EvidencePromotedIdentityCount}"));
         batch.Notes.Add(string.Create(
             CultureInfo.InvariantCulture,
-                $"AI.Faces thresholds: identity={settings.IdentityMatchThreshold:R}/{settings.IdentityAmbiguityMargin:R}; assetCluster={settings.AssetClusterSimilarityThreshold:R}/{settings.AssetClusterAmbiguityMargin:R}; reference={settings.ReferenceMatchThreshold:R}/{settings.ReferenceAmbiguityMargin:R}; consolidation={settings.ConsolidationSimilarityThreshold:R}/{settings.ConsolidationAmbiguityMargin:R}; sameAssetConsolidation={settings.ConsolidationSameAssetSimilarityThreshold:R}; videoPromotionSamples={settings.PromotionMinimumVideoSamples}; videoPromotionEvidenceSeconds={settings.PromotionMinimumVideoEvidenceSeconds:R}; sparseVideoPromotionSamples={settings.PromotionMinimumSparseVideoSamples}; sparseVideoPromotionFrameInterval={settings.SparseVideoPromotionFrameIntervalSeconds:R}; sparseVideoPromotionCoverageRatio={settings.PromotionMinimumSparseVideoSampleCoverageRatio:R}"));
+                $"AI.Faces thresholds: identity={settings.IdentityMatchThreshold:R}/{settings.IdentityAmbiguityMargin:R}; assetCluster={settings.AssetClusterSimilarityThreshold:R}/{settings.AssetClusterAmbiguityMargin:R}; reference={settings.ReferenceMatchThreshold:R}/{settings.ReferenceAmbiguityMargin:R}; consolidation={settings.ConsolidationSimilarityThreshold:R}/{settings.ConsolidationAmbiguityMargin:R}; sameAssetConsolidation={settings.ConsolidationSameAssetSimilarityThreshold:R}; videoPromotionSamples={settings.PromotionMinimumVideoSamples}; videoPromotionEvidenceSeconds={settings.PromotionMinimumVideoEvidenceSeconds:R}; sparseVideoPromotionSamples={settings.PromotionMinimumSparseVideoSamples}; sparseVideoPromotionFrameInterval={settings.SparseVideoPromotionFrameIntervalSeconds:R}; sparseVideoPromotionCoverageRatio={settings.PromotionMinimumSparseVideoSampleCoverageRatio:R}; detectionKeyframeIoU={settings.DetectionKeyframeIoUThreshold:R}; detectionKeyframeMaxGap={settings.DetectionKeyframeMaxGapSeconds:R}; maxDetectionKeyframes={settings.MaxDetectionKeyframesPerTrack}"));
     }
 
     private sealed class OpenTrack

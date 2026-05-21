@@ -1346,6 +1346,7 @@ internal sealed class AiVisualSemanticSearchService(
             image.GalleryCount,
             image.ImageGalleries?.Select(static imageGallery => imageGallery.GalleryId).ToList() ?? [],
             image.ImageGalleries?.Where(static imageGallery => imageGallery.Gallery != null).Select(static imageGallery => new GallerySummaryDto(imageGallery.GalleryId, imageGallery.Gallery!.Title, imageGallery.Gallery.Date?.ToString("yyyy-MM-dd"))).ToList() ?? [],
+            [],
             image.Files?.Select(file => new ImageFileDto(
                 file.Id,
                 CanReadFiles ? file.Path : string.Empty,

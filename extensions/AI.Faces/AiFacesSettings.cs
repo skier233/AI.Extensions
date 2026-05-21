@@ -6,9 +6,11 @@ namespace AI.Faces;
 
 internal sealed class AiFacesSettings
 {
-    public const double DefaultDetectionKeyframeIoUThreshold = 0.78;
+    public const double DefaultDetectionKeyframeIoUThreshold = 0.86;
 
-    public const int DefaultMaxDetectionKeyframesPerTrack = 5;
+    public const int DefaultMaxDetectionKeyframesPerTrack = 18;
+
+    public const double DefaultDetectionKeyframeMaxGapSeconds = 2.5;
 
     public double MinimumPoseQuality { get; set; } = 0.78;
 
@@ -46,6 +48,8 @@ internal sealed class AiFacesSettings
 
     public int MaxDetectionKeyframesPerTrack { get; set; } = DefaultMaxDetectionKeyframesPerTrack;
 
+    public double DetectionKeyframeMaxGapSeconds { get; set; } = DefaultDetectionKeyframeMaxGapSeconds;
+
     public AiFacesSettings Normalize()
     {
         MinimumPoseQuality = Math.Clamp(MinimumPoseQuality, 0.0, 1.0);
@@ -65,7 +69,8 @@ internal sealed class AiFacesSettings
         ConsolidationSameAssetSimilarityThreshold = Math.Clamp(ConsolidationSameAssetSimilarityThreshold, 0.0, 1.0);
         ConsolidationAmbiguityMargin = Math.Clamp(ConsolidationAmbiguityMargin, 0.0, 1.0);
         DetectionKeyframeIoUThreshold = Math.Clamp(DetectionKeyframeIoUThreshold, 0.0, 1.0);
-        MaxDetectionKeyframesPerTrack = Math.Clamp(MaxDetectionKeyframesPerTrack, 1, 25);
+        MaxDetectionKeyframesPerTrack = Math.Clamp(MaxDetectionKeyframesPerTrack, 1, 60);
+        DetectionKeyframeMaxGapSeconds = Math.Clamp(DetectionKeyframeMaxGapSeconds, 0.0, 60.0);
         return this;
     }
 }

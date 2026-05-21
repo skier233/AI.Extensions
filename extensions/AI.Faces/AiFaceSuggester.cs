@@ -81,239 +81,249 @@ internal sealed class AiFaceSuggester(
             .ToDictionary(
                 static group => group.Key,
                 static group => (IReadOnlyList<Embedding>)group.Take(SourceEmbeddingCount).ToArray());
-        if (sourceEmbeddingsByFaceId.Count == 0)
-        {
-            return new Dictionary<int, IReadOnlyList<FaceSuggestionDto>>();
-        }
-
-        var referenceSuggestionsByFaceId = options.IncludeReferenceMatches
+        var referenceSuggestionsByFaceId = options.IncludeReferenceMatches && sourceEmbeddingsByFaceId.Count > 0
             ? await BuildReferenceSuggestionsByFaceAsync(sourceEmbeddingsByFaceId, maxResults, cancellationToken)
             : new Dictionary<int, IReadOnlyList<FaceSuggestionDto>>();
         var suggestionsByFaceIdResult = new Dictionary<int, IReadOnlyList<FaceSuggestionDto>>();
 
         foreach (var faceId in eligibleFaceIds)
         {
-            if (!sourceEmbeddingsByFaceId.TryGetValue(faceId, out var faceSourceEmbeddings) || faceSourceEmbeddings.Count == 0)
+            var rawMatches = new List<RawFaceMatch>();
+            if (sourceEmbeddingsByFaceId.TryGetValue(faceId, out var faceSourceEmbeddings) && faceSourceEmbeddings.Count > 0)
+            {
+                foreach (var sourceEmbedding in faceSourceEmbeddings)
+                {
+                    var nearest = await _embeddingService.KnnAsync(
+                        sourceEmbedding.Vector,
+                        CandidateK,
+                        new EmbeddingSearchOptions
+                        {
+                            HostType = EmbeddingHostType.Face,
+                            KindFamily = sourceEmbedding.KindFamily,
+                            Modality = sourceEmbedding.Modality,
+                            IsSemantic = sourceEmbedding.IsSemantic,
+                            SourceKey = sourceEmbedding.SourceKey,
+                        },
+                        cancellationToken);
+
+                    rawMatches.AddRange(nearest
+                        .Where(match => match.Embedding.HostId != faceId)
+                        .Select(match => new RawFaceMatch(match.Embedding.HostId, ClampSimilarity(1f - match.Distance))));
+                }
+            }
+
+            var localSuggestions = rawMatches.Count == 0
+                ? []
+                : await BuildLocalSuggestionsAsync(rawMatches, cancellationToken);
+            referenceSuggestionsByFaceId.TryGetValue(faceId, out var referenceSuggestions);
+            var suggestions = MergeAndRankSuggestions(localSuggestions, referenceSuggestions ?? []);
+            var rankedSuggestions = await ApplySceneEvidenceBoostAsync(faceId, suggestions, maxResults, cancellationToken);
+            if (rankedSuggestions.Count > 0)
+            {
+                suggestionsByFaceIdResult[faceId] = rankedSuggestions;
+            }
+        }
+
+        return suggestionsByFaceIdResult;
+    }
+
+    private async Task<IReadOnlyList<FaceSuggestionDto>> ApplySceneEvidenceBoostAsync(
+        int faceId,
+        IReadOnlyList<FaceSuggestionDto> suggestions,
+        int maxResults,
+        CancellationToken cancellationToken)
+    {
+        var sceneIds = await _db.FaceAppearances
+            .AsNoTracking()
+            .Where(appearance => appearance.FaceId == faceId && appearance.HostType == FaceAppearanceHostType.Scene)
+            .Select(appearance => appearance.HostId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        if (sceneIds.Count == 0)
+        {
+            sceneIds = await _db.Detections
+                .AsNoTracking()
+                .Where(detection =>
+                    detection.RefId == faceId
+                    && detection.RefKind != null
+                    && detection.RefKind.ToLower() == "face"
+                    && detection.HostType == DetectionHostType.Scene)
+                .Select(detection => detection.HostId)
+                .Distinct()
+                .ToListAsync(cancellationToken);
+        }
+
+        var imageIds = await _db.FaceAppearances
+            .AsNoTracking()
+            .Where(appearance => appearance.FaceId == faceId && appearance.HostType == FaceAppearanceHostType.Image)
+            .Select(appearance => appearance.HostId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        if (imageIds.Count == 0)
+        {
+            imageIds = await _db.Detections
+                .AsNoTracking()
+                .Where(detection =>
+                    detection.RefId == faceId
+                    && detection.RefKind != null
+                    && detection.RefKind.ToLower() == "face"
+                    && detection.HostType == DetectionHostType.Image)
+                .Select(detection => detection.HostId)
+                .Distinct()
+                .ToListAsync(cancellationToken);
+        }
+
+        var hostKeys = sceneIds.Select(static id => $"scene:{id}")
+            .Concat(imageIds.Select(static id => $"image:{id}"))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (hostKeys.Length == 0)
+        {
+            return suggestions.Take(maxResults).ToList();
+        }
+
+        var scenePerformers = await _db.Set<ScenePerformer>()
+            .AsNoTracking()
+            .Include(item => item.Performer)
+                .ThenInclude(performer => performer!.RemoteIds)
+            .Where(item => sceneIds.Contains(item.SceneId) && item.Performer != null)
+            .ToListAsync(cancellationToken);
+
+        var imagePerformers = await _db.Set<ImagePerformer>()
+            .AsNoTracking()
+            .Include(item => item.Performer)
+                .ThenInclude(performer => performer!.RemoteIds)
+            .Where(item => imageIds.Contains(item.ImageId) && item.Performer != null)
+            .ToListAsync(cancellationToken);
+
+        var hostPerformers = scenePerformers
+            .Select(item => new HostPerformerEvidence(
+                item.PerformerId,
+                item.Performer!.Name,
+                item.Performer.UpdatedAt,
+                !string.IsNullOrWhiteSpace(item.Performer.ImageBlobId),
+                item.Performer.RemoteIds.Count == 0,
+                $"scene:{item.SceneId}"))
+            .Concat(imagePerformers.Select(item => new HostPerformerEvidence(
+                item.PerformerId,
+                item.Performer!.Name,
+                item.Performer.UpdatedAt,
+                !string.IsNullOrWhiteSpace(item.Performer.ImageBlobId),
+                item.Performer.RemoteIds.Count == 0,
+                $"image:{item.ImageId}")))
+            .ToArray();
+
+        if (hostPerformers.Length == 0)
+        {
+            return suggestions.Take(maxResults).ToList();
+        }
+
+        var performerHostKeys = hostPerformers
+            .GroupBy(item => item.PerformerId)
+            .ToDictionary(group => group.Key, group => group.Select(item => item.HostKey).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+        var performerDetailsById = hostPerformers
+            .GroupBy(item => item.PerformerId)
+            .ToDictionary(group => group.Key, group => group.OrderByDescending(item => item.PerformerUpdatedAt).First());
+        var normalizedNameHostKeys = hostPerformers
+            .GroupBy(item => NormalizeName(item.PerformerName), StringComparer.OrdinalIgnoreCase)
+            .Where(group => !string.IsNullOrWhiteSpace(group.Key))
+            .ToDictionary(group => group.Key, group => group.Select(item => item.HostKey).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), StringComparer.OrdinalIgnoreCase);
+        var solePerformerHostKeys = hostPerformers
+            .GroupBy(item => item.HostKey, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Select(item => item.PerformerId).Distinct().Count() == 1)
+            .Select(group => group.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var performerCountByHostKey = hostPerformers
+            .GroupBy(item => item.HostKey, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.Select(item => item.PerformerId).Distinct().Count(), StringComparer.OrdinalIgnoreCase);
+        var exclusivePerformerId = performerHostKeys.Count == 1 && performerHostKeys.Values.Single().Length == hostKeys.Length
+            ? performerHostKeys.Keys.Single()
+            : (int?)null;
+
+        var boostedSuggestions = suggestions
+            .Select(suggestion => ApplySceneEvidenceBoost(suggestion, performerHostKeys, normalizedNameHostKeys, solePerformerHostKeys, hostKeys.Length, exclusivePerformerId))
+            .ToList();
+
+        var existingLocalPerformerIds = boostedSuggestions
+            .Select(ResolveLocalPerformerId)
+            .Where(static performerId => performerId.HasValue)
+            .Select(static performerId => performerId!.Value)
+            .ToHashSet();
+
+        foreach (var performerId in performerHostKeys.Keys)
+        {
+            if (existingLocalPerformerIds.Contains(performerId) || !performerDetailsById.TryGetValue(performerId, out var performer))
             {
                 continue;
             }
 
-            var rawMatches = new List<RawFaceMatch>();
-            foreach (var sourceEmbedding in faceSourceEmbeddings)
-            {
-                var nearest = await _embeddingService.KnnAsync(
-                    sourceEmbedding.Vector,
-                    CandidateK,
-                    new EmbeddingSearchOptions
-                    {
-                        HostType = EmbeddingHostType.Face,
-                        KindFamily = sourceEmbedding.KindFamily,
-                        var referenceSuggestionsByFaceId = options.IncludeReferenceMatches && sourceEmbeddingsByFaceId.Count > 0
-                rawMatches.AddRange(nearest
-                    .Where(match => match.Embedding.HostId != faceId)
-                    .Select(match => new RawFaceMatch(match.Embedding.HostId, ClampSimilarity(1f - match.Distance))));
-            }
-
-            var localSuggestions = rawMatches.Count == 0
-            {
-                            if (sourceEmbeddingsByFaceId.TryGetValue(faceId, out var faceSourceEmbeddings) && faceSourceEmbeddings.Count > 0)
-            }
-                                foreach (var sourceEmbedding in faceSourceEmbeddings)
-                                {
-                                    var nearest = await _embeddingService.KnnAsync(
-                                        sourceEmbedding.Vector,
-                                        CandidateK,
-                                        new EmbeddingSearchOptions
-                                        {
-                                            HostType = EmbeddingHostType.Face,
-                                            KindFamily = sourceEmbedding.KindFamily,
-                                            Modality = sourceEmbedding.Modality,
-                                            IsSemantic = sourceEmbedding.IsSemantic,
-                                            SourceKey = sourceEmbedding.SourceKey,
-                                        },
-                                        cancellationToken);
-
-                                    rawMatches.AddRange(nearest
-                                        .Where(match => match.Embedding.HostId != faceId)
-                                        .Select(match => new RawFaceMatch(match.Embedding.HostId, ClampSimilarity(1f - match.Distance))));
-                                }
-                            }
-
-                            var localSuggestions = rawMatches.Count == 0
-                                ? []
-                                : await BuildLocalSuggestionsAsync(rawMatches, cancellationToken);
-                            referenceSuggestionsByFaceId.TryGetValue(faceId, out var referenceSuggestions);
-                            var suggestions = MergeAndRankSuggestions(localSuggestions, referenceSuggestions ?? []);
-                            var rankedSuggestions = await ApplySceneEvidenceBoostAsync(faceId, suggestions, maxResults, cancellationToken);
-                            if (rankedSuggestions.Count > 0)
-                            {
-                                suggestionsByFaceIdResult[faceId] = rankedSuggestions;
-                            }
-                        }
-
-                        return suggestionsByFaceIdResult;
-                    }
-
-                    private async Task<IReadOnlyList<FaceSuggestionDto>> ApplySceneEvidenceBoostAsync(
-                        int faceId,
-                        IReadOnlyList<FaceSuggestionDto> suggestions,
-                        int maxResults,
-                        CancellationToken cancellationToken)
-                    {
-                        var sceneIds = await _db.FaceAppearances
-                            .AsNoTracking()
-                            .Where(appearance => appearance.FaceId == faceId && appearance.HostType == FaceAppearanceHostType.Scene)
-                            .Select(appearance => appearance.HostId)
-                            .Distinct()
-                            .ToListAsync(cancellationToken);
-
-                        if (sceneIds.Count == 0)
-                        {
-                            sceneIds = await _db.Detections
-                                .AsNoTracking()
-                                .Where(detection =>
-                                    detection.RefId == faceId
-                                    && detection.RefKind != null
-                                    && detection.RefKind.ToLower() == "face"
-                                    && detection.HostType == DetectionHostType.Scene)
-                                .Select(detection => detection.HostId)
-                                .Distinct()
-                                .ToListAsync(cancellationToken);
-                        }
-
-                        var imageIds = await _db.FaceAppearances
-                            .AsNoTracking()
-                            .Where(appearance => appearance.FaceId == faceId && appearance.HostType == FaceAppearanceHostType.Image)
-                            .Select(appearance => appearance.HostId)
-                            .Distinct()
-                            .ToListAsync(cancellationToken);
-
-                        if (imageIds.Count == 0)
-                        {
-                            imageIds = await _db.Detections
-                                .AsNoTracking()
-                                .Where(detection =>
-                                    detection.RefId == faceId
-                                    && detection.RefKind != null
-                                    && detection.RefKind.ToLower() == "face"
-                                    && detection.HostType == DetectionHostType.Image)
-                                .Select(detection => detection.HostId)
-                                .Distinct()
-                                .ToListAsync(cancellationToken);
-                        }
-
-                        var hostKeys = sceneIds.Select(static id => $"scene:{id}")
-                            .Concat(imageIds.Select(static id => $"image:{id}"))
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
-                            .ToArray();
-                        if (hostKeys.Length == 0)
-                        {
-                            return suggestions.Take(maxResults).ToList();
-                        }
-
-                        var scenePerformers = await _db.Set<ScenePerformer>()
-                            .AsNoTracking()
-                            .Include(item => item.Performer)
-                                .ThenInclude(performer => performer!.RemoteIds)
-                            .Where(item => sceneIds.Contains(item.SceneId) && item.Performer != null)
-                            .ToListAsync(cancellationToken);
-
-                        var imagePerformers = await _db.Set<ImagePerformer>()
-                            .AsNoTracking()
-                            .Include(item => item.Performer)
-                                .ThenInclude(performer => performer!.RemoteIds)
-                            .Where(item => imageIds.Contains(item.ImageId) && item.Performer != null)
-                            .ToListAsync(cancellationToken);
-
-                        var hostPerformers = scenePerformers
-                            .Select(item => new HostPerformerEvidence(
-                                item.PerformerId,
-                                item.Performer!.Name,
-                                item.Performer.UpdatedAt,
-                                !string.IsNullOrWhiteSpace(item.Performer.ImageBlobId),
-                                item.Performer.RemoteIds.Count == 0,
-                                $"scene:{item.SceneId}"))
-                            .Concat(imagePerformers.Select(item => new HostPerformerEvidence(
-                                item.PerformerId,
-                                item.Performer!.Name,
-                                item.Performer.UpdatedAt,
-                                !string.IsNullOrWhiteSpace(item.Performer.ImageBlobId),
-                                item.Performer.RemoteIds.Count == 0,
-                                $"image:{item.ImageId}")))
-                            .ToArray();
-
-                        if (hostPerformers.Length == 0)
-                        {
-                            return suggestions.Take(maxResults).ToList();
-                        }
-
-                        var performerHostKeys = hostPerformers
-                            .GroupBy(item => item.PerformerId)
-                            .ToDictionary(group => group.Key, group => group.Select(item => item.HostKey).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
-                        var performerDetailsById = hostPerformers
-                            .GroupBy(item => item.PerformerId)
-                            .ToDictionary(group => group.Key, group => group.OrderByDescending(item => item.PerformerUpdatedAt).First());
-                        var normalizedNameHostKeys = hostPerformers
-                            .GroupBy(item => NormalizeName(item.PerformerName), StringComparer.OrdinalIgnoreCase)
-                            .Where(group => !string.IsNullOrWhiteSpace(group.Key))
-                            .ToDictionary(group => group.Key, group => group.Select(item => item.HostKey).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(), StringComparer.OrdinalIgnoreCase);
-                        var solePerformerHostKeys = hostPerformers
-                            .GroupBy(item => item.HostKey, StringComparer.OrdinalIgnoreCase)
-                            .Where(group => group.Select(item => item.PerformerId).Distinct().Count() == 1)
-                            .Select(group => group.Key)
-                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                        var exclusivePerformerId = performerHostKeys.Count == 1 && performerHostKeys.Values.Single().Length == hostKeys.Length
-                            ? performerHostKeys.Keys.Single()
-                            : (int?)null;
-
-                        var boostedSuggestions = suggestions
-                            .Select(suggestion => ApplySceneEvidenceBoost(suggestion, performerHostKeys, normalizedNameHostKeys, solePerformerHostKeys, hostKeys.Length, exclusivePerformerId))
-                            .ToList();
-
-                        var existingLocalPerformerIds = boostedSuggestions
-                            .Select(ResolveLocalPerformerId)
-                            .Where(static performerId => performerId.HasValue)
-                            .Select(static performerId => performerId!.Value)
-                            .ToHashSet();
-
-                        foreach (var performerId in performerHostKeys.Keys)
-                        {
-                            if (existingLocalPerformerIds.Contains(performerId) || !performerDetailsById.TryGetValue(performerId, out var performer))
-                            {
-                                continue;
-                            }
-
-                            boostedSuggestions.Add(BuildHostEvidenceSuggestion(
-                                performer,
-                                performerHostKeys[performerId].Length,
-                                hostKeys.Length,
-                                performerHostKeys[performerId].Count(solePerformerHostKeys.Contains),
-                                exclusivePerformerId == performerId));
-                        }
-
-                        return boostedSuggestions
-                            .GroupBy(GetSuggestionKey, StringComparer.OrdinalIgnoreCase)
-                            .Select(group => group
-                                .OrderByDescending(item => item.Confidence)
-                                .ThenByDescending(item => item.Evidence.Count)
-                                .ThenBy(item => item.PerformerName)
-                                .First())
-                            .OrderByDescending(static suggestion => suggestion.Confidence)
-                            .ThenByDescending(static suggestion => suggestion.Evidence.Count)
-                            .ThenBy(static suggestion => suggestion.PerformerName)
-                            .Take(maxResults)
-                            .ToList();
-                    }
-            boost += 10f;
+            boostedSuggestions.Add(BuildHostEvidenceSuggestion(
+                performer,
+                performerHostKeys[performerId].Length,
+                hostKeys.Length,
+                performerHostKeys[performerId].Count(solePerformerHostKeys.Contains),
+                performerHostKeys[performerId]
+                    .Select(hostKey => performerCountByHostKey.GetValueOrDefault(hostKey, 1))
+                    .DefaultIfEmpty(1)
+                    .Average(),
+                exclusivePerformerId == performerId));
         }
 
-        if (exclusivePerformerId.HasValue && localPerformerId == exclusivePerformerId.Value)
+        return boostedSuggestions
+            .GroupBy(GetSuggestionKey, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group
+                .OrderByDescending(item => item.Confidence)
+                .ThenByDescending(item => item.Evidence.Count)
+                .ThenBy(item => item.PerformerName)
+                .First())
+            .OrderByDescending(static suggestion => suggestion.Confidence)
+            .ThenByDescending(static suggestion => suggestion.Evidence.Count)
+            .ThenBy(static suggestion => suggestion.PerformerName)
+            .Take(maxResults)
+            .ToList();
+    }
+
+    private static FaceSuggestionDto ApplySceneEvidenceBoost(
+        FaceSuggestionDto suggestion,
+        IReadOnlyDictionary<int, string[]> performerHostKeys,
+        IReadOnlyDictionary<string, string[]> normalizedNameHostKeys,
+        ISet<string> solePerformerHostKeys,
+        int totalHostCount,
+        int? exclusivePerformerId)
+    {
+        var localPerformerId = ResolveLocalPerformerId(suggestion);
+        var normalizedName = NormalizeName(suggestion.PerformerName);
+        var matchedHostKeys = localPerformerId.HasValue && performerHostKeys.TryGetValue(localPerformerId.Value, out var localHostKeys)
+            ? localHostKeys
+            : normalizedNameHostKeys.GetValueOrDefault(normalizedName) ?? [];
+
+        if (matchedHostKeys.Length == 0)
         {
-            boost += 15f;
+            return suggestion;
+        }
+
+        var soleHostKeys = matchedHostKeys.Where(solePerformerHostKeys.Contains).ToArray();
+        var fullCoverage = totalHostCount > 0 && matchedHostKeys.Length == totalHostCount;
+        var boost = MathF.Min(6f, matchedHostKeys.Length * 2f);
+        if (soleHostKeys.Length > 0)
+        {
+            boost += MathF.Min(4f, soleHostKeys.Length * 2f);
+        }
+
+        if (fullCoverage)
+        {
+            boost += 4f;
+        }
+
+        if (totalHostCount > 1 && exclusivePerformerId.HasValue && localPerformerId == exclusivePerformerId.Value)
+        {
+            boost += 3f;
         }
 
         var hostSummary = matchedHostKeys.Length == 1
-            ? $"already appears on 1 matching host"
+            ? "already appears on 1 matching host"
             : $"already appears on {matchedHostKeys.Length} matching hosts";
         var fullCoverageSummary = fullCoverage ? "; tagged on every host containing this face" : string.Empty;
         var soleSummary = soleHostKeys.Length > 0
@@ -327,13 +337,25 @@ internal sealed class AiFaceSuggester(
         };
     }
 
-    private static FaceSuggestionDto BuildHostEvidenceSuggestion(HostPerformerEvidence performer, int matchedHostCount, int totalHostCount, int soleHostCount, bool exclusive)
+    private static FaceSuggestionDto BuildHostEvidenceSuggestion(
+        HostPerformerEvidence performer,
+        int matchedHostCount,
+        int totalHostCount,
+        int soleHostCount,
+        double averagePerformerCountOnMatchedHosts,
+        bool exclusive)
     {
         var coverageRatio = totalHostCount <= 0 ? 0f : matchedHostCount / (float)totalHostCount;
         var soleRatio = matchedHostCount <= 0 ? 0f : soleHostCount / (float)matchedHostCount;
-        var hostCountBonus = MathF.Min(15f, matchedHostCount * 3f);
-        var confidence = 30f + (coverageRatio * 25f) + (soleRatio * 15f) + hostCountBonus + (exclusive ? 15f : 0f);
-        confidence = MathF.Round(MathF.Min(85f, confidence), 1);
+        var repeatedHostBonus = MathF.Min(20f, Math.Max(0, matchedHostCount - 1) * 6f);
+        var coverageBonus = totalHostCount > 1 ? coverageRatio * 8f : 0f;
+        var soleConsistencyBonus = totalHostCount > 1 ? soleRatio * 6f : 0f;
+        var confidence = ComputeHostEvidenceBaseConfidence(averagePerformerCountOnMatchedHosts)
+            + repeatedHostBonus
+            + coverageBonus
+            + soleConsistencyBonus
+            + (exclusive && totalHostCount > 1 ? 4f : 0f);
+        confidence = MathF.Round(MathF.Min(72f, confidence), 1);
         var hostSummary = matchedHostCount == 1
             ? "1 tagged host"
             : $"{matchedHostCount} tagged hosts";
@@ -364,6 +386,26 @@ internal sealed class AiFaceSuggester(
             LocalPerformerId: performer.PerformerId,
             LocalPerformerHasImage: performer.PerformerHasImage,
             LocalPerformerIsLocalOnly: performer.PerformerIsLocalOnly);
+    }
+
+    private static float ComputeHostEvidenceBaseConfidence(double averagePerformerCount)
+    {
+        if (averagePerformerCount <= 1.25)
+        {
+            return 40f;
+        }
+
+        if (averagePerformerCount <= 2.25)
+        {
+            return 30f;
+        }
+
+        if (averagePerformerCount >= 4.0)
+        {
+            return 20f;
+        }
+
+        return 25f;
     }
 
     private static int? ResolveLocalPerformerId(FaceSuggestionDto suggestion)
@@ -419,6 +461,8 @@ internal sealed class AiFaceSuggester(
                     candidate.Performer?.UpdatedAt,
                     !string.IsNullOrWhiteSpace(candidate.Performer?.ImageBlobId),
                     candidate.Performer?.RemoteIds.Count == 0,
+                    candidate.UpdatedAt,
+                    !string.IsNullOrWhiteSpace(candidate.CoverBlobId),
                     match.Similarity,
                     bestDetectionsByFaceId.GetValueOrDefault(candidate.Id));
             })
@@ -536,7 +580,7 @@ internal sealed class AiFaceSuggester(
             .Take(EvidencePerSuggestion)
             .Select(match => new FaceSuggestionEvidenceDto(
                 match.FaceId,
-                BuildThumbnailUrl(match.Detection),
+                BuildFaceCoverUrl(match.FaceId, match.FaceUpdatedAt, match.FaceHasCoverImage) ?? BuildThumbnailUrl(match.Detection),
                 match.Similarity))
             .ToArray();
 
@@ -660,12 +704,17 @@ internal sealed class AiFaceSuggester(
             return null;
         }
 
-        return detection.HostType switch
+        return $"/api/stream/detection/{detection.Id}/crop?max=320";
+    }
+
+    private static string? BuildFaceCoverUrl(int faceId, DateTime? faceUpdatedAt, bool faceHasCoverImage)
+    {
+        if (!faceHasCoverImage || !faceUpdatedAt.HasValue)
         {
-            DetectionHostType.Image => $"/api/stream/image/{detection.HostId}/thumbnail?max=320",
-            DetectionHostType.Scene => $"/api/stream/scene/{detection.HostId}/screenshot",
-            _ => null,
-        };
+            return null;
+        }
+
+        return $"/api/faces/{faceId}/image?max=640&v={Uri.EscapeDataString(faceUpdatedAt.Value.ToString("o"))}";
     }
 
     private static IEnumerable<RawReferenceMatch> FindNearestReferenceMatches(float[] sourceVector, SaieReferencePack pack, int candidateCount)
@@ -737,6 +786,8 @@ internal sealed class AiFaceSuggester(
         DateTime? PerformerUpdatedAt,
         bool PerformerHasImage,
         bool PerformerIsLocalOnly,
+        DateTime? FaceUpdatedAt,
+        bool FaceHasCoverImage,
         float Similarity,
         Detection? Detection);
 

@@ -217,6 +217,39 @@ public sealed class AiFacesPreparationServiceTests
     }
 
     [Fact]
+    public async Task Prepare_VideoTrackUsesSampleOrderForSparseSourceFrameIndexes()
+    {
+        var store = new InMemoryFaceIdentityStateStore();
+        var service = CreateService(store, ShortVideoPromotionSettings());
+        IReadOnlyList<AiCapabilityClaim> claims =
+        [
+            new AiCapabilityClaim("faces.video.detection", "Video Face Detection", AiMediaKinds.Video, "detection", "frame", "frames"),
+            new AiCapabilityClaim("faces.video.embedding", "Video Face Identity Embeddings", AiMediaKinds.Video, "embedding", "region", "regions", FromDetection: "face_detector_torchexport"),
+        ];
+
+        var result = new AiAnalyzeResult
+        {
+            MediaKind = AiMediaKinds.Video,
+            AssetId = "sparse-source-frame-indexes",
+            DurationSeconds = 180,
+            Frames =
+            [
+                CreateVideoFrame(1, 0, new AiBoundingBox(0.20, 0.20, 0.36, 0.36), [1f, 0f]),
+                CreateVideoFrame(1801, 60, new AiBoundingBox(0.21, 0.20, 0.37, 0.36), [1f, 0f]),
+                CreateVideoFrame(3601, 120, new AiBoundingBox(0.22, 0.20, 0.38, 0.36), [1f, 0f]),
+            ],
+        };
+
+        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "sparse-source-frame-indexes"));
+
+        Assert.Single(batch.Faces);
+        var segment = Assert.Single(batch.Segments);
+        Assert.Equal(0d, segment.StartSeconds);
+        Assert.Equal(180d, segment.EndSeconds);
+        Assert.DoesNotContain(":span-", segment.Metadata!["trackKey"], StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Prepare_KeepsLowCoverageSparseVideoTrackProvisionalInLongVideo()
     {
         var store = new InMemoryFaceIdentityStateStore();
@@ -671,6 +704,42 @@ public sealed class AiFacesPreparationServiceTests
     }
 
     [Fact]
+    public async Task Prepare_VideoTrackRetainsTemporalKeyframesForLongStableBoxes()
+    {
+        var store = new InMemoryFaceIdentityStateStore();
+        var service = CreateService(store, new AiFacesSettings
+        {
+            PromotionMinimumVideoSamples = 2,
+            DetectionKeyframeMaxGapSeconds = 2.5,
+            MaxDetectionKeyframesPerTrack = 20,
+        });
+        IReadOnlyList<AiCapabilityClaim> claims =
+        [
+            new AiCapabilityClaim("faces.video.detection", "Video Face Detection", AiMediaKinds.Video, "detection", "frame", "frames"),
+            new AiCapabilityClaim("faces.video.embedding", "Video Face Identity Embeddings", AiMediaKinds.Video, "embedding", "region", "regions", FromDetection: "face_detector_torchexport"),
+        ];
+
+        var result = new AiAnalyzeResult
+        {
+            MediaKind = AiMediaKinds.Video,
+            AssetId = "scene-keyframe-gap",
+            FrameIntervalSeconds = 1,
+            Frames = Enumerable.Range(1, 10)
+                .Select(frame => CreateVideoFrame(frame, frame, new AiBoundingBox(0.20, 0.20, 0.36, 0.36)))
+                .ToArray(),
+        };
+
+        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "scene-keyframe-gap"));
+
+        Assert.Single(batch.Faces);
+        Assert.Equal([1d, 4d, 7d, 10d], batch.Detections.Select(static detection => detection.ObservedAtSeconds).ToArray());
+
+        var segment = Assert.Single(batch.Segments);
+        Assert.Equal("4", segment.Metadata?["retainedSpatialSampleCount"]);
+        Assert.Equal("2.5", segment.Metadata?["detectionKeyframeMaxGapSec"]);
+    }
+
+    [Fact]
     public async Task Prepare_SplitsFaceSegmentsAcrossLargeObservationGapsInSameAssetCluster()
     {
         var store = new InMemoryFaceIdentityStateStore();
@@ -846,6 +915,41 @@ public sealed class AiFacesPreparationServiceTests
             Assert.Equal(768, cover.Height);
             Assert.True(centerPixel.R > 200 && centerPixel.G < 80 && centerPixel.B < 80,
                 $"Expected repaired crop center to land on the red face marker, got R={centerPixel.R}, G={centerPixel.G}, B={centerPixel.B}.");
+        }
+        finally
+        {
+            if (File.Exists(imagePath))
+            {
+                File.Delete(imagePath);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task CreateAsync_ReturnsNullForBlankBlackImageCover()
+    {
+        var imagePath = Path.Combine(Path.GetTempPath(), $"ai-face-cover-blank-{Guid.NewGuid():N}.png");
+
+        try
+        {
+            using (var image = new Image<Rgba32>(100, 100, new Rgba32(0, 0, 0)))
+            {
+                await image.SaveAsPngAsync(imagePath);
+            }
+
+            var preparedFace = new AiPreparedFaceIdentity(
+                "face-0001",
+                "ext:ai.faces",
+                Label: null,
+                IsProvisional: true,
+                QualityScore: 1.0,
+                CoverAssetId: imagePath,
+                CoverBoundingBox: new AiBoundingBox(0.20, 0.20, 0.36, 0.36),
+                Metadata: null);
+
+            await using var coverStream = await AiFaceCoverGenerator.CreateAsync("image", preparedFace, coverDetection: null, configuration: null);
+
+            Assert.Null(coverStream);
         }
         finally
         {
@@ -1215,6 +1319,7 @@ public sealed class AiFacesPreparationServiceTests
                 ConsolidationAmbiguityMargin = _settings.ConsolidationAmbiguityMargin,
                 DetectionKeyframeIoUThreshold = _settings.DetectionKeyframeIoUThreshold,
                 MaxDetectionKeyframesPerTrack = _settings.MaxDetectionKeyframesPerTrack,
+                DetectionKeyframeMaxGapSeconds = _settings.DetectionKeyframeMaxGapSeconds,
             }.Normalize());
 
         public Task SaveAsync(AiFacesSettings settings, CancellationToken ct = default)

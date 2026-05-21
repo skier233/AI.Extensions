@@ -208,6 +208,34 @@ public sealed class AiFaceSuggesterTests
         }
     }
 
+    [Fact]
+    public async Task SuggestAsync_KeepsSingleHostOnlySuggestionConfidenceWeak()
+    {
+        await using var provider = CreateProvider();
+
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            db.Performers.Add(new Performer { Id = 78, Name = "Only Scene Performer" });
+            db.Scenes.Add(new Scene { Id = 7101, Title = "Single Tagged Scene" });
+            db.Set<ScenePerformer>().Add(new ScenePerformer { SceneId = 7101, PerformerId = 78 });
+            db.Faces.Add(new Face { Id = 6, Label = "Single Host Face", PrimarySourceKey = "face-0006" });
+            db.Detections.Add(CreateFaceDetection(6, DetectionHostType.Scene, 7101, 0.91f, observedAtSec: 12.0));
+
+            await db.SaveChangesAsync();
+        }
+
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var suggester = scope.ServiceProvider.GetRequiredService<IFaceSuggester>();
+            var suggestion = Assert.Single(await suggester.SuggestForAsync(6, 5));
+
+            Assert.Equal(78, suggestion.PerformerId);
+            Assert.Equal(40f, suggestion.Confidence);
+            Assert.Contains("Host evidence only", suggestion.Why, StringComparison.Ordinal);
+        }
+    }
+
     private static ServiceProvider CreateProvider(string? referenceRoot = null)
     {
         var services = new ServiceCollection();
