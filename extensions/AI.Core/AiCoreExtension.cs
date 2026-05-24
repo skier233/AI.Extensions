@@ -20,6 +20,7 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
     private const string SettingsStoreKey = "settings";
     public const string RunPermission = "cove.ai.core.runs.run";
     public const string ManageModelsPermission = "cove.ai.core.models.manage";
+    public const string ManagePipelinesPermission = "cove.ai.core.pipelines.manage";
     public const string WriteSettingsPermission = "cove.ai.core.settings.write";
 
     private static readonly JsonSerializerOptions StateJson = new(JsonSerializerDefaults.Web)
@@ -75,7 +76,15 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
     public override UIManifest GetUIManifest()
         => ManifestBuilder()
             .AddPage("ai", "AI", "AiCorePage", showInNav: true, navOrder: 95)
-            .AddSettingsPanel(new UISettingsPanel("ai-core-settings", "AI Core", Id, "AiCoreSettingsPanel", 40, TargetTab: "extensions"))
+            .AddSettingsTab(
+                "extensions/ai",
+                "AI",
+                order: 40,
+                icon: "database",
+                description: "Core AI extension settings and model orchestration defaults.",
+                searchKeywords: ["ai", "model server", "nsfw", "path mappings", "models"],
+                aliases: ["extensions-ai", "extensions/ai/core"])
+            .AddSettingsPanel(new UISettingsPanel("ai-core-settings", "AI Core", Id, "AiCoreSettingsPanel", 40, TargetTab: "extensions/ai"))
             .AddTutorialTopic(
                 "cove.ai.core",
                 "AI Core",
@@ -97,10 +106,10 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
                         ["Select media first", "Choose the run target", "Review generated artifacts before broad cleanup"],
                         MockKind: "extension"),
                 ])
-            .AddAction("ai-core-run-scene-toolbar", "Run AI", "toolbar", ["scene"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission)
-            .AddAction("ai-core-run-image-toolbar", "Run AI", "toolbar", ["image"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission)
-            .AddAction("ai-core-run-scenes-bulk", "Run AI", "bulk", ["scene"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission)
-            .AddAction("ai-core-run-images-bulk", "Run AI", "bulk", ["image"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission)
+            .AddAction("ai-core-run-scene-toolbar", "Run AI", "toolbar", ["scene"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission, suppressSuccessAlert: true)
+            .AddAction("ai-core-run-image-toolbar", "Run AI", "toolbar", ["image"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission, suppressSuccessAlert: true)
+            .AddAction("ai-core-run-scenes-bulk", "Run AI", "bulk", ["scene"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission, suppressSuccessAlert: true)
+            .AddAction("ai-core-run-images-bulk", "Run AI", "bulk", ["image"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission, suppressSuccessAlert: true)
             .Build();
 
     public IEnumerable<PermissionDefinition> ContributePermissions()
@@ -108,9 +117,10 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
         var source = $"extension:{Id}";
         return
         [
-            new(RunPermission, "AI Core", "Queue AI runs from Cove selections and direct run endpoints.", Dangerous: true, Implies: [Cove.Core.Auth.Permissions.JobsRun], Source: source),
-            new(ManageModelsPermission, "AI Core", "Load, unload, and pin AI server models.", Dangerous: true, Source: source),
-            new(WriteSettingsPermission, "AI Core", "Change AI Core connection and run settings.", Dangerous: true, Source: source),
+            new(RunPermission, "AI Core", "Queue AI runs from Cove selections and direct run endpoints.", Dangerous: true, Implies: [Cove.Core.Auth.Permissions.JobsRun], Source: source, GrantToAdminsByDefault: true),
+            new(ManageModelsPermission, "AI Core", "Load, unload, and pin AI server models.", Dangerous: true, Source: source, GrantToAdminsByDefault: true),
+            new(ManagePipelinesPermission, "AI Core", "Create, update, delete, and sync custom AI server pipelines.", Dangerous: true, Source: source, GrantToAdminsByDefault: true),
+            new(WriteSettingsPermission, "AI Core", "Change AI Core connection and run settings.", Dangerous: true, Source: source, GrantToAdminsByDefault: true),
         ];
     }
 
@@ -147,8 +157,17 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
             }
         });
 
-        group.MapGet("/capabilities", (IAiCoreOrchestrator orchestrator) =>
-            Results.Ok(new { extensions = orchestrator.GetCapabilities() }));
+        group.MapGet("/capabilities", async (IAiCoreOrchestrator orchestrator, CancellationToken ct) =>
+        {
+            var settings = await LoadSettingsAsync(ct);
+            return Results.Ok(new
+            {
+                extensions = orchestrator.GetCapabilities(),
+                customPipelines = settings.CustomPipelines,
+                runPresets = settings.RunPresets,
+                modelBindings = settings.CapabilityModelBindings,
+            });
+        });
 
         group.MapGet("/health", async (INsfwAiServerClient client, IAiCoreOrchestrator orchestrator, CancellationToken ct) =>
         {
@@ -259,6 +278,99 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
             }
         });
 
+        group.MapGet("/pipelines/custom", async (CancellationToken ct) =>
+        {
+            var settings = await LoadSettingsAsync(ct);
+            return Results.Ok(new { pipelines = settings.CustomPipelines });
+        });
+
+        group.MapPost("/pipelines/custom", async (AiCustomPipelineDefinition pipeline, INsfwAiServerClient client, ICurrentPrincipalAccessor principalAccessor, CancellationToken ct) =>
+        {
+            if (RequirePermission(principalAccessor, ManagePipelinesPermission) is { } denied)
+                return denied;
+
+            try
+            {
+                var settings = await LoadSettingsAsync(ct);
+                var normalized = pipeline.Normalize();
+                var sync = await client.RegisterCustomPipelineAsync(settings, normalized, ct);
+                var updated = UpsertCustomPipeline(settings, normalized).Normalize();
+                await SaveSettingsAsync(updated, ct);
+                return Results.Ok(new { pipeline = normalized, sync });
+            }
+            catch (Exception ex)
+            {
+                return ToProblem(ex);
+            }
+        });
+
+        group.MapPut("/pipelines/custom/{pipelineName}", async (string pipelineName, AiCustomPipelineDefinition pipeline, INsfwAiServerClient client, ICurrentPrincipalAccessor principalAccessor, CancellationToken ct) =>
+        {
+            if (RequirePermission(principalAccessor, ManagePipelinesPermission) is { } denied)
+                return denied;
+
+            try
+            {
+                var settings = await LoadSettingsAsync(ct);
+                var normalized = (pipeline with { PipelineName = pipelineName }).Normalize();
+                var sync = await client.RegisterCustomPipelineAsync(settings, normalized, ct);
+                var updated = UpsertCustomPipeline(settings, normalized).Normalize();
+                await SaveSettingsAsync(updated, ct);
+                return Results.Ok(new { pipeline = normalized, sync });
+            }
+            catch (Exception ex)
+            {
+                return ToProblem(ex);
+            }
+        });
+
+        group.MapPost("/pipelines/custom/{pipelineName}/sync", async (string pipelineName, INsfwAiServerClient client, ICurrentPrincipalAccessor principalAccessor, CancellationToken ct) =>
+        {
+            if (RequirePermission(principalAccessor, ManagePipelinesPermission) is { } denied)
+                return denied;
+
+            try
+            {
+                var settings = await LoadSettingsAsync(ct);
+                var pipeline = settings.CustomPipelines.FirstOrDefault(item => string.Equals(item.PipelineName, pipelineName, StringComparison.OrdinalIgnoreCase));
+                if (pipeline is null)
+                {
+                    return Results.NotFound(new { message = $"Custom pipeline '{pipelineName}' was not found." });
+                }
+
+                var sync = await client.RegisterCustomPipelineAsync(settings, pipeline, ct);
+                return Results.Ok(new { pipeline, sync });
+            }
+            catch (Exception ex)
+            {
+                return ToProblem(ex);
+            }
+        });
+
+        group.MapDelete("/pipelines/custom/{pipelineName}", async (string pipelineName, INsfwAiServerClient client, ICurrentPrincipalAccessor principalAccessor, CancellationToken ct) =>
+        {
+            if (RequirePermission(principalAccessor, ManagePipelinesPermission) is { } denied)
+                return denied;
+
+            try
+            {
+                var settings = await LoadSettingsAsync(ct);
+                var sync = await client.DeleteCustomPipelineAsync(settings, pipelineName, ct);
+                var updated = settings with
+                {
+                    CustomPipelines = settings.CustomPipelines
+                        .Where(item => !string.Equals(item.PipelineName, pipelineName, StringComparison.OrdinalIgnoreCase))
+                        .ToList(),
+                };
+                await SaveSettingsAsync(updated.Normalize(), ct);
+                return Results.Ok(new { pipelineName, sync });
+            }
+            catch (Exception ex)
+            {
+                return ToProblem(ex);
+            }
+        });
+
         group.MapPost("/run/images", async (AiRunImagesRequest request, IAiCoreOrchestrator orchestrator, ICurrentPrincipalAccessor principalAccessor, CancellationToken ct) =>
         {
             if (RequirePermission(principalAccessor, RunPermission) is { } denied)
@@ -356,6 +468,15 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
 
     private Task SaveSettingsAsync(AiCoreConnectionSettings settings, CancellationToken ct)
         => Store.SetAsync(SettingsStoreKey, JsonSerializer.Serialize(settings, StateJson), ct);
+
+    private static AiCoreConnectionSettings UpsertCustomPipeline(AiCoreConnectionSettings settings, AiCustomPipelineDefinition pipeline)
+    {
+        var pipelines = settings.CustomPipelines
+            .Where(item => !string.Equals(item.PipelineName, pipeline.PipelineName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        pipelines.Add(pipeline);
+        return settings with { CustomPipelines = pipelines };
+    }
 
     private static IResult? RequirePermission(ICurrentPrincipalAccessor principalAccessor, string permission)
     {

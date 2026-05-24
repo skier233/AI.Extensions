@@ -31,13 +31,42 @@ public sealed record AiCapabilityClaim(
     IReadOnlyList<string>? PreferredModels = null,
     string? FromDetection = null,
     string? Description = null
+)
+{
+    public string? CapabilityId { get; init; }
+
+    public string? ModelBindingSlotId { get; init; }
+}
+
+public sealed record AiModelBindingSlot(
+    string SlotId,
+    string DisplayName,
+    string WantCapability,
+    IReadOnlyList<string>? RequiredCapabilities = null,
+    IReadOnlyList<string>? RequiredScopes = null,
+    IReadOnlyList<string>? RequiredCategories = null,
+    IReadOnlyList<string>? DefaultModels = null,
+    bool CategoryScoped = false,
+    bool AllowMultiple = false,
+    string? Description = null
+);
+
+public sealed record AiCapabilityFeature(
+    string CapabilityId,
+    string DisplayName,
+    IReadOnlyList<string> ClaimIds,
+    IReadOnlyList<AiModelBindingSlot>? ModelBindingSlots = null,
+    string? Description = null
 );
 
 public sealed record AiCapabilityDescriptor(
     string ExtensionId,
     string DisplayName,
     IReadOnlyList<AiCapabilityClaim> Claims
-);
+)
+{
+    public IReadOnlyList<AiCapabilityFeature> Capabilities { get; init; } = [];
+}
 
 public sealed record AiDispatchRequest(
     AiRunContext Context,

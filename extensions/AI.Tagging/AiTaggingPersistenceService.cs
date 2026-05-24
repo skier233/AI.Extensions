@@ -36,18 +36,20 @@ internal sealed class AiTaggingPersistenceService(IServiceScopeFactory scopeFact
         var tagProvenanceService = scope.ServiceProvider.GetRequiredService<ITagProvenanceService>();
         var hostEntityId = request.Context.HostEntityId.Value;
         var hostDurationSeconds = request.Result.DurationSeconds ?? request.Context.DurationSeconds;
-        var tagsByName = await ResolveTagsAsync(db, CollectTagNames(batch).ToArray(), ct);
+        var settings = await AiTaggingSettingsStore.LoadAsync(scope.ServiceProvider, ct);
+        var effectiveBatch = ApplyTagNameOverrides(batch, settings.ToOverrideMap());
+        var tagsByName = await ResolveTagsAsync(db, CollectTagNames(effectiveBatch).ToArray(), ct);
 
         var notes = new List<string>();
         var persistedTagEvidenceCount = hostEntityType switch
         {
-            "scene" => await PersistSceneTagsAsync(db, hostEntityId, tagsByName, batch, tagProvenanceService, request.Context.RunId, hostDurationSeconds, ct),
-            "image" => await PersistImageTagsAsync(db, hostEntityId, tagsByName, batch, tagProvenanceService, request.Context.RunId, hostDurationSeconds, ct),
+            "scene" => await PersistSceneTagsAsync(db, hostEntityId, tagsByName, effectiveBatch, tagProvenanceService, request.Context.RunId, hostDurationSeconds, ct),
+            "image" => await PersistImageTagsAsync(db, hostEntityId, tagsByName, effectiveBatch, tagProvenanceService, request.Context.RunId, hostDurationSeconds, ct),
             _ => 0,
         };
 
         var persistedSegmentCount = hostEntityType == "scene"
-            ? await PersistSceneSegmentsAsync(db, hostEntityId, tagsByName, batch, request, ct)
+            ? await PersistSceneSegmentsAsync(db, hostEntityId, tagsByName, effectiveBatch, request, ct)
             : 0;
 
         await db.SaveChangesAsync(ct);
@@ -68,6 +70,56 @@ internal sealed class AiTaggingPersistenceService(IServiceScopeFactory scopeFact
         }
 
         return notes;
+    }
+
+    private static AiPreparedArtifactBatch ApplyTagNameOverrides(AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, string> tagNameOverrides)
+    {
+        if (tagNameOverrides.Count == 0)
+        {
+            return batch;
+        }
+
+        var effective = new AiPreparedArtifactBatch();
+        effective.FaceAppearances.AddRange(batch.FaceAppearances);
+        effective.Detections.AddRange(batch.Detections);
+        effective.Embeddings.AddRange(batch.Embeddings);
+        effective.Faces.AddRange(batch.Faces);
+        effective.DeferredWorkItems.AddRange(batch.DeferredWorkItems);
+        effective.Notes.AddRange(batch.Notes);
+
+        effective.TagLinks.AddRange(batch.TagLinks.Select(tagLink =>
+        {
+            var resolvedName = ResolveOverride(tagLink.TagName, tagNameOverrides) ?? tagLink.TagName;
+            return string.Equals(resolvedName, tagLink.TagName, StringComparison.Ordinal)
+                ? tagLink
+                : tagLink with { TagName = resolvedName };
+        }));
+
+        effective.Segments.AddRange(batch.Segments.Select(segment =>
+        {
+            var resolvedName = ResolveOverride(segment.TagName, tagNameOverrides);
+            var resolvedTitle = string.IsNullOrWhiteSpace(segment.Title) || string.Equals(segment.Title.Trim(), segment.TagName?.Trim(), StringComparison.OrdinalIgnoreCase)
+                ? resolvedName
+                : segment.Title;
+            return string.Equals(resolvedName, segment.TagName, StringComparison.Ordinal) && string.Equals(resolvedTitle, segment.Title, StringComparison.Ordinal)
+                ? segment
+                : segment with { TagName = resolvedName, Title = resolvedTitle };
+        }));
+
+        return effective;
+    }
+
+    private static string? ResolveOverride(string? tagName, IReadOnlyDictionary<string, string> tagNameOverrides)
+    {
+        if (string.IsNullOrWhiteSpace(tagName))
+        {
+            return tagName;
+        }
+
+        var trimmed = tagName.Trim();
+        return tagNameOverrides.TryGetValue(trimmed, out var overrideName) && !string.IsNullOrWhiteSpace(overrideName)
+            ? overrideName.Trim()
+            : trimmed;
     }
 
     private static IEnumerable<string> CollectTagNames(AiPreparedArtifactBatch batch)

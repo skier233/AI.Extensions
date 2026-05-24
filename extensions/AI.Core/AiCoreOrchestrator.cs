@@ -47,9 +47,10 @@ public sealed class AiCoreOrchestrator(
 
         var runId = Guid.NewGuid().ToString("n");
         var mappedPaths = AiPathMapper.MapPaths(settings.PathMappings, request.Paths);
-        var claims = SelectClaims(AiMediaKinds.Image, request.ClaimIds);
-        var resolvedLoadPolicy = ResolveLoadPolicy(settings, request.LoadPolicy);
-        var wants = await BuildWantAsync(settings, claims, request.CategoriesToSkip, resolvedLoadPolicy, ct);
+        var selection = ResolveRunSelection(settings, AiMediaKinds.Image, request.PresetId, request.CapabilityIds, request.ClaimIds, request.CategoriesToSkip, request.LoadPolicy, request.PipelineName);
+        var claims = SelectClaims(AiMediaKinds.Image, selection.ClaimIds, selection.CapabilityIds);
+        var resolvedLoadPolicy = ResolveLoadPolicy(settings, selection.LoadPolicy);
+        var wants = await BuildWantAsync(settings, claims, selection.CategoriesToSkip, resolvedLoadPolicy, ct);
         var plans = await _aiRunPlanner.PlanAsync(
             settings,
             request.EntityType,
@@ -77,9 +78,10 @@ public sealed class AiCoreOrchestrator(
             Paths = mappedPaths.ToList(),
             Threshold = request.Threshold ?? settings.DefaultThreshold,
             ReturnConfidence = request.ReturnConfidence ?? true,
-            CategoriesToSkip = request.CategoriesToSkip,
+            CategoriesToSkip = selection.CategoriesToSkip?.ToList(),
             Want = execution.Wants.ToList(),
             LoadPolicy = resolvedLoadPolicy,
+            PipelineName = selection.PipelineName,
         };
 
         await _aiRunJournal.RecordStartAsync(
@@ -126,9 +128,10 @@ public sealed class AiCoreOrchestrator(
 
         var runId = Guid.NewGuid().ToString("n");
         var mappedPath = AiPathMapper.MapPath(settings.PathMappings, request.Path);
-        var claims = SelectClaims(AiMediaKinds.Video, request.ClaimIds);
-        var resolvedLoadPolicy = ResolveLoadPolicy(settings, request.LoadPolicy);
-        var wants = await BuildWantAsync(settings, claims, request.CategoriesToSkip, resolvedLoadPolicy, ct);
+        var selection = ResolveRunSelection(settings, AiMediaKinds.Video, request.PresetId, request.CapabilityIds, request.ClaimIds, request.CategoriesToSkip, request.LoadPolicy, request.PipelineName);
+        var claims = SelectClaims(AiMediaKinds.Video, selection.ClaimIds, selection.CapabilityIds);
+        var resolvedLoadPolicy = ResolveLoadPolicy(settings, selection.LoadPolicy);
+        var wants = await BuildWantAsync(settings, claims, selection.CategoriesToSkip, resolvedLoadPolicy, ct);
         var plans = await _aiRunPlanner.PlanAsync(
             settings,
             request.EntityType,
@@ -158,9 +161,10 @@ public sealed class AiCoreOrchestrator(
             Threshold = request.Threshold ?? settings.DefaultThreshold,
             ReturnConfidence = request.ReturnConfidence ?? true,
             VrVideo = request.VrVideo,
-            CategoriesToSkip = request.CategoriesToSkip,
+            CategoriesToSkip = selection.CategoriesToSkip?.ToList(),
             Want = execution.Wants.ToList(),
             LoadPolicy = resolvedLoadPolicy,
+            PipelineName = selection.PipelineName,
         };
 
         await _aiRunJournal.RecordStartAsync(
@@ -207,8 +211,9 @@ public sealed class AiCoreOrchestrator(
 
         var runId = Guid.NewGuid().ToString("n");
         var mappedPaths = AiPathMapper.MapPaths(settings.PathMappings, request.Paths);
-        var claims = SelectClaims(AiMediaKinds.Audio, request.ClaimIds);
-        var resolvedLoadPolicy = ResolveLoadPolicy(settings, request.LoadPolicy);
+        var selection = ResolveRunSelection(settings, AiMediaKinds.Audio, request.PresetId, request.CapabilityIds, request.ClaimIds, categoriesToSkip: null, request.LoadPolicy, request.PipelineName);
+        var claims = SelectClaims(AiMediaKinds.Audio, selection.ClaimIds, selection.CapabilityIds);
+        var resolvedLoadPolicy = ResolveLoadPolicy(settings, selection.LoadPolicy);
         var wants = await BuildWantAsync(settings, claims, categoriesToSkip: null, resolvedLoadPolicy, ct);
         var plans = await _aiRunPlanner.PlanAsync(
             settings,
@@ -238,6 +243,7 @@ public sealed class AiCoreOrchestrator(
             Threshold = request.Threshold ?? settings.DefaultThreshold,
             Want = execution.Wants.ToList(),
             LoadPolicy = resolvedLoadPolicy,
+            PipelineName = selection.PipelineName,
         };
 
         await _aiRunJournal.RecordStartAsync(
@@ -275,14 +281,142 @@ public sealed class AiCoreOrchestrator(
         }
     }
 
-    private IReadOnlyList<ResolvedClaim> SelectClaims(string mediaKind, IReadOnlyList<string>? requestedClaimIds)
+    private RunSelection ResolveRunSelection(
+        AiCoreConnectionSettings settings,
+        string mediaKind,
+        string? presetId,
+        IReadOnlyList<string>? requestCapabilityIds,
+        IReadOnlyList<string>? requestClaimIds,
+        IReadOnlyList<string>? categoriesToSkip,
+        string? loadPolicy,
+        string? pipelineName)
     {
-        var allClaims = _contributors
+        var preset = string.IsNullOrWhiteSpace(presetId)
+            ? null
+            : settings.RunPresets.FirstOrDefault(item => string.Equals(item.PresetId, presetId.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(presetId) && preset is null)
+        {
+            throw new ArgumentException($"Unknown AI run preset '{presetId}'.", nameof(presetId));
+        }
+
+        var capabilityIds = NormalizeStringList(requestCapabilityIds);
+        if (capabilityIds.Count == 0 && preset?.CapabilityIds is { Count: > 0 } presetCapabilityIds)
+        {
+            capabilityIds = NormalizeStringList(presetCapabilityIds);
+        }
+
+        var claimIds = NormalizeStringList(requestClaimIds);
+        if (claimIds.Count == 0 && preset?.ClaimIds is { Count: > 0 } presetClaimIds)
+        {
+            claimIds = NormalizeStringList(presetClaimIds);
+        }
+
+        var resolvedPipelineName = string.IsNullOrWhiteSpace(pipelineName) ? preset?.PipelineName : pipelineName.Trim();
+        var customCapabilityIds = settings.CustomPipelines
+            .Where(pipeline => !string.IsNullOrWhiteSpace(pipeline.CapabilityId) && capabilityIds.Contains(pipeline.CapabilityId, StringComparer.OrdinalIgnoreCase))
+            .ToArray();
+        if (customCapabilityIds.Length > 1)
+        {
+            throw new ArgumentException("Only one custom AI pipeline capability can be selected per run.", nameof(requestCapabilityIds));
+        }
+
+        if (customCapabilityIds.Length == 1)
+        {
+            var customPipeline = customCapabilityIds[0];
+            if (!string.Equals(customPipeline.MediaKind, mediaKind, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new ArgumentException($"Custom pipeline '{customPipeline.PipelineName}' supports media kind '{customPipeline.MediaKind}', not '{mediaKind}'.", nameof(requestCapabilityIds));
+            }
+
+            resolvedPipelineName ??= customPipeline.PipelineName;
+            capabilityIds = capabilityIds
+                .Where(id => !string.Equals(id, customPipeline.CapabilityId, StringComparison.OrdinalIgnoreCase))
+                .Concat(customPipeline.CapabilityIds)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            claimIds = claimIds
+                .Concat(customPipeline.ClaimIds)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        return new RunSelection(
+            capabilityIds.Count == 0 ? null : capabilityIds,
+            claimIds.Count == 0 ? null : claimIds,
+            categoriesToSkip is null ? preset?.CategoriesToSkip : NormalizeStringList(categoriesToSkip),
+            string.IsNullOrWhiteSpace(loadPolicy) ? preset?.LoadPolicy : loadPolicy.Trim(),
+            resolvedPipelineName);
+    }
+
+    private IReadOnlyList<ResolvedClaim> SelectClaims(string mediaKind, IReadOnlyList<string>? requestedClaimIds, IReadOnlyList<string>? requestedCapabilityIds)
+    {
+        var contributorClaims = _contributors
             .SelectMany(static contributor => contributor.Descriptor.Claims.Select(claim => new ResolvedClaim(contributor.Contributor, contributor.Descriptor, claim)))
+            .ToArray();
+        var allClaims = contributorClaims
             .Where(claim => string.Equals(claim.Claim.MediaKind, mediaKind, StringComparison.OrdinalIgnoreCase))
             .ToArray();
+        var mediaClaimIds = allClaims
+            .Select(static claim => claim.Claim.ClaimId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        if (requestedClaimIds is null || requestedClaimIds.Count == 0)
+        var requestedFeatures = new HashSet<string>(
+            requestedCapabilityIds?.Where(static item => !string.IsNullOrWhiteSpace(item)).Select(static item => item.Trim()) ?? [],
+            StringComparer.OrdinalIgnoreCase);
+        var selectedClaimIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var unresolvedClaimIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var claimId in requestedClaimIds?.Where(static item => !string.IsNullOrWhiteSpace(item)).Select(static item => item.Trim()) ?? [])
+        {
+            if (mediaClaimIds.Contains(claimId))
+            {
+                selectedClaimIds.Add(claimId);
+                continue;
+            }
+
+            var translatedCapabilityId = contributorClaims
+                .Where(claim => string.Equals(claim.Claim.ClaimId, claimId, StringComparison.OrdinalIgnoreCase))
+                .Select(claim => claim.Claim.CapabilityId)
+                .FirstOrDefault(static capabilityId => !string.IsNullOrWhiteSpace(capabilityId));
+            if (!string.IsNullOrWhiteSpace(translatedCapabilityId))
+            {
+                requestedFeatures.Add(translatedCapabilityId.Trim());
+                continue;
+            }
+
+            unresolvedClaimIds.Add(claimId);
+        }
+
+        if (requestedFeatures.Count > 0)
+        {
+            var knownFeatures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var contributor in _contributors)
+            {
+                foreach (var feature in contributor.Descriptor.Capabilities)
+                {
+                    knownFeatures.Add(feature.CapabilityId);
+                    if (!requestedFeatures.Contains(feature.CapabilityId))
+                    {
+                        continue;
+                    }
+
+                    foreach (var claimId in feature.ClaimIds.Where(mediaClaimIds.Contains))
+                    {
+                        selectedClaimIds.Add(claimId);
+                    }
+                }
+            }
+
+            var missingFeatures = requestedFeatures
+                .Where(featureId => !knownFeatures.Contains(featureId))
+                .OrderBy(static id => id, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (missingFeatures.Length > 0)
+            {
+                throw new ArgumentException($"Unknown AI capability id(s): {string.Join(", ", missingFeatures)}.", nameof(requestedCapabilityIds));
+            }
+        }
+
+        if (selectedClaimIds.Count == 0 && requestedFeatures.Count == 0 && unresolvedClaimIds.Count == 0)
         {
             if (allClaims.Length == 0)
             {
@@ -292,10 +426,13 @@ public sealed class AiCoreOrchestrator(
             return allClaims;
         }
 
-        var requested = new HashSet<string>(requestedClaimIds.Where(static item => !string.IsNullOrWhiteSpace(item)), StringComparer.OrdinalIgnoreCase);
-        var selected = allClaims.Where(claim => requested.Contains(claim.Claim.ClaimId)).ToArray();
+        var selected = allClaims.Where(claim => selectedClaimIds.Contains(claim.Claim.ClaimId)).ToArray();
         var matched = new HashSet<string>(selected.Select(static item => item.Claim.ClaimId), StringComparer.OrdinalIgnoreCase);
-        var missing = requested.Where(id => !matched.Contains(id)).OrderBy(static id => id, StringComparer.OrdinalIgnoreCase).ToArray();
+        var missing = unresolvedClaimIds
+            .Concat(selectedClaimIds.Where(id => !matched.Contains(id)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(static id => id, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
         if (missing.Length > 0)
         {
             throw new ArgumentException($"Unknown AI claim id(s) for media kind '{mediaKind}': {string.Join(", ", missing)}.", nameof(requestedClaimIds));
@@ -382,6 +519,7 @@ public sealed class AiCoreOrchestrator(
             ? await _aiServerClient.GetModelCatalogAsync(settings, ct)
             : [];
         var catalogModelLookup = BuildCatalogModelLookup(catalogModels);
+        var bindingLookup = BuildBindingLookup(settings.CapabilityModelBindings);
 
         IReadOnlyDictionary<string, List<AiModelCatalogEntry>>? taggingModelsByScope = null;
         if (claims.Any(static claim => string.Equals(claim.Claim.WantCapability, "tagging", StringComparison.OrdinalIgnoreCase)))
@@ -389,7 +527,7 @@ public sealed class AiCoreOrchestrator(
             var modelSource = string.Equals(loadPolicy, AiLoadPolicies.UseLoaded, StringComparison.Ordinal)
                 ? await _aiServerClient.GetLoadedModelsAsync(settings, ct)
                 : catalogModels;
-            taggingModelsByScope = ResolveTaggingModelsByScope(modelSource, categoriesToSkip, settings.TaggingModelPreferences);
+            taggingModelsByScope = ResolveTaggingModelsByScope(modelSource, categoriesToSkip, settings.CapabilityModelBindings);
         }
 
         return claims
@@ -398,6 +536,8 @@ public sealed class AiCoreOrchestrator(
                 claim.Claim.WantCapability,
                 claim.Claim.WantScope,
                 claim.Claim.FromDetection,
+                claim.Claim.CapabilityId ?? string.Empty,
+                claim.Claim.ModelBindingSlotId ?? string.Empty,
                 claim.Claim.PreferredModels is { Count: > 0 } preferredModels
                     ? string.Join("\u001F", preferredModels)
                     : string.Empty))
@@ -411,7 +551,7 @@ public sealed class AiCoreOrchestrator(
                     first.Claim.WantScope,
                     first.Claim.FromDetection,
                     group,
-                    ResolveModels(first.Claim, taggingModelsByScope, catalogModelLookup),
+                        ResolveModels(first.Claim, taggingModelsByScope, catalogModelLookup, bindingLookup),
                     IsTaggingExtensionId(first.Descriptor.ExtensionId));
             })
             .Where(static want => want.Models.Count > 0)
@@ -420,11 +560,13 @@ public sealed class AiCoreOrchestrator(
         static IReadOnlyList<ResolvedWantModel> ResolveModels(
             AiCapabilityClaim claim,
             IReadOnlyDictionary<string, List<AiModelCatalogEntry>>? taggingModelsByScope,
-            IReadOnlyDictionary<string, AiModelCatalogEntry> catalogModelLookup)
+            IReadOnlyDictionary<string, AiModelCatalogEntry> catalogModelLookup,
+            IReadOnlyDictionary<string, List<string>> bindingLookup)
         {
-            if (claim.PreferredModels is { Count: > 0 } preferredModels)
+            var boundModels = ResolveBoundModels(claim, bindingLookup);
+            if (boundModels.Count > 0)
             {
-                return preferredModels
+                return boundModels
                     .Where(static model => !string.IsNullOrWhiteSpace(model))
                     .Select(model =>
                     {
@@ -435,9 +577,29 @@ public sealed class AiCoreOrchestrator(
                     .ToArray();
             }
 
+            if (claim.PreferredModels is { Count: > 0 } preferredModels)
+            {
+                return preferredModels
+                    .Where(static model => !string.IsNullOrWhiteSpace(model))
+                    .Select(model =>
+                    {
+                        var trimmed = model.Trim();
+                        catalogModelLookup.TryGetValue(trimmed, out var catalogModel);
+                        return catalogModel is null ? null : CreateResolvedWantModel(trimmed, [trimmed], null, catalogModel);
+                    })
+                    .OfType<ResolvedWantModel>()
+                    .ToArray();
+            }
+
             if (!string.Equals(claim.WantCapability, "tagging", StringComparison.OrdinalIgnoreCase) || taggingModelsByScope is null)
             {
-                return [];
+                return catalogModelLookup.Values
+                    .Where(model => model.Capabilities.Contains(claim.WantCapability, StringComparer.OrdinalIgnoreCase))
+                    .Where(model => model.SupportedScopes.Count == 0 || model.SupportedScopes.Contains(claim.WantScope, StringComparer.OrdinalIgnoreCase))
+                    .Where(static model => !string.IsNullOrWhiteSpace(model.ConfigName))
+                    .DistinctBy(static model => model.ConfigName, StringComparer.OrdinalIgnoreCase)
+                    .Select(model => CreateResolvedWantModel(model.ConfigName, [model.ConfigName], null, model))
+                    .ToArray();
             }
 
             if (!taggingModelsByScope.TryGetValue(claim.WantScope, out var models) || models.Count == 0)
@@ -488,6 +650,43 @@ public sealed class AiCoreOrchestrator(
             }
 
             return lookup;
+        }
+
+        static IReadOnlyDictionary<string, List<string>> BuildBindingLookup(IReadOnlyList<AiCapabilityModelBinding> bindings)
+        {
+            var lookup = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var binding in bindings.Select(static binding => binding.Normalize()))
+            {
+                var key = CreateBindingKey(binding.CapabilityId, binding.SlotId, binding.Scope, binding.Category);
+                if (!lookup.TryGetValue(key, out var models))
+                {
+                    models = [];
+                    lookup[key] = models;
+                }
+
+                models.Add(binding.Model);
+            }
+
+            return lookup;
+        }
+
+        static IReadOnlyList<string> ResolveBoundModels(AiCapabilityClaim claim, IReadOnlyDictionary<string, List<string>> bindingLookup)
+        {
+            if (string.IsNullOrWhiteSpace(claim.CapabilityId) || string.IsNullOrWhiteSpace(claim.ModelBindingSlotId))
+            {
+                return [];
+            }
+
+            var exactKey = CreateBindingKey(claim.CapabilityId, claim.ModelBindingSlotId, claim.WantScope, category: null);
+            if (bindingLookup.TryGetValue(exactKey, out var exactModels))
+            {
+                return exactModels.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            }
+
+            var genericKey = CreateBindingKey(claim.CapabilityId, claim.ModelBindingSlotId, scope: null, category: null);
+            return bindingLookup.TryGetValue(genericKey, out var genericModels)
+                ? genericModels.Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
+                : [];
         }
     }
 
@@ -542,19 +741,21 @@ public sealed class AiCoreOrchestrator(
     private static IReadOnlyDictionary<string, List<AiModelCatalogEntry>> ResolveTaggingModelsByScope(
         IReadOnlyList<AiModelCatalogEntry> models,
         IReadOnlyList<string>? categoriesToSkip,
-        IReadOnlyList<AiTaggingModelPreference>? preferences)
+        IReadOnlyList<AiCapabilityModelBinding>? bindings)
     {
         var skippedCategories = new HashSet<string>(
             categoriesToSkip?.Where(static category => !string.IsNullOrWhiteSpace(category)).Select(static category => category.Trim())
                 ?? [],
             StringComparer.OrdinalIgnoreCase);
 
-        var preferenceMap = (preferences ?? [])
-            .Where(static preference => !string.IsNullOrWhiteSpace(preference.Scope)
-                && !string.IsNullOrWhiteSpace(preference.Category)
-                && !string.IsNullOrWhiteSpace(preference.Model))
-            .Select(static preference => preference.Normalize())
-            .GroupBy(static preference => CreateTaggingPreferenceKey(preference.Scope, preference.Category), StringComparer.OrdinalIgnoreCase)
+        var preferenceMap = (bindings ?? [])
+            .Where(static binding => string.Equals(binding.CapabilityId, "tagging", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(binding.SlotId, "category", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(binding.Scope)
+                && !string.IsNullOrWhiteSpace(binding.Category)
+                && !string.IsNullOrWhiteSpace(binding.Model))
+            .Select(static binding => binding.Normalize())
+            .GroupBy(static binding => CreateTaggingPreferenceKey(binding.Scope!, binding.Category!), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
                 static group => group.Key,
                 static group => group.First().Model,
@@ -717,13 +918,30 @@ public sealed class AiCoreOrchestrator(
         => string.Equals(extensionId, "cove.ai.tagging", StringComparison.OrdinalIgnoreCase)
             || string.Equals(extensionId, "ext:ai.tagging", StringComparison.OrdinalIgnoreCase);
 
+    private static string CreateBindingKey(string capabilityId, string slotId, string? scope, string? category)
+        => $"{(capabilityId ?? string.Empty).Trim().ToLowerInvariant()}\u001F{(slotId ?? string.Empty).Trim().ToLowerInvariant()}\u001F{(scope ?? string.Empty).Trim().ToLowerInvariant()}\u001F{(category ?? string.Empty).Trim()}";
+
+    private static List<string> NormalizeStringList(IEnumerable<string>? values)
+        => (values ?? [])
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
     private readonly record struct ResolvedContributor(IAiCapabilityContributor Contributor, AiCapabilityDescriptor Descriptor);
 
     private readonly record struct ResolvedClaim(IAiCapabilityContributor Contributor, AiCapabilityDescriptor Descriptor, AiCapabilityClaim Claim);
 
+    private sealed record RunSelection(
+        IReadOnlyList<string>? CapabilityIds,
+        IReadOnlyList<string>? ClaimIds,
+        IReadOnlyList<string>? CategoriesToSkip,
+        string? LoadPolicy,
+        string? PipelineName);
+
     private sealed record ExecutionPlan(IReadOnlyList<AnalyzeWantRequest> Wants, IReadOnlyList<ResolvedClaim> Claims);
 
-    private readonly record struct WantKey(string ExtensionId, string Capability, string Scope, string? FromDetection, string PreferredModelsKey);
+    private readonly record struct WantKey(string ExtensionId, string Capability, string Scope, string? FromDetection, string CapabilityId, string SlotId, string PreferredModelsKey);
 
     private sealed record ResolvedWantModel(
         string ModelKey,

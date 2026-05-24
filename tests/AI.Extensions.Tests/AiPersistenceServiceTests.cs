@@ -13,6 +13,7 @@ using Cove.Plugins;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
@@ -206,7 +207,9 @@ public sealed class AiPersistenceServiceTests
     public async Task PersistAudio_WritesSceneEmbeddingsAndTimelineSegments()
     {
         await using var provider = CreateProvider();
-        var service = new AiAudioPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
+        var service = new AiAudioPersistenceService(
+            provider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<AiAudioPersistenceService>.Instance);
         var request = CreateRequest(AiMediaKinds.Audio, "scene-audio", "scene", 9, "run-audio");
         var batch = new AiPreparedArtifactBatch();
 
@@ -301,6 +304,58 @@ public sealed class AiPersistenceServiceTests
         Assert.Equal("tagger-v1", provenance.ModelKey);
         Assert.Equal(0.82f, provenance.Confidence);
         Assert.Contains(notes, note => note.Contains("Persisted 1 AI-generated tag evidence", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task PersistTagging_AppliesConfiguredImageTagNameOverrides()
+    {
+        var storeFactory = new TestExtensionStoreFactory();
+        await AiTaggingSettingsStore.SaveAsync(
+            storeFactory.CreateStore(AiTaggingSettingsStore.ExtensionId),
+            new AiTaggingSettings
+            {
+                TagNameOverrides =
+                [
+                    new AiTagNameOverride { SourceTagName = "1girl", TargetTagName = "Solo female" },
+                ],
+            });
+
+        await using var provider = CreateProvider(services =>
+        {
+            services.AddSingleton<IExtensionStoreFactory>(storeFactory);
+            services.AddScoped<ITagProvenanceService, TestTagProvenanceService>();
+        });
+
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            db.Images.Add(new Cove.Core.Entities.Image { Id = 14, Title = "Tagged still" });
+            await db.SaveChangesAsync();
+        }
+
+        var service = new AiTaggingPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
+        var request = CreateRequest(AiMediaKinds.Image, "image-tagging", "image", 14, "run-tagging-override");
+        var batch = new AiPreparedArtifactBatch();
+
+        batch.TagLinks.Add(new AiPreparedTagLink(
+            "image-tagging",
+            "ext:ai.tagging",
+            "1girl",
+            0.82,
+            "tagger-v1",
+            AiMediaKinds.Image));
+
+        await service.PersistAsync(request, batch);
+
+        await using var verifyScope = provider.CreateAsyncScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<CoveContext>();
+        var tag = await verifyDb.Tags.SingleAsync();
+        var imageTag = await verifyDb.Set<ImageTag>().SingleAsync();
+        var provenance = await verifyDb.TagApplications.SingleAsync();
+
+        Assert.Equal("Solo female", tag.Name);
+        Assert.Equal(tag.Id, imageTag.TagId);
+        Assert.Equal(tag.Id, provenance.TagId);
     }
 
     [Fact]
@@ -417,6 +472,65 @@ public sealed class AiPersistenceServiceTests
         Assert.Equal(20.0, provenance.HostDurationSec.Value, 3);
         Assert.Contains(notes, note => note.Contains("Persisted 1 AI-generated tag evidence", StringComparison.Ordinal));
         Assert.Contains(notes, note => note.Contains("Persisted 2 AI-generated tagging segment", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task PersistTagging_AppliesConfiguredSceneSegmentTagNameOverrides()
+    {
+        var storeFactory = new TestExtensionStoreFactory();
+        await AiTaggingSettingsStore.SaveAsync(
+            storeFactory.CreateStore(AiTaggingSettingsStore.ExtensionId),
+            new AiTaggingSettings
+            {
+                TagNameOverrides =
+                [
+                    new AiTagNameOverride { SourceTagName = "1girl", TargetTagName = "Solo female" },
+                ],
+            });
+
+        await using var provider = CreateProvider(services =>
+        {
+            services.AddSingleton<IExtensionStoreFactory>(storeFactory);
+            services.AddScoped<ITagProvenanceService, TestTagProvenanceService>();
+        });
+
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            db.Scenes.Add(new Scene { Id = 15, Title = "Tagged clip" });
+            await db.SaveChangesAsync();
+        }
+
+        var service = new AiTaggingPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
+        var request = CreateRequest(AiMediaKinds.Video, "scene-tagging", "scene", 15, "run-tagging-scene-override", durationSeconds: 20d);
+        var batch = new AiPreparedArtifactBatch();
+
+        batch.Segments.Add(new AiPreparedSegment(
+            "scene-tagging",
+            "ext:ai.tagging",
+            Kind: "tag",
+            StartSeconds: 1.0,
+            EndSeconds: 2.5,
+            TagName: "1girl",
+            Title: "1girl",
+            Confidence: 0.82,
+            Metadata: new Dictionary<string, string>
+            {
+                ["modelKey"] = "tagger-v1",
+            }));
+
+        await service.PersistAsync(request, batch);
+
+        await using var verifyScope = provider.CreateAsyncScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<CoveContext>();
+        var tag = await verifyDb.Tags.SingleAsync();
+        var segment = await verifyDb.Segments.SingleAsync();
+        var provenance = await verifyDb.TagApplications.SingleAsync();
+
+        Assert.Equal("Solo female", tag.Name);
+        Assert.Equal(tag.Id, segment.TagId);
+        Assert.Equal("Solo female", segment.Title);
+        Assert.Equal(tag.Id, provenance.TagId);
     }
 
     [Fact]
@@ -657,6 +771,22 @@ public sealed class AiPersistenceServiceTests
 
         public Task<Dictionary<string, string>> GetAllAsync(CancellationToken ct = default)
             => Task.FromResult(new Dictionary<string, string>(_values, StringComparer.Ordinal));
+    }
+
+    private sealed class TestExtensionStoreFactory : IExtensionStoreFactory
+    {
+        private readonly Dictionary<string, TestExtensionStore> _stores = new(StringComparer.OrdinalIgnoreCase);
+
+        public IExtensionStore CreateStore(string extensionId)
+        {
+            if (!_stores.TryGetValue(extensionId, out var store))
+            {
+                store = new TestExtensionStore();
+                _stores[extensionId] = store;
+            }
+
+            return store;
+        }
     }
 
     private sealed class TestTagProvenanceService(CoveContext db) : ITagProvenanceService

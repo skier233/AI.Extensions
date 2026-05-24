@@ -6,60 +6,106 @@ public static class AiAnalyzeResultParser
 {
     public static AiAnalyzeResult Parse(string mediaKind, JsonElement payload)
     {
+        var content = GetPrimaryPayload(payload);
         return mediaKind switch
         {
-            AiMediaKinds.Image => ParseImage(payload),
-            AiMediaKinds.Video => ParseVideo(payload),
-            AiMediaKinds.Audio => ParseAudio(payload),
+            AiMediaKinds.Image => ParseImage(payload, content),
+            AiMediaKinds.Video => ParseVideo(payload, content),
+            AiMediaKinds.Audio => ParseAudio(payload, content),
             _ => throw new ArgumentOutOfRangeException(nameof(mediaKind), mediaKind, "Unsupported media kind."),
         };
     }
 
-    private static AiAnalyzeResult ParseImage(JsonElement payload)
+    private static AiAnalyzeResult ParseImage(JsonElement payload, JsonElement content)
     {
         return new AiAnalyzeResult
         {
             MediaKind = AiMediaKinds.Image,
-            AssetId = GetString(payload, "asset_id") ?? string.Empty,
-            Models = ParseModels(payload),
-            RequestedModelNames = GetStringArray(payload, "requested_model_names"),
-            AssetAnalysis = payload.TryGetProperty("analysis", out var analysis)
+            AssetId = GetString(content, "asset_id") ?? GetString(payload, "asset_id") ?? string.Empty,
+            Models = ParseModelsWithFallback(payload, content),
+            RequestedModelNames = GetStringArrayWithFallback(payload, content, "requested_model_names"),
+            AssetAnalysis = content.TryGetProperty("analysis", out var analysis)
                 ? ParseAnalysisNode(analysis)
                 : new AiAnalysisNode(),
-            Metrics = ParseMetrics(payload),
+            Metrics = ParseMetricsWithFallback(payload, content),
         };
     }
 
-    private static AiAnalyzeResult ParseVideo(JsonElement payload)
+    private static AiAnalyzeResult ParseVideo(JsonElement payload, JsonElement content)
     {
         return new AiAnalyzeResult
         {
             MediaKind = AiMediaKinds.Video,
-            AssetId = GetString(payload, "asset_id") ?? string.Empty,
-            DurationSeconds = GetDouble(payload, "duration_seconds"),
-            FrameIntervalSeconds = GetDouble(payload, "frame_interval_seconds") ?? GetDouble(payload, "frame_interval"),
-            Models = ParseModels(payload),
-            RequestedModelNames = GetStringArray(payload, "requested_model_names"),
-            Frames = payload.TryGetProperty("frames", out var frames)
+            AssetId = GetString(content, "asset_id") ?? GetString(payload, "asset_id") ?? string.Empty,
+            DurationSeconds = GetDouble(content, "duration_seconds") ?? GetDouble(payload, "duration_seconds"),
+            FrameIntervalSeconds = GetDouble(content, "frame_interval_seconds")
+                ?? GetDouble(content, "frame_interval")
+                ?? GetDouble(payload, "frame_interval_seconds")
+                ?? GetDouble(payload, "frame_interval"),
+            Models = ParseModelsWithFallback(payload, content),
+            RequestedModelNames = GetStringArrayWithFallback(payload, content, "requested_model_names"),
+            Frames = content.TryGetProperty("frames", out var frames)
                 ? ParseTemporalSlices(frames, "frame")
                 : [],
-            Metrics = ParseMetrics(payload),
+            Metrics = ParseMetricsWithFallback(payload, content),
         };
     }
 
-    private static AiAnalyzeResult ParseAudio(JsonElement payload)
+    private static AiAnalyzeResult ParseAudio(JsonElement payload, JsonElement content)
     {
         return new AiAnalyzeResult
         {
             MediaKind = AiMediaKinds.Audio,
-            AssetId = GetString(payload, "asset_id") ?? string.Empty,
-            Models = ParseModels(payload),
-            RequestedModelNames = GetStringArray(payload, "requested_model_names"),
-            Windows = payload.TryGetProperty("windows", out var windows)
+            AssetId = GetString(content, "asset_id") ?? GetString(payload, "asset_id") ?? string.Empty,
+            Models = ParseModelsWithFallback(payload, content),
+            RequestedModelNames = GetStringArrayWithFallback(payload, content, "requested_model_names"),
+            Windows = content.TryGetProperty("windows", out var windows)
                 ? ParseTemporalSlices(windows, "window")
                 : [],
-            Metrics = ParseMetrics(payload),
+            Metrics = ParseMetricsWithFallback(payload, content),
         };
+    }
+
+    private static JsonElement GetPrimaryPayload(JsonElement payload)
+    {
+        if (payload.ValueKind != JsonValueKind.Object || !payload.TryGetProperty("result", out var result))
+        {
+            return payload;
+        }
+
+        if (result.ValueKind == JsonValueKind.Object)
+        {
+            return result;
+        }
+
+        if (result.ValueKind == JsonValueKind.Array)
+        {
+            using var enumerator = result.EnumerateArray();
+            if (enumerator.MoveNext())
+            {
+                return enumerator.Current;
+            }
+        }
+
+        return payload;
+    }
+
+    private static IReadOnlyList<AiModelDescriptor> ParseModelsWithFallback(JsonElement payload, JsonElement content)
+    {
+        var models = ParseModels(content);
+        return models.Count > 0 ? models : ParseModels(payload);
+    }
+
+    private static IReadOnlyList<string> GetStringArrayWithFallback(JsonElement payload, JsonElement content, string propertyName)
+    {
+        var values = GetStringArray(content, propertyName);
+        return values.Count > 0 ? values : GetStringArray(payload, propertyName);
+    }
+
+    private static IReadOnlyDictionary<string, double> ParseMetricsWithFallback(JsonElement payload, JsonElement content)
+    {
+        var metrics = ParseMetrics(payload);
+        return metrics.Count > 0 ? metrics : ParseMetrics(content);
     }
 
     private static IReadOnlyList<AiModelDescriptor> ParseModels(JsonElement payload)
@@ -181,6 +227,7 @@ public static class AiAnalyzeResultParser
         {
             foreach (var property in otherBlock.EnumerateObject())
             {
+                embeddings.AddRange(ParseEmbeddingArray(property.Name, property.Value, null, null));
                 other[property.Name] = property.Value.ToString();
             }
         }
@@ -320,33 +367,41 @@ public static class AiAnalyzeResultParser
         var embeddings = new List<AiEmbeddingObservation>();
         foreach (var modelProperty in block.EnumerateObject())
         {
-            if (modelProperty.Value.ValueKind != JsonValueKind.Array)
+            embeddings.AddRange(ParseEmbeddingArray(modelProperty.Name, modelProperty.Value, branchDetectionIndex, branchKey));
+        }
+
+        return embeddings;
+    }
+
+    private static IReadOnlyList<AiEmbeddingObservation> ParseEmbeddingArray(string modelKey, JsonElement items, int? branchDetectionIndex, string? branchKey)
+    {
+        if (items.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var embeddings = new List<AiEmbeddingObservation>();
+        foreach (var item in items.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
             {
                 continue;
             }
 
-            foreach (var item in modelProperty.Value.EnumerateArray())
+            var vector = GetFloatArray(item, "vector");
+            if (vector.Count == 0)
             {
-                if (item.ValueKind != JsonValueKind.Object)
-                {
-                    continue;
-                }
-
-                var vector = GetFloatArray(item, "vector");
-                if (vector.Count == 0)
-                {
-                    continue;
-                }
-
-                embeddings.Add(new AiEmbeddingObservation(
-                    modelProperty.Name,
-                    GetString(item, "scope") ?? (branchDetectionIndex.HasValue ? "region" : "asset"),
-                    vector,
-                    GetDouble(item, "norm"),
-                    GetInt(item, "det_id") ?? GetInt(item, "detection_index") ?? branchDetectionIndex,
-                    branchKey,
-                    ParseMetadata(item, ["vector", "norm", "scope", "det_id", "detection_index"])));
+                continue;
             }
+
+            embeddings.Add(new AiEmbeddingObservation(
+                modelKey,
+                GetString(item, "scope") ?? (branchDetectionIndex.HasValue ? "region" : "asset"),
+                vector,
+                GetDouble(item, "norm"),
+                GetInt(item, "det_id") ?? GetInt(item, "detection_index") ?? branchDetectionIndex,
+                branchKey,
+                ParseMetadata(item, ["vector", "norm", "scope", "det_id", "detection_index"])));
         }
 
         return embeddings;

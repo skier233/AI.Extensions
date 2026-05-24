@@ -8,6 +8,7 @@
   "categories": ["ai", "automation", "metadata", "tools"],
   "minCoveVersion": "0.0.10",
   "entryDll": "AI.Core.dll",
+  "sharedAssemblies": ["AI.Extensions.Abstractions"],
   "jsBundle": "dist/bundle.js",
   "cssBundle": "dist/bundle.css",
   "dependencies": {}

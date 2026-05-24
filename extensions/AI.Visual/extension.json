@@ -8,6 +8,7 @@
   "categories": ["ai", "metadata", "automation"],
   "minCoveVersion": "0.0.10",
   "entryDll": "AI.Visual.dll",
+  "sharedAssemblies": ["AI.Extensions.Abstractions"],
   "dependencies": {
     "cove.ai.core": ">=0.1.0"
   }

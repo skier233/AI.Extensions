@@ -2,6 +2,8 @@ using AI.Extensions.Abstractions;
 
 using AI.Audio;
 
+using System.Text.Json;
+
 using Xunit;
 
 namespace AI.Extensions.Tests;
@@ -48,4 +50,40 @@ public sealed class AiAudioPreparationServiceTests
                     Classifications = [new AiClassificationPrediction("ast", label, confidence)],
                 });
     }
+
+        [Fact]
+        public void Prepare_BuildsEmbeddingsFromAudioOtherPayload()
+        {
+                var payload = JsonDocument.Parse("""
+                        {
+                            "asset_id": "audio-1",
+                            "windows": [
+                                {
+                                    "index": 0,
+                                    "start": 0.0,
+                                    "end": 4.0,
+                                    "analysis": {
+                                        "other": {
+                                            "audio_embeddings_ecapa": [
+                                                { "vector": [0.1, 0.2, 0.3], "norm": 1.0, "dim": 3, "embedder": "ecapa_tdnn" }
+                                            ]
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                        """).RootElement;
+                var result = AiAnalyzeResultParser.Parse(AiMediaKinds.Audio, payload);
+                var service = new AiAudioPreparationService();
+
+                var batch = service.Prepare(AiTestData.CreateRequest(
+                        AiMediaKinds.Audio,
+                        [new AiCapabilityClaim("audio.asset.embedding", "Audio Embeddings", AiMediaKinds.Audio, "embedding", "asset", "embeddings")],
+                        result,
+                        "audio-1"));
+
+                Assert.Equal(2, batch.Embeddings.Count);
+                Assert.Contains(batch.Embeddings, embedding => embedding.SectionIndex == 1 && embedding.Vector.Count == 3);
+                Assert.Contains(batch.Embeddings, embedding => embedding.SectionIndex == 0 && embedding.Vector.Count == 3);
+        }
 }

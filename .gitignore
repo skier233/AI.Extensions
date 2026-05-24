@@ -2,5 +2,9 @@ bin/
 obj/
 node_modules/
 dist/
+!extensions/AI.Core/dist/
+!extensions/AI.Core/dist/**
+!extensions/AI.Tagging/dist/
+!extensions/AI.Tagging/dist/**
 .vs/
 .artifacts/

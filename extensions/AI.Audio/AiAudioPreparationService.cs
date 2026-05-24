@@ -52,7 +52,7 @@ internal sealed class AiAudioPreparationService
                     false,
                     embedding.Vector,
                     embedding.Norm,
-                    SectionIndex: window.Index ?? 0,
+                    SectionIndex: window.Index.HasValue ? window.Index.Value + 1 : 1,
                     StartSeconds: window.StartSeconds,
                     EndSeconds: window.EndSeconds,
                     ModelKey: embedding.ModelKey,

@@ -22,7 +22,7 @@ public sealed class AiVisualExtension : FullExtensionBase
 
     public override string Version => "0.1.0";
 
-    public override string Description => "Contributes general visual detection claims for image and video AI workflows.";
+    public override string Description => "Contributes general visual detection claims for image and video AI similarity and recommendation systems.";
 
     public override string Author => "Cove Team";
 
@@ -42,6 +42,14 @@ public sealed class AiVisualExtension : FullExtensionBase
     {
         ["cove.ai.core"] = ">=0.1.0",
     };
+
+    public override UIManifest GetUIManifest()
+        => ManifestBuilder()
+            .AddFeature("visual-similarity", new Dictionary<string, string>
+            {
+                ["apiBasePath"] = "/api/ext/ai-visual",
+            })
+            .Build();
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
     {
@@ -194,7 +202,11 @@ internal sealed class AiVisualContributor(
                 "asset",
                 "embeddings",
                 PreferredModels: ["dinov3_base"],
-                Description: "Generate self-supervised feature embeddings for still images."),
+                Description: "Generate self-supervised feature embeddings for still images.")
+            {
+                CapabilityId = "visual.feature",
+                ModelBindingSlotId = "embedder",
+            },
             new AiCapabilityClaim(
                 "visual.image.semantic",
                 "Image Semantic Embeddings",
@@ -203,7 +215,11 @@ internal sealed class AiVisualContributor(
                 "asset",
                 "embeddings",
                 PreferredModels: ["metaclip2_base"],
-                Description: "Generate semantic image embeddings that can pair with a text encoder."),
+                Description: "Generate semantic image embeddings that can pair with a text encoder.")
+            {
+                CapabilityId = "visual.semantic",
+                ModelBindingSlotId = "embedder",
+            },
             new AiCapabilityClaim(
                 "visual.video.feature",
                 "Video Feature Embeddings",
@@ -212,7 +228,11 @@ internal sealed class AiVisualContributor(
                 "frame",
                 "frames",
                 PreferredModels: ["dinov3_base"],
-                Description: "Generate self-supervised feature embeddings for sampled video frames."),
+                Description: "Generate self-supervised feature embeddings for sampled video frames.")
+            {
+                CapabilityId = "visual.feature",
+                ModelBindingSlotId = "embedder",
+            },
             new AiCapabilityClaim(
                 "visual.video.semantic",
                 "Video Semantic Embeddings",
@@ -221,8 +241,47 @@ internal sealed class AiVisualContributor(
                 "frame",
                 "frames",
                 PreferredModels: ["metaclip2_base"],
-                Description: "Generate semantic video embeddings and section centroids."),
-        ]);
+                Description: "Generate semantic video embeddings and section centroids.")
+            {
+                CapabilityId = "visual.semantic",
+                ModelBindingSlotId = "embedder",
+            },
+        ])
+    {
+        Capabilities =
+        [
+            new AiCapabilityFeature(
+                "visual.feature",
+                "Visual Feature Embeddings",
+                ["visual.image.feature", "visual.video.feature"],
+                [
+                    new AiModelBindingSlot(
+                        "embedder",
+                        "Feature embedding model",
+                        "embedding",
+                        RequiredCapabilities: ["embedding"],
+                        RequiredScopes: ["asset", "frame"],
+                        RequiredCategories: ["visual_embeddings_dinov3"],
+                        DefaultModels: ["dinov3_base"]),
+                ],
+                "Generate feature embeddings for similarity and recommendation systems."),
+            new AiCapabilityFeature(
+                "visual.semantic",
+                "Semantic Visual Search",
+                ["visual.image.semantic", "visual.video.semantic"],
+                [
+                    new AiModelBindingSlot(
+                        "embedder",
+                        "Semantic embedding model",
+                        "embedding",
+                        RequiredCapabilities: ["embedding"],
+                        RequiredScopes: ["asset", "frame"],
+                        RequiredCategories: ["visual_embeddings_metaclip2"],
+                        DefaultModels: ["metaclip2_base"]),
+                ],
+                "Generate CLIP-compatible embeddings for semantic search."),
+        ],
+    };
 
     public AiCapabilityDescriptor Describe() => Descriptor;
 

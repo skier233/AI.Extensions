@@ -44,26 +44,30 @@ public sealed class AiPathMapperTests
     }
 
     [Fact]
-    public void Normalize_DeduplicatesTaggingModelPreferencesByScopeAndCategory()
+    public void Normalize_DeduplicatesCapabilityModelBindingsByCapabilitySlotScopeAndCategory()
     {
         var normalized = new AiCoreConnectionSettings
         {
-            TaggingModelPreferences =
+            CapabilityModelBindings =
             [
-                new AiTaggingModelPreference { Scope = " Asset ", Category = "Actions", Model = "tagger-old" },
-                new AiTaggingModelPreference { Scope = "asset", Category = "Actions", Model = "tagger-new" },
-                new AiTaggingModelPreference { Scope = "frame", Category = "Actions", Model = "tagger-frame" },
+                new AiCapabilityModelBinding { CapabilityId = "Tagging", SlotId = "Category", Scope = " Asset ", Category = "Actions", Model = "tagger-old" },
+                new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "asset", Category = "Actions", Model = "tagger-new" },
+                new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "frame", Category = "Actions", Model = "tagger-frame" },
             ],
         }.Normalize();
 
-        Assert.Equal(2, normalized.TaggingModelPreferences.Count);
-        Assert.Contains(normalized.TaggingModelPreferences, preference =>
-            preference.Scope == "asset"
-            && preference.Category == "Actions"
-            && preference.Model == "tagger-old");
-        Assert.Contains(normalized.TaggingModelPreferences, preference =>
-            preference.Scope == "frame"
-            && preference.Category == "Actions"
-            && preference.Model == "tagger-frame");
+        Assert.Equal(2, normalized.CapabilityModelBindings.Count);
+        Assert.Contains(normalized.CapabilityModelBindings, binding =>
+            binding.CapabilityId == "tagging"
+            && binding.SlotId == "category"
+            && binding.Scope == "asset"
+            && binding.Category == "Actions"
+            && binding.Model == "tagger-old");
+        Assert.Contains(normalized.CapabilityModelBindings, binding =>
+            binding.CapabilityId == "tagging"
+            && binding.SlotId == "category"
+            && binding.Scope == "frame"
+            && binding.Category == "Actions"
+            && binding.Model == "tagger-frame");
     }
 }

@@ -36,11 +36,11 @@ public sealed class AiCoreOrchestratorTests
         await orchestrator.RunImagesAsync(
             new AiCoreConnectionSettings
             {
-                TaggingModelPreferences =
+                CapabilityModelBindings =
                 [
-                    new AiTaggingModelPreference { Scope = "asset", Category = "Actions", Model = "tagger-actions-best" },
-                    new AiTaggingModelPreference { Scope = "asset", Category = "Pose", Model = "tagger-actions-best" },
-                    new AiTaggingModelPreference { Scope = "asset", Category = "Body", Model = "tagger-body" },
+                    new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "asset", Category = "Actions", Model = "tagger-actions-best" },
+                    new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "asset", Category = "Pose", Model = "tagger-actions-best" },
+                    new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "asset", Category = "Body", Model = "tagger-body" },
                 ],
             }.Normalize(),
             new AiRunImagesRequest
@@ -86,6 +86,160 @@ public sealed class AiCoreOrchestratorTests
 
         Assert.Equal(["tagger-actions-pinned", "tagger-body"], want.Models);
         Assert.DoesNotContain("tagger-actions-slow", want.Models ?? []);
+    }
+
+    [Fact]
+    public async Task RunImagesAsync_ExpandsCapabilityIdsToClaims()
+    {
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels = [CreateTaggingModel("tagger-actions-best", ["Actions"])],
+        };
+        var orchestrator = CreateOrchestrator(client, CreateTaggingContributor("tagging.image.asset", AiMediaKinds.Image, "asset"));
+
+        await orchestrator.RunImagesAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunImagesRequest
+            {
+                Paths = ["E:/media/example.jpg"],
+                CapabilityIds = ["tagging"],
+                DispatchResults = false,
+            });
+
+        var request = Assert.IsType<ImageAnalyzeRequest>(client.LastAnalyzeRequest);
+        var want = Assert.Single(request.Want ?? []);
+
+        Assert.Equal("tagging", want.Capability);
+        Assert.Equal(["tagger-actions-best"], want.Models);
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_TranslatesPresetClaimIdsAcrossMediaKinds()
+    {
+        var client = CreateVideoTaggingClient("tagger-actions-best", "Actions");
+        var orchestrator = CreateOrchestrator(
+            client,
+            CreateTaggingContributor("tagging.image.asset", AiMediaKinds.Image, "asset"),
+            CreateTaggingContributor("tagging.video.frame", AiMediaKinds.Video, "frame"));
+
+        await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings
+            {
+                RunPresets =
+                [
+                    new AiRunPreset
+                    {
+                        PresetId = "default",
+                        DisplayName = "Default",
+                        ClaimIds = ["tagging.image.asset"],
+                    },
+                ],
+            }.Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                PresetId = "default",
+                FrameInterval = 2.0,
+                DispatchResults = false,
+            });
+
+        var request = Assert.IsType<VideoAnalyzeRequest>(client.LastAnalyzeRequest);
+        var want = Assert.Single(request.Want ?? []);
+
+        Assert.Equal("tagging", want.Capability);
+        Assert.Equal("frame", want.Scope);
+        Assert.Equal(["tagger-actions-best"], want.Models);
+    }
+
+    [Fact]
+    public async Task RunImagesAsync_CustomPipelineCapabilitySetsPipelineAndIncludedCapabilities()
+    {
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels = [CreateTaggingModel("tagger-actions-best", ["Actions"])],
+        };
+        var orchestrator = CreateOrchestrator(client, CreateTaggingContributor("tagging.image.asset", AiMediaKinds.Image, "asset"));
+
+        await orchestrator.RunImagesAsync(
+            new AiCoreConnectionSettings
+            {
+                CustomPipelines =
+                [
+                    new AiCustomPipelineDefinition
+                    {
+                        PipelineName = "custom_image_tags",
+                        MediaKind = AiMediaKinds.Image,
+                        CapabilityId = "custom.image-tags",
+                        CapabilityIds = ["tagging"],
+                        FullImageModels = ["tagger-actions-best"],
+                    },
+                ],
+            }.Normalize(),
+            new AiRunImagesRequest
+            {
+                Paths = ["E:/media/example.jpg"],
+                CapabilityIds = ["custom.image-tags"],
+                DispatchResults = false,
+            });
+
+        var request = Assert.IsType<ImageAnalyzeRequest>(client.LastAnalyzeRequest);
+
+        Assert.Equal("custom_image_tags", request.PipelineName);
+        Assert.Equal(["tagger-actions-best"], Assert.Single(request.Want ?? []).Models);
+    }
+
+    [Fact]
+    public async Task RunAudioAsync_UsesOnlyAudioPreferredModelsFromCatalog()
+    {
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels =
+            [
+                CreateModel("face_embedding_torchexport", ["face_embeddings"], "embedding", "asset"),
+                CreateModel("ecapa_tdnn", ["audio_embeddings_ecapa"], "embedding", "asset"),
+                CreateModel("ast_audioset", ["audio_classification_ast"], "classification", "asset"),
+            ],
+        };
+        var orchestrator = CreateOrchestrator(client, CreateAudioContributor());
+
+        await orchestrator.RunAudioAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunAudioRequest
+            {
+                Paths = ["E:/media/example.mp4"],
+                CapabilityIds = ["audio.embedding", "audio.classification"],
+                DispatchResults = false,
+            });
+
+        var request = Assert.IsType<AudioAnalyzeRequest>(client.LastAnalyzeRequest);
+        Assert.NotNull(request.Want);
+        var wants = request.Want!;
+
+        Assert.Contains(wants, want => want.Capability == "embedding" && Assert.Single(want.Models ?? []) == "ecapa_tdnn");
+        Assert.Contains(wants, want => want.Capability == "classification" && Assert.Single(want.Models ?? []) == "ast_audioset");
+        Assert.DoesNotContain(wants.SelectMany(static want => want.Models ?? []), model => model == "face_embedding_torchexport");
+    }
+
+    [Fact]
+    public async Task RunAudioAsync_SkipsWhenNoAudioModelsAreInCatalog()
+    {
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels = [CreateModel("face_embedding_torchexport", ["face_embeddings"], "embedding", "asset")],
+        };
+        var orchestrator = CreateOrchestrator(client, CreateAudioContributor());
+
+        var response = await orchestrator.RunAudioAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunAudioRequest
+            {
+                Paths = ["E:/media/example.mp4"],
+                CapabilityIds = ["audio.embedding", "audio.classification"],
+                DispatchResults = false,
+            });
+
+        Assert.Equal(0, client.AnalyzeAudioCallCount);
+        Assert.Equal("skipped", response.Analysis.GetProperty("status").GetString());
     }
 
     [Fact]
@@ -423,10 +577,10 @@ public sealed class AiCoreOrchestratorTests
 
         var initialSettings = new AiCoreConnectionSettings
         {
-            TaggingModelPreferences =
+            CapabilityModelBindings =
             [
-                new AiTaggingModelPreference { Scope = "frame", Category = "Actions", Model = "tagger-actions-v1" },
-                new AiTaggingModelPreference { Scope = "frame", Category = "Body", Model = "tagger-body" },
+                new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "frame", Category = "Actions", Model = "tagger-actions-v1" },
+                new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "frame", Category = "Body", Model = "tagger-body" },
             ],
         }.Normalize();
 
@@ -466,10 +620,10 @@ public sealed class AiCoreOrchestratorTests
 
         var rerunSettings = new AiCoreConnectionSettings
         {
-            TaggingModelPreferences =
+            CapabilityModelBindings =
             [
-                new AiTaggingModelPreference { Scope = "frame", Category = "Actions", Model = "tagger-actions-v2" },
-                new AiTaggingModelPreference { Scope = "frame", Category = "Body", Model = "tagger-body" },
+                new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "frame", Category = "Actions", Model = "tagger-actions-v2" },
+                new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "frame", Category = "Body", Model = "tagger-body" },
             ],
         }.Normalize();
 
@@ -550,7 +704,16 @@ public sealed class AiCoreOrchestratorTests
         => new StubContributor(new AiCapabilityDescriptor(
             "ext:ai.tagging",
             "AI Tagging",
-            [new AiCapabilityClaim(claimId, "Tagging", mediaKind, "tagging", scope, "tags") ]));
+            [
+                new AiCapabilityClaim(claimId, "Tagging", mediaKind, "tagging", scope, "tags")
+                {
+                    CapabilityId = "tagging",
+                    ModelBindingSlotId = "category",
+                },
+            ])
+        {
+            Capabilities = [new AiCapabilityFeature("tagging", "Content Tagging", [claimId])],
+        });
 
     private static IAiCapabilityContributor CreateFacesContributor()
         => new StubContributor(new AiCapabilityDescriptor(
@@ -575,6 +738,44 @@ public sealed class AiCoreOrchestratorTests
                     PreferredModels: ["face_embedding_torchexport"],
                     FromDetection: "face_detector_torchexport"),
             ]));
+
+    private static IAiCapabilityContributor CreateAudioContributor()
+        => new StubContributor(new AiCapabilityDescriptor(
+            "cove.ai.audio",
+            "AI Audio",
+            [
+                new AiCapabilityClaim(
+                    "audio.asset.embedding",
+                    "Audio Embeddings",
+                    AiMediaKinds.Audio,
+                    "embedding",
+                    "asset",
+                    "embeddings",
+                    PreferredModels: ["ecapa_tdnn"])
+                {
+                    CapabilityId = "audio.embedding",
+                    ModelBindingSlotId = "embedder",
+                },
+                new AiCapabilityClaim(
+                    "audio.asset.classification",
+                    "Audio Classification",
+                    AiMediaKinds.Audio,
+                    "classification",
+                    "asset",
+                    "categories",
+                    PreferredModels: ["ast_audioset"])
+                {
+                    CapabilityId = "audio.classification",
+                    ModelBindingSlotId = "classifier",
+                },
+            ])
+        {
+            Capabilities =
+            [
+                new AiCapabilityFeature("audio.embedding", "Audio Embeddings", ["audio.asset.embedding"]),
+                new AiCapabilityFeature("audio.classification", "Audio Classification", ["audio.asset.classification"]),
+            ],
+        });
 
     private static AiModelCatalogEntry CreateTaggingModel(
         string configName,
@@ -626,6 +827,8 @@ public sealed class AiCoreOrchestratorTests
 
         public int AnalyzeVideoCallCount { get; private set; }
 
+        public int AnalyzeAudioCallCount { get; private set; }
+
         public Task<IReadOnlyList<AiModelCatalogEntry>> GetModelCatalogAsync(AiCoreConnectionSettings settings, CancellationToken ct = default)
             => Task.FromResult(CatalogModels);
 
@@ -639,6 +842,12 @@ public sealed class AiCoreOrchestratorTests
             => throw new NotSupportedException();
 
         public Task<IReadOnlyList<AiModelCatalogEntry>> PinModelsAsync(AiCoreConnectionSettings settings, AiModelPinRequest request, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<AiCustomPipelineSyncResponse> RegisterCustomPipelineAsync(AiCoreConnectionSettings settings, AiCustomPipelineDefinition pipeline, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<AiCustomPipelineSyncResponse> DeleteCustomPipelineAsync(AiCoreConnectionSettings settings, string pipelineName, CancellationToken ct = default)
             => throw new NotSupportedException();
 
         public Task<JsonElement> AnalyzeImagesAsync(AiCoreConnectionSettings settings, ImageAnalyzeRequest request, CancellationToken ct = default)
@@ -655,7 +864,11 @@ public sealed class AiCoreOrchestratorTests
         }
 
         public Task<JsonElement> AnalyzeAudioAsync(AiCoreConnectionSettings settings, AudioAnalyzeRequest request, CancellationToken ct = default)
-            => throw new NotSupportedException();
+        {
+            LastAnalyzeRequest = request;
+            AnalyzeAudioCallCount++;
+            return Task.FromResult(EmptyJson());
+        }
 
         public Task<TextEncodeResponse> EncodeTextAsync(AiCoreConnectionSettings settings, TextEncodeRequest request, CancellationToken ct = default)
             => throw new NotSupportedException();

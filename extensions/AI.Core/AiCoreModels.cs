@@ -26,7 +26,11 @@ public sealed record AiCoreConnectionSettings
 
     public List<AiPathMapping> PathMappings { get; init; } = [];
 
-    public List<AiTaggingModelPreference> TaggingModelPreferences { get; init; } = [];
+    public List<AiCapabilityModelBinding> CapabilityModelBindings { get; init; } = [];
+
+    public List<AiRunPreset> RunPresets { get; init; } = [];
+
+    public List<AiCustomPipelineDefinition> CustomPipelines { get; init; } = [];
 
     public List<AiModelSupersessionRule> ModelSupersessions { get; init; } = [];
 
@@ -61,12 +65,25 @@ public sealed record AiCoreConnectionSettings
             .DistinctBy(static mapping => mapping.FromPrefix, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var normalizedTaggingPreferences = (TaggingModelPreferences ?? [])
-            .Where(static preference => !string.IsNullOrWhiteSpace(preference.Scope)
-                && !string.IsNullOrWhiteSpace(preference.Category)
-                && !string.IsNullOrWhiteSpace(preference.Model))
-            .Select(static preference => preference.Normalize())
-            .DistinctBy(static preference => $"{preference.Scope}\u001F{preference.Category}", StringComparer.OrdinalIgnoreCase)
+        var normalizedCapabilityBindings = (CapabilityModelBindings ?? [])
+            .Where(static binding => !string.IsNullOrWhiteSpace(binding.CapabilityId)
+                && !string.IsNullOrWhiteSpace(binding.SlotId)
+                && !string.IsNullOrWhiteSpace(binding.Model))
+            .Select(static binding => binding.Normalize())
+            .DistinctBy(static binding => $"{binding.CapabilityId}\u001F{binding.SlotId}\u001F{binding.Scope ?? string.Empty}\u001F{binding.Category ?? string.Empty}", StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var normalizedRunPresets = (RunPresets ?? [])
+            .Where(static preset => !string.IsNullOrWhiteSpace(preset.PresetId)
+                && !string.IsNullOrWhiteSpace(preset.DisplayName))
+            .Select(static preset => preset.Normalize())
+            .DistinctBy(static preset => preset.PresetId, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var normalizedCustomPipelines = (CustomPipelines ?? [])
+            .Where(static pipeline => !string.IsNullOrWhiteSpace(pipeline.PipelineName))
+            .Select(static pipeline => pipeline.Normalize())
+            .DistinctBy(static pipeline => pipeline.PipelineName, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         var normalizedRequestTimeoutSeconds = RequestTimeoutSeconds switch
@@ -91,10 +108,177 @@ public sealed record AiCoreConnectionSettings
             RequestTimeoutSeconds = normalizedRequestTimeoutSeconds,
             MaxInFlight = Math.Max(1, MaxInFlight),
             PathMappings = normalizedMappings,
-            TaggingModelPreferences = normalizedTaggingPreferences,
+            CapabilityModelBindings = normalizedCapabilityBindings,
+            RunPresets = normalizedRunPresets,
+            CustomPipelines = normalizedCustomPipelines,
             ModelSupersessions = normalizedModelSupersessions,
         };
     }
+}
+
+public sealed record AiCapabilityModelBinding
+{
+    public string CapabilityId { get; init; } = string.Empty;
+
+    public string SlotId { get; init; } = string.Empty;
+
+    public string? Scope { get; init; }
+
+    public string? Category { get; init; }
+
+    public string Model { get; init; } = string.Empty;
+
+    public AiCapabilityModelBinding Normalize()
+        => this with
+        {
+            CapabilityId = (CapabilityId ?? string.Empty).Trim().ToLowerInvariant(),
+            SlotId = (SlotId ?? string.Empty).Trim().ToLowerInvariant(),
+            Scope = string.IsNullOrWhiteSpace(Scope) ? null : Scope.Trim().ToLowerInvariant(),
+            Category = string.IsNullOrWhiteSpace(Category) ? null : Category.Trim(),
+            Model = (Model ?? string.Empty).Trim(),
+        };
+}
+
+public sealed record AiRunPreset
+{
+    public string PresetId { get; init; } = string.Empty;
+
+    public string DisplayName { get; init; } = string.Empty;
+
+    public List<string> CapabilityIds { get; init; } = [];
+
+    public List<string> ClaimIds { get; init; } = [];
+
+    public string? PipelineName { get; init; }
+
+    public List<string>? CategoriesToSkip { get; init; }
+
+    public string? LoadPolicy { get; init; }
+
+    public AiRunPreset Normalize()
+    {
+        var normalizedLoadPolicy = string.IsNullOrWhiteSpace(LoadPolicy) ? null : LoadPolicy.Trim();
+        if (normalizedLoadPolicy is not null && !AiLoadPolicies.All.Contains(normalizedLoadPolicy))
+        {
+            throw new ArgumentException($"Unsupported preset load policy '{normalizedLoadPolicy}'.", nameof(LoadPolicy));
+        }
+
+        return this with
+        {
+            PresetId = (PresetId ?? string.Empty).Trim().ToLowerInvariant(),
+            DisplayName = (DisplayName ?? string.Empty).Trim(),
+            CapabilityIds = AiCoreModelNormalization.NormalizeStringList(CapabilityIds).Select(static id => id.ToLowerInvariant()).ToList(),
+            ClaimIds = AiCoreModelNormalization.NormalizeStringList(ClaimIds),
+            PipelineName = string.IsNullOrWhiteSpace(PipelineName) ? null : PipelineName.Trim(),
+            CategoriesToSkip = AiCoreModelNormalization.NormalizeStringList(CategoriesToSkip),
+            LoadPolicy = normalizedLoadPolicy,
+        };
+    }
+}
+
+public sealed record AiCustomPipelineDefinition
+{
+    public string PipelineName { get; init; } = string.Empty;
+
+    public string DisplayName { get; init; } = string.Empty;
+
+    public string MediaKind { get; init; } = AiMediaKinds.Video;
+
+    public string? CapabilityId { get; init; }
+
+    public string? Description { get; init; }
+
+    public List<string> CapabilityIds { get; init; } = [];
+
+    public List<string> ClaimIds { get; init; } = [];
+
+    public bool UseAllFullImageModels { get; init; }
+
+    public List<string> FullImageModels { get; init; } = [];
+
+    public List<string> DetectorModels { get; init; } = [];
+
+    public Dictionary<string, List<string>> RegionModels { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public bool UseAllAudioModels { get; init; }
+
+    public List<string> AudioModels { get; init; } = [];
+
+    public AiCustomPipelineDefinition Normalize()
+    {
+        var normalizedName = (PipelineName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedName))
+        {
+            throw new ArgumentException("PipelineName is required.", nameof(PipelineName));
+        }
+
+        if (!normalizedName.All(static ch => char.IsLetterOrDigit(ch) || ch is '_' or '-' or '.'))
+        {
+            throw new ArgumentException("PipelineName may only contain letters, digits, '.', '_' and '-'.", nameof(PipelineName));
+        }
+
+        var normalizedMediaKind = (MediaKind ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalizedMediaKind is not (AiMediaKinds.Image or AiMediaKinds.Video or AiMediaKinds.Audio))
+        {
+            throw new ArgumentException($"Unsupported custom pipeline media kind '{MediaKind}'.", nameof(MediaKind));
+        }
+
+        return this with
+        {
+            PipelineName = normalizedName,
+            DisplayName = string.IsNullOrWhiteSpace(DisplayName) ? normalizedName : DisplayName.Trim(),
+            MediaKind = normalizedMediaKind,
+            CapabilityId = string.IsNullOrWhiteSpace(CapabilityId) ? $"custom.{normalizedName.ToLowerInvariant()}" : CapabilityId.Trim().ToLowerInvariant(),
+            Description = string.IsNullOrWhiteSpace(Description) ? null : Description.Trim(),
+            CapabilityIds = AiCoreModelNormalization.NormalizeStringList(CapabilityIds).Select(static id => id.ToLowerInvariant()).ToList(),
+            ClaimIds = AiCoreModelNormalization.NormalizeStringList(ClaimIds),
+            FullImageModels = AiCoreModelNormalization.NormalizeStringList(FullImageModels),
+            DetectorModels = AiCoreModelNormalization.NormalizeStringList(DetectorModels),
+            RegionModels = NormalizeRegionModels(RegionModels),
+            AudioModels = AiCoreModelNormalization.NormalizeStringList(AudioModels),
+        };
+    }
+
+    private static Dictionary<string, List<string>> NormalizeRegionModels(Dictionary<string, List<string>>? regionModels)
+    {
+        var normalized = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in regionModels ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(entry.Key))
+            {
+                continue;
+            }
+
+            var modelNames = AiCoreModelNormalization.NormalizeStringList(entry.Value);
+            if (modelNames.Count > 0)
+            {
+                normalized[entry.Key.Trim()] = modelNames;
+            }
+        }
+
+        return normalized;
+    }
+}
+
+public sealed class AiCustomPipelineSyncResponse
+{
+    public string PipelineName { get; init; } = string.Empty;
+
+    public string MediaKind { get; init; } = string.Empty;
+
+    public bool Reloaded { get; init; }
+
+    public List<string> LoadedPipelines { get; init; } = [];
+}
+
+internal static class AiCoreModelNormalization
+{
+    public static List<string> NormalizeStringList(IEnumerable<string>? values)
+        => (values ?? [])
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 }
 
 public sealed record AiModelSupersessionRule
@@ -119,25 +303,6 @@ public sealed record AiModelSupersessionRule
                 .Select(static model => model.Trim())
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList(),
-        };
-    }
-}
-
-public sealed record AiTaggingModelPreference
-{
-    public string Scope { get; init; } = string.Empty;
-
-    public string Category { get; init; } = string.Empty;
-
-    public string Model { get; init; } = string.Empty;
-
-    public AiTaggingModelPreference Normalize()
-    {
-        return this with
-        {
-            Scope = (Scope ?? string.Empty).Trim().ToLowerInvariant(),
-            Category = (Category ?? string.Empty).Trim(),
-            Model = (Model ?? string.Empty).Trim(),
         };
     }
 }
@@ -256,6 +421,8 @@ public sealed class ImageAnalyzeRequest
 {
     public List<string> Paths { get; init; } = [];
 
+    public string? PipelineName { get; init; }
+
     public double? Threshold { get; init; }
 
     public bool ReturnConfidence { get; init; } = true;
@@ -270,6 +437,8 @@ public sealed class ImageAnalyzeRequest
 public sealed class VideoAnalyzeRequest
 {
     public string Path { get; init; } = string.Empty;
+
+    public string? PipelineName { get; init; }
 
     public double? FrameInterval { get; init; }
 
@@ -289,6 +458,8 @@ public sealed class VideoAnalyzeRequest
 public sealed class AudioAnalyzeRequest
 {
     public List<string> Paths { get; init; } = [];
+
+    public string? PipelineName { get; init; }
 
     public double? Threshold { get; init; }
 
@@ -321,7 +492,13 @@ public sealed class AiRunImagesRequest
 
     public int? EntityId { get; init; }
 
+    public string? PresetId { get; init; }
+
+    public List<string>? CapabilityIds { get; init; }
+
     public List<string>? ClaimIds { get; init; }
+
+    public string? PipelineName { get; init; }
 
     public double? Threshold { get; init; }
 
@@ -344,7 +521,13 @@ public sealed class AiRunVideoRequest
 
     public int? EntityId { get; init; }
 
+    public string? PresetId { get; init; }
+
+    public List<string>? CapabilityIds { get; init; }
+
     public List<string>? ClaimIds { get; init; }
+
+    public string? PipelineName { get; init; }
 
     public double? FrameInterval { get; init; }
 
@@ -371,7 +554,13 @@ public sealed class AiRunAudioRequest
 
     public int? EntityId { get; init; }
 
+    public string? PresetId { get; init; }
+
+    public List<string>? CapabilityIds { get; init; }
+
     public List<string>? ClaimIds { get; init; }
+
+    public string? PipelineName { get; init; }
 
     public double? Threshold { get; init; }
 
@@ -419,7 +608,13 @@ public sealed record AiQueueRunRequest
 
     public List<string> Paths { get; init; } = [];
 
+    public string? PresetId { get; init; }
+
+    public List<string>? CapabilityIds { get; init; }
+
     public List<string>? ClaimIds { get; init; }
+
+    public string? PipelineName { get; init; }
 
     public double? FrameInterval { get; init; }
 
@@ -482,6 +677,9 @@ public sealed record AiQueueRunRequest
         }
 
         var normalizedClaimIds = NormalizeStringList(ClaimIds);
+        var normalizedCapabilityIds = NormalizeStringList(CapabilityIds)
+            .Select(static id => id.ToLowerInvariant())
+            .ToList();
         var normalizedForceClaimIds = NormalizeStringList(ForceClaimIds);
         var normalizedCategoriesToSkip = NormalizeStringList(CategoriesToSkip);
 
@@ -491,7 +689,10 @@ public sealed record AiQueueRunRequest
             EntityType = normalizedEntityType,
             EntityIds = normalizedIds,
             Paths = normalizedPaths,
+            PresetId = string.IsNullOrWhiteSpace(PresetId) ? null : PresetId.Trim().ToLowerInvariant(),
+            CapabilityIds = normalizedCapabilityIds.Count == 0 ? null : normalizedCapabilityIds,
             ClaimIds = normalizedClaimIds.Count == 0 ? null : normalizedClaimIds,
+            PipelineName = string.IsNullOrWhiteSpace(PipelineName) ? null : PipelineName.Trim(),
             ForceClaimIds = normalizedForceClaimIds.Count == 0 ? null : normalizedForceClaimIds,
             CategoriesToSkip = normalizedCategoriesToSkip.Count == 0 ? null : normalizedCategoriesToSkip,
             LoadPolicy = string.IsNullOrWhiteSpace(LoadPolicy) ? null : LoadPolicy.Trim(),
@@ -511,7 +712,10 @@ public sealed record AiQueueRunRequest
             EntityType = GetValue(parameters, "entityType") ?? GetValue(parameters, "entity_type"),
             EntityIds = ParseIntList(GetValue(parameters, "entityIds") ?? GetValue(parameters, "entity_ids") ?? GetValue(parameters, "ids")),
             Paths = ParseDelimitedList(GetValue(parameters, "paths") ?? GetValue(parameters, "path")),
+            PresetId = GetValue(parameters, "presetId") ?? GetValue(parameters, "preset_id"),
+            CapabilityIds = ParseDelimitedList(GetValue(parameters, "capabilityIds") ?? GetValue(parameters, "capability_ids")),
             ClaimIds = ParseDelimitedList(GetValue(parameters, "claimIds") ?? GetValue(parameters, "claim_ids")),
+            PipelineName = GetValue(parameters, "pipelineName") ?? GetValue(parameters, "pipeline_name"),
             ForceClaimIds = ParseDelimitedList(GetValue(parameters, "forceClaimIds") ?? GetValue(parameters, "force_claim_ids")),
             FrameInterval = ParseNullableDouble(GetValue(parameters, "frameInterval") ?? GetValue(parameters, "frame_interval")),
             Threshold = ParseNullableDouble(GetValue(parameters, "threshold")),
@@ -538,7 +742,10 @@ public sealed record AiQueueRunRequest
             EntityType = ReadString(payload, "entityType", "entity_type", "pageType", "page_type"),
             EntityIds = ReadIntList(payload, "entityIds", "entity_ids", "selectedIds", "selected_ids", "ids", "entityId", "entity_id"),
             Paths = ReadStringList(payload, "paths", "path"),
+            PresetId = ReadString(payload, "presetId", "preset_id"),
+            CapabilityIds = ReadStringList(payload, "capabilityIds", "capability_ids"),
             ClaimIds = ReadStringList(payload, "claimIds", "claim_ids"),
+            PipelineName = ReadString(payload, "pipelineName", "pipeline_name"),
             ForceClaimIds = ReadStringList(payload, "forceClaimIds", "force_claim_ids"),
             FrameInterval = ReadNullableDouble(payload, "frameInterval", "frame_interval"),
             Threshold = ReadNullableDouble(payload, "threshold"),

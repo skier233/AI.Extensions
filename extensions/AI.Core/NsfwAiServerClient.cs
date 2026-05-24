@@ -17,6 +17,10 @@ public interface INsfwAiServerClient
 
     Task<IReadOnlyList<AiModelCatalogEntry>> PinModelsAsync(AiCoreConnectionSettings settings, AiModelPinRequest request, CancellationToken ct = default);
 
+    Task<AiCustomPipelineSyncResponse> RegisterCustomPipelineAsync(AiCoreConnectionSettings settings, AiCustomPipelineDefinition pipeline, CancellationToken ct = default);
+
+    Task<AiCustomPipelineSyncResponse> DeleteCustomPipelineAsync(AiCoreConnectionSettings settings, string pipelineName, CancellationToken ct = default);
+
     Task<JsonElement> AnalyzeImagesAsync(AiCoreConnectionSettings settings, ImageAnalyzeRequest request, CancellationToken ct = default);
 
     Task<JsonElement> AnalyzeVideoAsync(AiCoreConnectionSettings settings, VideoAnalyzeRequest request, CancellationToken ct = default);
@@ -68,6 +72,12 @@ public sealed class NsfwAiServerClient(HttpClient httpClient) : INsfwAiServerCli
         return envelope.Models;
     }
 
+    public Task<AiCustomPipelineSyncResponse> RegisterCustomPipelineAsync(AiCoreConnectionSettings settings, AiCustomPipelineDefinition pipeline, CancellationToken ct = default)
+        => PostAsync<AiCustomPipelineDefinition, AiCustomPipelineSyncResponse>(settings, "/v4/pipelines/custom", pipeline.Normalize(), ct);
+
+    public Task<AiCustomPipelineSyncResponse> DeleteCustomPipelineAsync(AiCoreConnectionSettings settings, string pipelineName, CancellationToken ct = default)
+        => DeleteAsync<AiCustomPipelineSyncResponse>(settings, $"/v4/pipelines/custom/{Uri.EscapeDataString(pipelineName)}", ct);
+
     public Task<JsonElement> AnalyzeImagesAsync(AiCoreConnectionSettings settings, ImageAnalyzeRequest request, CancellationToken ct = default)
         => PostJsonAsync(settings, "/v4/analyze/images", request, ct);
 
@@ -100,6 +110,18 @@ public sealed class NsfwAiServerClient(HttpClient httpClient) : INsfwAiServerCli
         {
             Content = JsonContent.Create(payload, options: SnakeCaseJson),
         };
+        using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        await EnsureSuccessAsync(response, relativePath, timeout.Token);
+        await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+        var result = await JsonSerializer.DeserializeAsync<TResponse>(stream, SnakeCaseJson, timeout.Token);
+        return result ?? throw new InvalidOperationException($"The AI server returned an empty response for '{relativePath}'.");
+    }
+
+    private async Task<TResponse> DeleteAsync<TResponse>(AiCoreConnectionSettings settings, string relativePath, CancellationToken ct)
+    {
+        var normalized = settings.Normalize();
+        using var timeout = CreateTimeoutSource(normalized, ct);
+        using var request = new HttpRequestMessage(HttpMethod.Delete, BuildUri(normalized, relativePath));
         using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
         await EnsureSuccessAsync(response, relativePath, timeout.Token);
         await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);

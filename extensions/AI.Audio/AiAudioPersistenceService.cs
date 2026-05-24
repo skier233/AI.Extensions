@@ -8,27 +8,38 @@ using Cove.Data;
 
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 using Pgvector;
 
 namespace AI.Audio;
 
-internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactory)
+internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactory, ILogger<AiAudioPersistenceService> logger)
 {
     private const string AudioSourceKey = "ext:ai.audio";
 
     private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
+    private readonly ILogger<AiAudioPersistenceService> _logger = logger;
 
     public async Task<IReadOnlyList<string>> PersistAsync(AiDispatchRequest request, AiPreparedArtifactBatch batch, CancellationToken ct = default)
     {
         if (request.Context.HostEntityId is null || string.IsNullOrWhiteSpace(request.Context.HostEntityType))
         {
+            _logger.LogWarning(
+                "AI.Audio skipped persistence for run {RunId} because the host identity was missing. HostType={HostType}, HostId={HostId}.",
+                request.Context.RunId,
+                request.Context.HostEntityType,
+                request.Context.HostEntityId);
             return ["AI.Audio prepared artifacts but skipped persistence because no Cove host entity identity was supplied."];
         }
 
         var hostEntityType = NormalizeHostEntityType(request.Context.HostEntityType);
         if (hostEntityType != "scene")
         {
+            _logger.LogWarning(
+                "AI.Audio skipped persistence for run {RunId} because host entity type {HostEntityType} is unsupported.",
+                request.Context.RunId,
+                request.Context.HostEntityType);
             return [$"AI.Audio persistence does not support host entity type '{request.Context.HostEntityType}'."];
         }
 
@@ -36,12 +47,25 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
         var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
         var sceneId = request.Context.HostEntityId.Value;
 
+        _logger.LogInformation(
+            "AI.Audio persistence starting for run {RunId} scene {SceneId} with {EmbeddingCount} embedding(s) and {SegmentCount} segment(s).",
+            request.Context.RunId,
+            sceneId,
+            batch.Embeddings.Count,
+            batch.Segments.Count);
+
         var existingEmbeddings = await db.Embeddings
             .Where(embedding => embedding.HostType == EmbeddingHostType.Scene && embedding.HostId == sceneId && embedding.SourceKey == AudioSourceKey)
             .ToListAsync(ct);
         var existingSegments = await db.Segments
             .Where(segment => segment.HostType == SegmentHostType.Scene && segment.HostId == sceneId && segment.SourceKey == AudioSourceKey)
             .ToListAsync(ct);
+
+        _logger.LogInformation(
+            "AI.Audio found {ExistingEmbeddingCount} existing embedding row(s) and {ExistingSegmentCount} existing segment row(s) for scene {SceneId}.",
+            existingEmbeddings.Count,
+            existingSegments.Count,
+            sceneId);
 
         if (existingEmbeddings.Count > 0)
         {
@@ -125,6 +149,14 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
                 ? "AI.Audio cleared previously persisted rows for this scene because the latest run did not emit any current audio artifacts."
                 : "AI.Audio found no new rows to persist for this scene.");
         }
+
+        _logger.LogInformation(
+            "AI.Audio persistence finished for run {RunId} scene {SceneId}. Inserted embeddings={InsertedEmbeddingCount}, inserted segments={InsertedSegmentCount}. Notes: {Notes}",
+            request.Context.RunId,
+            sceneId,
+            insertedEmbeddings,
+            insertedSegments,
+            string.Join(" | ", notes));
 
         return notes;
     }

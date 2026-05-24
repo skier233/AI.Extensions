@@ -87,7 +87,16 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
 
     public override UIManifest GetUIManifest()
         => ManifestBuilder()
-            .AddSettingsSection("ai-data", "AI Faces", "AiFacesSettingsPanel", order: 60)
+            .AddSettingsTab(
+                "extensions/ai/faces",
+                "AI Faces",
+                order: 60,
+                icon: "database",
+                parentTabKey: "extensions/ai",
+                description: "Face recognition extension settings.",
+                searchKeywords: ["ai faces", "faces", "reference pack", "clustering", "identity"],
+                aliases: ["extensions-ai-faces"])
+            .AddSettingsSection("extensions/ai/faces", "AI Faces", "AiFacesSettingsPanel", order: 60)
             .Build();
 
     public IEnumerable<PermissionDefinition> ContributePermissions()
@@ -95,10 +104,10 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
         var source = $"extension:{Id}";
         return
         [
-            new(WriteSettingsPermission, "AI Faces", "Change AI Faces settings.", Dangerous: true, Source: source),
-            new(UploadReferencePermission, "AI Faces", "Upload and import AI.Faces .saie reference packs.", Dangerous: true, Source: source),
-            new(DeleteReferencePermission, "AI Faces", "Remove the active AI.Faces reference pack.", Dangerous: true, Source: source),
-            new(ApplyReferencePermission, "AI Faces", "Accept or reject AI.Faces reference identity suggestions.", Dangerous: true, Implies: [Cove.Core.Auth.Permissions.FacesWrite, Cove.Core.Auth.Permissions.PerformersWrite], Source: source),
+            new(WriteSettingsPermission, "AI Faces", "Change AI Faces settings.", Dangerous: true, Source: source, GrantToAdminsByDefault: true),
+            new(UploadReferencePermission, "AI Faces", "Upload and import AI.Faces .saie reference packs.", Dangerous: true, Source: source, GrantToAdminsByDefault: true),
+            new(DeleteReferencePermission, "AI Faces", "Remove the active AI.Faces reference pack.", Dangerous: true, Source: source, GrantToAdminsByDefault: true),
+            new(ApplyReferencePermission, "AI Faces", "Accept or reject AI.Faces reference identity suggestions.", Dangerous: true, Implies: [Cove.Core.Auth.Permissions.FacesWrite, Cove.Core.Auth.Permissions.PerformersWrite], Source: source, GrantToAdminsByDefault: true),
         ];
     }
 
@@ -284,7 +293,11 @@ internal sealed class AiFacesContributor(
                 "asset",
                 "regions",
                 PreferredModels: [FaceDetectionModel],
-                Description: "Detect faces in still images so face embeddings can be attached to concrete regions."),
+                Description: "Detect faces in still images so face embeddings can be attached to concrete regions.")
+            {
+                CapabilityId = "faces",
+                ModelBindingSlotId = "detector",
+            },
             new AiCapabilityClaim(
                 "faces.image.embedding",
                 "Image Face Identity Embeddings",
@@ -294,7 +307,11 @@ internal sealed class AiFacesContributor(
                 "regions",
                 PreferredModels: [FaceEmbeddingModel],
                 FromDetection: FaceDetectionModel,
-                Description: "Extract face-region embeddings from still images."),
+                Description: "Extract face-region embeddings from still images.")
+            {
+                CapabilityId = "faces",
+                ModelBindingSlotId = "embedder",
+            },
             new AiCapabilityClaim(
                 "faces.video.detection",
                 "Video Face Detection",
@@ -303,7 +320,11 @@ internal sealed class AiFacesContributor(
                 "frame",
                 "frames",
                 PreferredModels: [FaceDetectionModel],
-                Description: "Detect faces across sampled video frames before identity matching."),
+                Description: "Detect faces across sampled video frames before identity matching.")
+            {
+                CapabilityId = "faces",
+                ModelBindingSlotId = "detector",
+            },
             new AiCapabilityClaim(
                 "faces.video.embedding",
                 "Video Face Identity Embeddings",
@@ -313,8 +334,40 @@ internal sealed class AiFacesContributor(
                 "regions",
                 PreferredModels: [FaceEmbeddingModel],
                 FromDetection: FaceDetectionModel,
-                Description: "Extract face-region embeddings across analyzed video frames."),
-        ]);
+                Description: "Extract face-region embeddings across analyzed video frames.")
+            {
+                CapabilityId = "faces",
+                ModelBindingSlotId = "embedder",
+            },
+        ])
+    {
+        Capabilities =
+        [
+            new AiCapabilityFeature(
+                "faces",
+                "Facial Recognition",
+                ["faces.image.detection", "faces.image.embedding", "faces.video.detection", "faces.video.embedding"],
+                [
+                    new AiModelBindingSlot(
+                        "detector",
+                        "Face detector",
+                        "detection",
+                        RequiredCapabilities: ["detection"],
+                        RequiredScopes: ["asset", "frame"],
+                        RequiredCategories: ["face_detections"],
+                        DefaultModels: [FaceDetectionModel]),
+                    new AiModelBindingSlot(
+                        "embedder",
+                        "Face embedder",
+                        "embedding",
+                        RequiredCapabilities: ["embedding"],
+                        RequiredScopes: ["region"],
+                        RequiredCategories: ["face_embeddings"],
+                        DefaultModels: [FaceEmbeddingModel]),
+                ],
+                "Detect and identify faces as one atomic workflow."),
+        ],
+    };
 
     public AiCapabilityDescriptor Describe() => Descriptor;
 
