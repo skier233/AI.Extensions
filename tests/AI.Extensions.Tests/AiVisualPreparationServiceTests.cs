@@ -19,7 +19,7 @@ public sealed class AiVisualPreparationServiceTests
             "embedding",
             "frame",
             "frames",
-            PreferredModels: ["dinov3_base"]);
+            PreferredModels: ["visual"]);
         var result = new AiAnalyzeResult
         {
             MediaKind = AiMediaKinds.Video,
@@ -52,7 +52,7 @@ public sealed class AiVisualPreparationServiceTests
                 null,
                 new AiAnalysisNode
                 {
-                    Embeddings = [new AiEmbeddingObservation("dinov3_base", "frame", vector, 1.0)],
+                    Embeddings = [new AiEmbeddingObservation("visual", "frame", vector, 1.0)],
                 });
     }
 }

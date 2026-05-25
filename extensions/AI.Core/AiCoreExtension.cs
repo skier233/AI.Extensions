@@ -118,7 +118,7 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
         return
         [
             new(RunPermission, "AI Core", "Queue AI runs from Cove selections and direct run endpoints.", Dangerous: true, Implies: [Cove.Core.Auth.Permissions.JobsRun], Source: source, GrantToAdminsByDefault: true),
-            new(ManageModelsPermission, "AI Core", "Load, unload, and pin AI server models.", Dangerous: true, Source: source, GrantToAdminsByDefault: true),
+            new(ManageModelsPermission, "AI Core", "Load and unload AI server models.", Dangerous: true, Source: source, GrantToAdminsByDefault: true),
             new(ManagePipelinesPermission, "AI Core", "Create, update, delete, and sync custom AI server pipelines.", Dangerous: true, Source: source, GrantToAdminsByDefault: true),
             new(WriteSettingsPermission, "AI Core", "Change AI Core connection and run settings.", Dangerous: true, Source: source, GrantToAdminsByDefault: true),
         ];
@@ -253,23 +253,6 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
             {
                 var settings = await LoadSettingsAsync(ct);
                 var models = await client.UnloadModelsAsync(settings, request, ct);
-                return Results.Ok(new { models });
-            }
-            catch (Exception ex)
-            {
-                return ToProblem(ex);
-            }
-        });
-
-        group.MapPost("/models/pin", async (AiModelPinRequest request, INsfwAiServerClient client, ICurrentPrincipalAccessor principalAccessor, CancellationToken ct) =>
-        {
-            if (RequirePermission(principalAccessor, ManageModelsPermission) is { } denied)
-                return denied;
-
-            try
-            {
-                var settings = await LoadSettingsAsync(ct);
-                var models = await client.PinModelsAsync(settings, request, ct);
                 return Results.Ok(new { models });
             }
             catch (Exception ex)

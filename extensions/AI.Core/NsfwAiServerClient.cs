@@ -15,8 +15,6 @@ public interface INsfwAiServerClient
 
     Task<IReadOnlyList<AiModelCatalogEntry>> UnloadModelsAsync(AiCoreConnectionSettings settings, AiModelSelectionRequest request, CancellationToken ct = default);
 
-    Task<IReadOnlyList<AiModelCatalogEntry>> PinModelsAsync(AiCoreConnectionSettings settings, AiModelPinRequest request, CancellationToken ct = default);
-
     Task<AiCustomPipelineSyncResponse> RegisterCustomPipelineAsync(AiCoreConnectionSettings settings, AiCustomPipelineDefinition pipeline, CancellationToken ct = default);
 
     Task<AiCustomPipelineSyncResponse> DeleteCustomPipelineAsync(AiCoreConnectionSettings settings, string pipelineName, CancellationToken ct = default);
@@ -63,12 +61,6 @@ public sealed class NsfwAiServerClient(HttpClient httpClient) : INsfwAiServerCli
     public async Task<IReadOnlyList<AiModelCatalogEntry>> UnloadModelsAsync(AiCoreConnectionSettings settings, AiModelSelectionRequest request, CancellationToken ct = default)
     {
         var envelope = await PostAsync<AiModelSelectionRequest, AiModelCatalogEnvelope>(settings, "/v4/models/unload", request, ct);
-        return envelope.Models;
-    }
-
-    public async Task<IReadOnlyList<AiModelCatalogEntry>> PinModelsAsync(AiCoreConnectionSettings settings, AiModelPinRequest request, CancellationToken ct = default)
-    {
-        var envelope = await PostAsync<AiModelPinRequest, AiModelCatalogEnvelope>(settings, "/v4/models/pin", request, ct);
         return envelope.Models;
     }
 

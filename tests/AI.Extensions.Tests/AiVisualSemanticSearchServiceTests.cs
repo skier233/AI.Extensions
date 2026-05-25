@@ -152,7 +152,7 @@ public sealed class AiVisualSemanticSearchServiceTests
     }
 
     [Fact]
-    public async Task SearchAsync_FallsBackToLocalVisualSeedsWhenTextEncoderTimesOut()
+    public async Task SearchAsync_ReturnsEmptyWhenTextEncoderTimesOutAndLocalEncoderUnavailable()
     {
         await using var provider = CreateProvider(new SlowTextEncoder());
         await using (var scope = provider.CreateAsyncScope())
@@ -179,9 +179,8 @@ public sealed class AiVisualSemanticSearchServiceTests
             FindFilter = new FindFilter { Q = "window", Page = 1, PerPage = 10 },
         });
 
-        Assert.Equal(3, response.TotalCount);
-        Assert.Equal("Window Light", response.Items[0].Title);
-        Assert.Equal("Near Match", response.Items[1].Title);
+        Assert.Empty(response.Items);
+        Assert.Equal(0, response.TotalCount);
     }
 
     [Fact]
@@ -342,6 +341,7 @@ public sealed class AiVisualSemanticSearchServiceTests
         services.AddScoped<EmbeddingService>();
         services.AddScoped<IEmbeddingService>(static services => services.GetRequiredService<EmbeddingService>());
         services.AddScoped<ITextEncoderRegistry>(static services => services.GetRequiredService<EmbeddingService>());
+        services.AddSingleton<AiVisualLocalTextEncoder>();
         services.AddScoped<AiVisualSemanticSearchService>();
         return services.BuildServiceProvider();
     }

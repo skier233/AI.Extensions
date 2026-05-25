@@ -65,8 +65,8 @@ public sealed class AiCoreOrchestratorTests
         {
             CatalogModels =
             [
-                CreateTaggingModel("tagger-actions-slow", ["Actions"], loaded: true),
-                CreateTaggingModel("tagger-actions-pinned", ["Actions"], loaded: true, pinned: true),
+                CreateTaggingModel("tagger-actions-slow", ["Actions"], loaded: false),
+                CreateTaggingModel("tagger-actions-loaded", ["Actions"], loaded: true),
                 CreateTaggingModel("tagger-body", ["Body"], loaded: true),
             ],
         };
@@ -84,7 +84,7 @@ public sealed class AiCoreOrchestratorTests
         var request = Assert.IsType<ImageAnalyzeRequest>(client.LastAnalyzeRequest);
         var want = Assert.Single(request.Want ?? []);
 
-        Assert.Equal(["tagger-actions-pinned", "tagger-body"], want.Models);
+        Assert.Equal(["tagger-actions-loaded", "tagger-body"], want.Models);
         Assert.DoesNotContain("tagger-actions-slow", want.Models ?? []);
     }
 
@@ -111,6 +111,35 @@ public sealed class AiCoreOrchestratorTests
 
         Assert.Equal("tagging", want.Capability);
         Assert.Equal(["tagger-actions-best"], want.Models);
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_UsesLoadedAutoBindingSlotModel()
+    {
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels =
+            [
+                CreateModel("semvisual", ["visual_embeddings_semvisual"], "embedding", "frame", loaded: false, active: false),
+                CreateModel("semvisual_trt", ["visual_embeddings_semvisual"], "embedding", "frame", loaded: true),
+            ],
+        };
+        var orchestrator = CreateOrchestrator(client, CreateVisualContributor());
+
+        await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings { DefaultLoadPolicy = AiLoadPolicies.UseLoaded }.Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                CapabilityIds = ["visual.semantic"],
+                DispatchResults = false,
+            });
+
+        var request = Assert.IsType<VideoAnalyzeRequest>(client.LastAnalyzeRequest);
+        var want = Assert.Single(request.Want ?? []);
+
+        Assert.Equal("embedding", want.Capability);
+        Assert.Equal(["semvisual_trt"], want.Models);
     }
 
     [Fact]
@@ -196,8 +225,8 @@ public sealed class AiCoreOrchestratorTests
             CatalogModels =
             [
                 CreateModel("face_embedding_torchexport", ["face_embeddings"], "embedding", "asset"),
-                CreateModel("ecapa_tdnn", ["audio_embeddings_ecapa"], "embedding", "asset"),
-                CreateModel("ast_audioset", ["audio_classification_ast"], "classification", "asset"),
+                CreateModel("audioembed", ["audio_embeddings_audioembed"], "embedding", "asset"),
+                CreateModel("audioclass", ["audio_classification_audioclass"], "classification", "asset"),
             ],
         };
         var orchestrator = CreateOrchestrator(client, CreateAudioContributor());
@@ -215,8 +244,8 @@ public sealed class AiCoreOrchestratorTests
         Assert.NotNull(request.Want);
         var wants = request.Want!;
 
-        Assert.Contains(wants, want => want.Capability == "embedding" && Assert.Single(want.Models ?? []) == "ecapa_tdnn");
-        Assert.Contains(wants, want => want.Capability == "classification" && Assert.Single(want.Models ?? []) == "ast_audioset");
+        Assert.Contains(wants, want => want.Capability == "embedding" && Assert.Single(want.Models ?? []) == "audioembed");
+        Assert.Contains(wants, want => want.Capability == "classification" && Assert.Single(want.Models ?? []) == "audioclass");
         Assert.DoesNotContain(wants.SelectMany(static want => want.Models ?? []), model => model == "face_embedding_torchexport");
     }
 
@@ -751,7 +780,7 @@ public sealed class AiCoreOrchestratorTests
                     "embedding",
                     "asset",
                     "embeddings",
-                    PreferredModels: ["ecapa_tdnn"])
+                    PreferredModels: ["audioembed"])
                 {
                     CapabilityId = "audio.embedding",
                     ModelBindingSlotId = "embedder",
@@ -763,7 +792,7 @@ public sealed class AiCoreOrchestratorTests
                     "classification",
                     "asset",
                     "categories",
-                    PreferredModels: ["ast_audioset"])
+                    PreferredModels: ["audioclass"])
                 {
                     CapabilityId = "audio.classification",
                     ModelBindingSlotId = "classifier",
@@ -777,11 +806,48 @@ public sealed class AiCoreOrchestratorTests
             ],
         });
 
+    private static IAiCapabilityContributor CreateVisualContributor()
+        => new StubContributor(new AiCapabilityDescriptor(
+            "cove.ai.visual",
+            "AI Visual",
+            [
+                new AiCapabilityClaim(
+                    "visual.video.semantic",
+                    "Video Semantic Embeddings",
+                    AiMediaKinds.Video,
+                    "embedding",
+                    "frame",
+                    "frames",
+                    PreferredModels: ["semvisual"])
+                {
+                    CapabilityId = "visual.semantic",
+                    ModelBindingSlotId = "embedder",
+                },
+            ])
+        {
+            Capabilities =
+            [
+                new AiCapabilityFeature(
+                    "visual.semantic",
+                    "Semantic Visual Search",
+                    ["visual.video.semantic"],
+                    [
+                        new AiModelBindingSlot(
+                            "embedder",
+                            "Semantic embedding model",
+                            "embedding",
+                            RequiredCapabilities: ["embedding"],
+                            RequiredScopes: ["asset", "frame"],
+                            RequiredCategories: ["visual_embeddings_semvisual"],
+                            DefaultModels: ["semvisual"]),
+                    ]),
+            ],
+        });
+
     private static AiModelCatalogEntry CreateTaggingModel(
         string configName,
         IReadOnlyList<string> categories,
-        bool loaded = false,
-        bool pinned = false,
+        bool loaded = true,
         bool active = true,
         string scope = "asset")
         => new()
@@ -792,11 +858,10 @@ public sealed class AiCoreOrchestratorTests
             Capabilities = ["tagging"],
             SupportedScopes = [scope],
             Loaded = loaded,
-            Pinned = pinned,
             Active = active,
         };
 
-    private static AiModelCatalogEntry CreateModel(string configName, IReadOnlyList<string> categories, string capability, string scope)
+    private static AiModelCatalogEntry CreateModel(string configName, IReadOnlyList<string> categories, string capability, string scope, bool loaded = true, bool active = true)
         => new()
         {
             ConfigName = configName,
@@ -804,7 +869,8 @@ public sealed class AiCoreOrchestratorTests
             Categories = categories.ToList(),
             Capabilities = [capability],
             SupportedScopes = [scope],
-            Active = true,
+            Loaded = loaded,
+            Active = active,
         };
 
     private sealed class StubContributor(AiCapabilityDescriptor descriptor) : IAiCapabilityContributor
@@ -839,9 +905,6 @@ public sealed class AiCoreOrchestratorTests
             => throw new NotSupportedException();
 
         public Task<IReadOnlyList<AiModelCatalogEntry>> UnloadModelsAsync(AiCoreConnectionSettings settings, AiModelSelectionRequest request, CancellationToken ct = default)
-            => throw new NotSupportedException();
-
-        public Task<IReadOnlyList<AiModelCatalogEntry>> PinModelsAsync(AiCoreConnectionSettings settings, AiModelPinRequest request, CancellationToken ct = default)
             => throw new NotSupportedException();
 
         public Task<AiCustomPipelineSyncResponse> RegisterCustomPipelineAsync(AiCoreConnectionSettings settings, AiCustomPipelineDefinition pipeline, CancellationToken ct = default)

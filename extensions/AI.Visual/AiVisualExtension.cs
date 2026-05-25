@@ -55,6 +55,7 @@ public sealed class AiVisualExtension : FullExtensionBase
     {
         services.AddSingleton<AiVisualPreparationService>();
         services.AddSingleton<AiVisualPersistenceService>();
+        services.AddSingleton<AiVisualLocalTextEncoder>();
         services.AddScoped<AiVisualSemanticSearchService>();
         services.AddSingleton<IAiCapabilityContributor, AiVisualContributor>();
     }
@@ -201,7 +202,7 @@ internal sealed class AiVisualContributor(
                 "embedding",
                 "asset",
                 "embeddings",
-                PreferredModels: ["dinov3_base"],
+                PreferredModels: ["visual"],
                 Description: "Generate self-supervised feature embeddings for still images.")
             {
                 CapabilityId = "visual.feature",
@@ -214,7 +215,7 @@ internal sealed class AiVisualContributor(
                 "embedding",
                 "asset",
                 "embeddings",
-                PreferredModels: ["metaclip2_base"],
+                PreferredModels: ["semvisual"],
                 Description: "Generate semantic image embeddings that can pair with a text encoder.")
             {
                 CapabilityId = "visual.semantic",
@@ -227,7 +228,7 @@ internal sealed class AiVisualContributor(
                 "embedding",
                 "frame",
                 "frames",
-                PreferredModels: ["dinov3_base"],
+                PreferredModels: ["visual"],
                 Description: "Generate self-supervised feature embeddings for sampled video frames.")
             {
                 CapabilityId = "visual.feature",
@@ -240,7 +241,7 @@ internal sealed class AiVisualContributor(
                 "embedding",
                 "frame",
                 "frames",
-                PreferredModels: ["metaclip2_base"],
+                PreferredModels: ["semvisual"],
                 Description: "Generate semantic video embeddings and section centroids.")
             {
                 CapabilityId = "visual.semantic",
@@ -261,8 +262,8 @@ internal sealed class AiVisualContributor(
                         "embedding",
                         RequiredCapabilities: ["embedding"],
                         RequiredScopes: ["asset", "frame"],
-                        RequiredCategories: ["visual_embeddings_dinov3"],
-                        DefaultModels: ["dinov3_base"]),
+                        RequiredCategories: ["visual_embeddings_visual"],
+                        DefaultModels: ["visual"]),
                 ],
                 "Generate feature embeddings for similarity and recommendation systems."),
             new AiCapabilityFeature(
@@ -276,8 +277,8 @@ internal sealed class AiVisualContributor(
                         "embedding",
                         RequiredCapabilities: ["embedding"],
                         RequiredScopes: ["asset", "frame"],
-                        RequiredCategories: ["visual_embeddings_metaclip2"],
-                        DefaultModels: ["metaclip2_base"]),
+                        RequiredCategories: ["visual_embeddings_semvisual"],
+                        DefaultModels: ["semvisual"]),
                 ],
                 "Generate CLIP-compatible embeddings for semantic search."),
         ],

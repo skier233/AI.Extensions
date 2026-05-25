@@ -80,6 +80,7 @@ internal sealed class AiVisualSemanticSearchService(
     ITextEncoderRegistry textEncoderRegistry,
     ISceneRepository sceneRepository,
     IImageRepository imageRepository,
+    AiVisualLocalTextEncoder localTextEncoder,
     IUserEngagementService? engagementService = null,
     ICurrentPrincipalAccessor? principalAccessor = null)
 {
@@ -111,6 +112,7 @@ internal sealed class AiVisualSemanticSearchService(
     private readonly ITextEncoderRegistry _textEncoderRegistry = textEncoderRegistry;
     private readonly ISceneRepository _sceneRepository = sceneRepository;
     private readonly IImageRepository _imageRepository = imageRepository;
+    private readonly AiVisualLocalTextEncoder _localTextEncoder = localTextEncoder;
     private readonly IUserEngagementService? _engagementService = engagementService;
     private readonly ICurrentPrincipalAccessor? _principalAccessor = principalAccessor;
 
@@ -840,7 +842,13 @@ internal sealed class AiVisualSemanticSearchService(
             return fastVector;
         }
 
-        return await TryBuildLocalQueryVectorAsync(query, targetHostType, allowedIds, ct);
+        var localVector = _localTextEncoder.TryEncode(query);
+        if (localVector is not null)
+        {
+            return localVector;
+        }
+
+        return null;
     }
 
     private async Task<Vector?> TryEncodeWithRegisteredEncoderAsync(string query, CancellationToken ct)

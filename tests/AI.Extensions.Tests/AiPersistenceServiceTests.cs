@@ -168,7 +168,7 @@ public sealed class AiPersistenceServiceTests
             [1f, 0f],
             1.0,
             SectionIndex: 0,
-            ModelKey: "dinov3_base"));
+            ModelKey: "visual"));
         batch.Embeddings.Add(new AiPreparedEmbedding(
             "scene-visual",
             "ext:ai.visual",
@@ -181,7 +181,7 @@ public sealed class AiPersistenceServiceTests
             SectionIndex: 1,
             StartSeconds: 0.0,
             EndSeconds: 3.0,
-            ModelKey: "dinov3_base"));
+            ModelKey: "visual"));
 
         var notes = await service.PersistAsync(request, batch);
 
@@ -225,7 +225,7 @@ public sealed class AiPersistenceServiceTests
             SectionIndex: 1,
             StartSeconds: 4.0,
             EndSeconds: 7.0,
-            ModelKey: "ast_audioset"));
+            ModelKey: "audioclass"));
         batch.Segments.Add(new AiPreparedSegment(
             "scene-audio",
             "ext:ai.audio",

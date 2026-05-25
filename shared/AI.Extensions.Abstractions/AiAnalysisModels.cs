@@ -44,8 +44,7 @@ public sealed record AiModelDescriptor(
     IReadOnlyList<string>? Categories = null,
     string? Version = null,
     bool Active = false,
-    bool Loaded = false,
-    bool Pinned = false
+    bool Loaded = false
 );
 
 public sealed record AiTemporalSlice(

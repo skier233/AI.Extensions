@@ -127,8 +127,7 @@ public static class AiAnalyzeResultParser
                 GetStringArray(model, "categories"),
                 GetString(model, "version"),
                 GetBool(model, "active"),
-                GetBool(model, "loaded"),
-                GetBool(model, "pinned")));
+                GetBool(model, "loaded")));
         }
 
         return parsed;

@@ -64,8 +64,8 @@ public sealed class AiAudioPreparationServiceTests
                                     "end": 4.0,
                                     "analysis": {
                                         "other": {
-                                            "audio_embeddings_ecapa": [
-                                                { "vector": [0.1, 0.2, 0.3], "norm": 1.0, "dim": 3, "embedder": "ecapa_tdnn" }
+                                            "audio_embeddings_audioembed": [
+                                                { "vector": [0.1, 0.2, 0.3], "norm": 1.0, "dim": 3, "embedder": "audioembed" }
                                             ]
                                         }
                                     }

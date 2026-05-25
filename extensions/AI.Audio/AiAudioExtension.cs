@@ -85,7 +85,7 @@ internal sealed class AiAudioContributor(
                 "embedding",
                 "asset",
                 "embeddings",
-                PreferredModels: ["ecapa_tdnn"],
+                PreferredModels: ["audioembed"],
                 Description: "Extract audio embeddings for speaker and similarity workflows.")
             {
                 CapabilityId = "audio.embedding",
@@ -98,7 +98,7 @@ internal sealed class AiAudioContributor(
                 "classification",
                 "asset",
                 "categories",
-                PreferredModels: ["ast_audioset"],
+                PreferredModels: ["audioclass"],
                 Description: "Classify audio content for filtering and downstream routing.")
             {
                 CapabilityId = "audio.classification",
@@ -119,8 +119,8 @@ internal sealed class AiAudioContributor(
                         "embedding",
                         RequiredCapabilities: ["embedding"],
                         RequiredScopes: ["asset"],
-                        RequiredCategories: ["audio_embeddings_ecapa"],
-                        DefaultModels: ["ecapa_tdnn"]),
+                        RequiredCategories: ["audio_embeddings_audioembed"],
+                        DefaultModels: ["audioembed"]),
                 ],
                 "Extract embeddings for speaker and audio similarity workflows."),
             new AiCapabilityFeature(
@@ -134,8 +134,8 @@ internal sealed class AiAudioContributor(
                         "classification",
                         RequiredCapabilities: ["classification"],
                         RequiredScopes: ["asset"],
-                        RequiredCategories: ["audio_classification_ast"],
-                        DefaultModels: ["ast_audioset"]),
+                        RequiredCategories: ["audio_classification_audioclass"],
+                        DefaultModels: ["audioclass"]),
                 ],
                 "Classify audio content for filtering and downstream routing."),
         ],

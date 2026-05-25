@@ -551,7 +551,7 @@ public sealed class AiCoreOrchestrator(
                     first.Claim.WantScope,
                     first.Claim.FromDetection,
                     group,
-                        ResolveModels(first.Claim, taggingModelsByScope, catalogModelLookup, bindingLookup),
+                    ResolveModels(first.Claim, first.Descriptor, loadPolicy, catalogModels, taggingModelsByScope, catalogModelLookup, bindingLookup),
                     IsTaggingExtensionId(first.Descriptor.ExtensionId));
             })
             .Where(static want => want.Models.Count > 0)
@@ -559,6 +559,9 @@ public sealed class AiCoreOrchestrator(
 
         static IReadOnlyList<ResolvedWantModel> ResolveModels(
             AiCapabilityClaim claim,
+            AiCapabilityDescriptor descriptor,
+            string loadPolicy,
+            IReadOnlyList<AiModelCatalogEntry> catalogModels,
             IReadOnlyDictionary<string, List<AiModelCatalogEntry>>? taggingModelsByScope,
             IReadOnlyDictionary<string, AiModelCatalogEntry> catalogModelLookup,
             IReadOnlyDictionary<string, List<string>> bindingLookup)
@@ -575,6 +578,22 @@ public sealed class AiCoreOrchestrator(
                         return CreateResolvedWantModel(trimmed, [trimmed], null, catalogModel);
                     })
                     .ToArray();
+            }
+
+            var autoModels = ResolveAutoModels(claim, descriptor, catalogModels, catalogModelLookup);
+            if (autoModels.HasSlot)
+            {
+                if (autoModels.Models.Count > 0)
+                {
+                    return autoModels.Models
+                        .Select(model => CreateResolvedWantModel(model.ConfigName, [model.ConfigName], null, model))
+                        .ToArray();
+                }
+
+                if (string.Equals(loadPolicy, AiLoadPolicies.UseLoaded, StringComparison.Ordinal))
+                {
+                    return [];
+                }
             }
 
             if (claim.PreferredModels is { Count: > 0 } preferredModels)
@@ -650,6 +669,85 @@ public sealed class AiCoreOrchestrator(
             }
 
             return lookup;
+        }
+
+        static (bool HasSlot, IReadOnlyList<AiModelCatalogEntry> Models) ResolveAutoModels(
+            AiCapabilityClaim claim,
+            AiCapabilityDescriptor descriptor,
+            IReadOnlyList<AiModelCatalogEntry> catalogModels,
+            IReadOnlyDictionary<string, AiModelCatalogEntry> catalogModelLookup)
+        {
+            if (string.IsNullOrWhiteSpace(claim.CapabilityId) || string.IsNullOrWhiteSpace(claim.ModelBindingSlotId))
+            {
+                return (false, []);
+            }
+
+            var slot = descriptor.Capabilities
+                .Where(feature => string.Equals(feature.CapabilityId, claim.CapabilityId, StringComparison.OrdinalIgnoreCase)
+                    && feature.ClaimIds.Contains(claim.ClaimId, StringComparer.OrdinalIgnoreCase))
+                .SelectMany(static feature => feature.ModelBindingSlots ?? [])
+                .FirstOrDefault(slot => string.Equals(slot.SlotId, claim.ModelBindingSlotId, StringComparison.OrdinalIgnoreCase));
+            if (slot is null)
+            {
+                return (false, []);
+            }
+
+            var models = catalogModels
+                .Where(static model => model.Loaded)
+                .Where(model => ModelMatchesSlot(model, slot))
+                .Where(static model => !string.IsNullOrWhiteSpace(model.ConfigName))
+                .ToList();
+
+            foreach (var defaultModelName in slot.DefaultModels ?? [])
+            {
+                var trimmed = defaultModelName?.Trim();
+                if (string.IsNullOrWhiteSpace(trimmed)
+                    || !catalogModelLookup.TryGetValue(trimmed, out var defaultModel)
+                    || !defaultModel.Loaded
+                    || string.IsNullOrWhiteSpace(defaultModel.ConfigName)
+                    || models.Any(model => string.Equals(model.ConfigName, defaultModel.ConfigName, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                models.Add(defaultModel);
+            }
+
+            var resolved = models
+                .DistinctBy(static model => model.ConfigName, StringComparer.OrdinalIgnoreCase)
+                .OrderByDescending(static model => model.Active)
+                .ThenBy(static model => model.ConfigName, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+
+            return (true, slot.AllowMultiple ? resolved : resolved.Take(1).ToArray());
+        }
+
+        static bool ModelMatchesSlot(AiModelCatalogEntry model, AiModelBindingSlot slot)
+        {
+            if (!HasAnyRequired(slot.RequiredCapabilities, model.Capabilities))
+            {
+                return false;
+            }
+
+            if ((slot.RequiredScopes?.Count ?? 0) > 0
+                && model.SupportedScopes.Count > 0
+                && !HasAnyRequired(slot.RequiredScopes, model.SupportedScopes))
+            {
+                return false;
+            }
+
+            return HasAnyRequired(slot.RequiredCategories, model.Categories);
+        }
+
+        static bool HasAnyRequired(IReadOnlyList<string>? required, IReadOnlyList<string>? actual)
+        {
+            var requiredValues = required?.Where(static value => !string.IsNullOrWhiteSpace(value)).Select(static value => value.Trim()).ToArray() ?? [];
+            if (requiredValues.Length == 0)
+            {
+                return true;
+            }
+
+            return actual?.Any(value => requiredValues.Contains(value, StringComparer.OrdinalIgnoreCase)) == true;
         }
 
         static IReadOnlyDictionary<string, List<string>> BuildBindingLookup(IReadOnlyList<AiCapabilityModelBinding> bindings)
@@ -895,8 +993,7 @@ public sealed class AiCoreOrchestrator(
             }
 
             return distinctCandidates
-                .OrderByDescending(static candidate => candidate.Pinned)
-                .ThenByDescending(static candidate => candidate.Loaded)
+                .OrderByDescending(static candidate => candidate.Loaded)
                 .ThenByDescending(static candidate => candidate.Active)
                 .ThenBy(static candidate => candidate.ConfigName, StringComparer.OrdinalIgnoreCase)
                 .FirstOrDefault();

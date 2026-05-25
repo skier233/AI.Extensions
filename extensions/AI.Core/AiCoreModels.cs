@@ -14,7 +14,7 @@ public sealed record AiCoreConnectionSettings
 
     public string ServerBaseUrl { get; init; } = "http://127.0.0.1:8000";
 
-    public string DefaultLoadPolicy { get; init; } = AiLoadPolicies.LoadOrFail;
+    public string DefaultLoadPolicy { get; init; } = AiLoadPolicies.UseLoaded;
 
     public double? DefaultThreshold { get; init; }
 
@@ -49,7 +49,7 @@ public sealed record AiCoreConnectionSettings
         }
 
         var normalizedLoadPolicy = string.IsNullOrWhiteSpace(DefaultLoadPolicy)
-            ? AiLoadPolicies.LoadOrFail
+            ? AiLoadPolicies.UseLoaded
             : DefaultLoadPolicy.Trim();
 
         if (!AiLoadPolicies.All.Contains(normalizedLoadPolicy))
@@ -362,7 +362,17 @@ public sealed class AiModelCatalogEntry
 
     public bool Loaded { get; init; }
 
-    public bool Pinned { get; init; }
+    public string? Info { get; init; }
+
+    public int? ImageSize { get; init; }
+
+    public bool ArtifactAvailable { get; init; } = true;
+
+    public string? ArtifactPath { get; init; }
+
+    public bool Incompatible { get; init; }
+
+    public string? IncompatibilityReason { get; init; }
 }
 
 public sealed class FlexibleStringJsonConverter : JsonConverter<string?>
@@ -397,11 +407,6 @@ public class AiModelSelectionRequest
     public List<string> Models { get; init; } = [];
 }
 
-public sealed class AiModelPinRequest : AiModelSelectionRequest
-{
-    public bool Pinned { get; init; } = true;
-}
-
 public sealed class AnalyzeWantRequest
 {
     public string? Capability { get; init; }
@@ -431,7 +436,7 @@ public sealed class ImageAnalyzeRequest
 
     public List<AnalyzeWantRequest>? Want { get; init; }
 
-    public string LoadPolicy { get; init; } = AiLoadPolicies.LoadOrFail;
+    public string LoadPolicy { get; init; } = AiLoadPolicies.UseLoaded;
 }
 
 public sealed class VideoAnalyzeRequest
@@ -452,7 +457,7 @@ public sealed class VideoAnalyzeRequest
 
     public List<AnalyzeWantRequest>? Want { get; init; }
 
-    public string LoadPolicy { get; init; } = AiLoadPolicies.LoadOrFail;
+    public string LoadPolicy { get; init; } = AiLoadPolicies.UseLoaded;
 }
 
 public sealed class AudioAnalyzeRequest
@@ -465,7 +470,7 @@ public sealed class AudioAnalyzeRequest
 
     public List<AnalyzeWantRequest>? Want { get; init; }
 
-    public string LoadPolicy { get; init; } = AiLoadPolicies.LoadOrFail;
+    public string LoadPolicy { get; init; } = AiLoadPolicies.UseLoaded;
 }
 
 public sealed class TextEncodeRequest
