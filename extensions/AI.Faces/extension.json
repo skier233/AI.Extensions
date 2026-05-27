@@ -6,6 +6,26 @@
   "author": "Cove Team",
   "url": "https://github.com/yourcove/AI.Extensions",
   "categories": ["ai", "metadata", "automation"],
+  "tutorialTopics": [
+    {
+      "id": "cove.ai.faces",
+      "title": "AI Faces",
+      "description": "Face detection, embeddings, clustering, and reference-pack matching.",
+      "parentTopicId": "cove.ai",
+      "pages": ["faces", "face", "performers", "performer", "scenes", "scene", "images", "image", "settings"],
+      "contexts": ["settings-tab:extensions/ai/faces", "route:/settings/extensions/ai/faces"],
+      "order": 85,
+      "slides": [
+        {
+          "id": "face-workflow",
+          "title": "Review face identity evidence",
+          "caption": "AI Faces turns face detections and embeddings into reviewable identities, suggestions, and performer links.",
+          "bodyMarkdown": "Run face detection and embedding claims together, review suggestions before applying performer links, and use reference packs when you trust the source.",
+          "mockKind": "tagging"
+        }
+      ]
+    }
+  ],
   "minCoveVersion": "0.0.10",
   "entryDll": "AI.Faces.dll",
   "sharedAssemblies": ["AI.Extensions.Abstractions"],

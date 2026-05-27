@@ -85,27 +85,6 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
                 searchKeywords: ["ai", "model server", "nsfw", "path mappings", "models"],
                 aliases: ["extensions-ai", "extensions/ai/core"])
             .AddSettingsPanel(new UISettingsPanel("ai-core-settings", "AI Core", Id, "AiCoreSettingsPanel", 40, TargetTab: "extensions/ai"))
-            .AddTutorialTopic(
-                "cove.ai.core",
-                "AI Core",
-                "AI model setup, run queues, and scene or image analysis workflows.",
-                pages: ["ai", "settings", "scenes", "scene", "images", "image"],
-                order: 80,
-                slides:
-                [
-                    new UITutorialSlide(
-                        "connect-server",
-                        "Connect the AI server",
-                        "AI Core uses the configured nsfw_ai_server endpoint and path mappings before queueing any model work.",
-                        ["Set the server URL in Settings", "Check capabilities before large runs", "Keep path mappings aligned with Cove media paths"],
-                        MockKind: "extension"),
-                    new UITutorialSlide(
-                        "run-selection",
-                        "Run AI on selected media",
-                        "Use scene or image selections to queue repeatable AI runs once the model stack is ready.",
-                        ["Select media first", "Choose the run target", "Review generated artifacts before broad cleanup"],
-                        MockKind: "extension"),
-                ])
             .AddAction("ai-core-run-scene-toolbar", "Run AI", "toolbar", ["scene"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission, suppressSuccessAlert: true)
             .AddAction("ai-core-run-image-toolbar", "Run AI", "toolbar", ["image"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission, suppressSuccessAlert: true)
             .AddAction("ai-core-run-scenes-bulk", "Run AI", "bulk", ["scene"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission, suppressSuccessAlert: true)

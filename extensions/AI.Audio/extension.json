@@ -6,6 +6,26 @@
   "author": "Cove Team",
   "url": "https://github.com/yourcove/AI.Extensions",
   "categories": ["ai", "metadata", "automation"],
+  "tutorialTopics": [
+    {
+      "id": "cove.ai.audio",
+      "title": "AI Audio",
+      "description": "Audio embeddings, classification, and scene similarity workflows.",
+      "parentTopicId": "cove.ai",
+      "pages": ["scenes", "scene", "settings"],
+      "contexts": ["panel:audio-similarity", "feature:cove.ai.audio.similarity", "detail-tab:audio-similar", "tab:audio-similar"],
+      "order": 84,
+      "slides": [
+        {
+          "id": "audio-similarity",
+          "title": "Compare media by sound",
+          "caption": "AI Audio contributes audio embedding and classification claims for scene similarity and downstream routing.",
+          "bodyMarkdown": "Run audio claims on scenes with usable audio, use similar-scene results from detail pages, and combine audio evidence with visual and tag signals.",
+          "mockKind": "scenePlayer"
+        }
+      ]
+    }
+  ],
   "minCoveVersion": "0.0.10",
   "entryDll": "AI.Audio.dll",
   "sharedAssemblies": ["AI.Extensions.Abstractions"],

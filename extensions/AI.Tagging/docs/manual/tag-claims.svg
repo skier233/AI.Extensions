@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">AI Tagging review screenshot</title>
+  <desc id="desc">A stylized Cove review screen with generated tag claims, confidence scores, and apply controls.</desc>
+  <rect width="1280" height="720" fill="#0f172a" />
+  <rect x="36" y="36" width="1208" height="648" rx="18" fill="#111827" stroke="#334155" stroke-width="2" />
+  <rect x="72" y="76" width="260" height="568" rx="12" fill="#172033" />
+  <text x="104" y="126" fill="#e5e7eb" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="700">AI Tagging</text>
+  <text x="104" y="166" fill="#94a3b8" font-family="Segoe UI, Arial, sans-serif" font-size="19">Generated tag claims</text>
+  <rect x="104" y="218" width="172" height="34" rx="17" fill="#2563eb" />
+  <text x="124" y="241" fill="#eff6ff" font-family="Segoe UI, Arial, sans-serif" font-size="17" font-weight="600">Review Queue</text>
+  <rect x="104" y="280" width="156" height="16" rx="8" fill="#475569" />
+  <rect x="104" y="320" width="198" height="16" rx="8" fill="#334155" />
+  <rect x="104" y="360" width="132" height="16" rx="8" fill="#334155" />
+  <rect x="376" y="76" width="820" height="144" rx="14" fill="#1f2937" stroke="#334155" />
+  <text x="416" y="128" fill="#f8fafc" font-family="Segoe UI, Arial, sans-serif" font-size="30" font-weight="700">Scene tag review</text>
+  <text x="416" y="170" fill="#cbd5e1" font-family="Segoe UI, Arial, sans-serif" font-size="20">Approve normalized tags before applying them to selected media.</text>
+  <rect x="972" y="126" width="168" height="44" rx="10" fill="#16a34a" />
+  <text x="1004" y="155" fill="#f0fdf4" font-family="Segoe UI, Arial, sans-serif" font-size="18" font-weight="700">Apply 12</text>
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <rect x="376" y="252" width="820" height="92" rx="12" fill="#172033" stroke="#334155" />
+    <text x="416" y="288" fill="#e2e8f0" font-size="23" font-weight="700">outdoor</text>
+    <text x="416" y="318" fill="#94a3b8" font-size="17">AI.Core / AI.Tagging</text>
+    <rect x="996" y="274" width="84" height="30" rx="15" fill="#0f766e" />
+    <text x="1015" y="295" fill="#ccfbf1" font-size="15" font-weight="700">0.94</text>
+    <rect x="1094" y="268" width="62" height="42" rx="10" fill="#2563eb" />
+    <text x="1112" y="295" fill="#eff6ff" font-size="16" font-weight="700">Add</text>
+    <rect x="376" y="368" width="820" height="92" rx="12" fill="#172033" stroke="#334155" />
+    <text x="416" y="404" fill="#e2e8f0" font-size="23" font-weight="700">close-up</text>
+    <text x="416" y="434" fill="#94a3b8" font-size="17">Mapped from model label: closeup</text>
+    <rect x="996" y="390" width="84" height="30" rx="15" fill="#0f766e" />
+    <text x="1015" y="411" fill="#ccfbf1" font-size="15" font-weight="700">0.91</text>
+    <rect x="1094" y="384" width="62" height="42" rx="10" fill="#2563eb" />
+    <text x="1112" y="411" fill="#eff6ff" font-size="16" font-weight="700">Add</text>
+    <rect x="376" y="484" width="820" height="92" rx="12" fill="#172033" stroke="#334155" />
+    <text x="416" y="520" fill="#e2e8f0" font-size="23" font-weight="700">high motion</text>
+    <text x="416" y="550" fill="#94a3b8" font-size="17">Suggested for scene-level organization</text>
+    <rect x="996" y="506" width="84" height="30" rx="15" fill="#854d0e" />
+    <text x="1015" y="527" fill="#fef3c7" font-size="15" font-weight="700">0.72</text>
+    <rect x="1094" y="500" width="62" height="42" rx="10" fill="#334155" />
+    <text x="1103" y="527" fill="#cbd5e1" font-size="16" font-weight="700">Skip</text>
+  </g>
+</svg>
