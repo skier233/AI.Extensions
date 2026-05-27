@@ -741,7 +741,22 @@ public sealed class AiCoreOrchestratorTests
                 },
             ])
         {
-            Capabilities = [new AiCapabilityFeature("tagging", "Content Tagging", [claimId])],
+            Capabilities =
+            [
+                new AiCapabilityFeature(
+                    "tagging",
+                    "Content Tagging",
+                    [claimId],
+                    [
+                        new AiModelBindingSlot(
+                            "category",
+                            "Tagging category model",
+                            "tagging",
+                            RequiredCapabilities: ["tagging"],
+                            RequiredScopes: ["asset", "frame"],
+                            CategoryScoped: true),
+                    ]),
+            ],
         });
 
     private static IAiCapabilityContributor CreateFacesContributor()

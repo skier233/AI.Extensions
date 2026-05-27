@@ -6,5 +6,7 @@ dist/
 !extensions/AI.Core/dist/**
 !extensions/AI.Tagging/dist/
 !extensions/AI.Tagging/dist/**
+!extensions/AI.Faces/dist/
+!extensions/AI.Faces/dist/**
 .vs/
 .artifacts/

@@ -1,0 +1,25 @@
+{
+  "name": "ai-extensions",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=24 <26"
+  },
+  "scripts": {
+    "build:ui": "npm run build:ui:AI.Core && npm run build:ui:AI.Tagging && npm run build:ui:AI.Faces",
+    "build:ui:AI.Core": "node scripts/build-extension-ui.mjs AI.Core",
+    "build:ui:AI.Tagging": "node scripts/build-extension-ui.mjs AI.Tagging",
+    "build:ui:AI.Faces": "node scripts/build-extension-ui.mjs AI.Faces"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.2.2",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.24.0",
+    "lucide-react": "^1.8.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "tailwindcss": "^4.2.2"
+  }
+}

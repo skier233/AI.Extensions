@@ -566,6 +566,30 @@ public sealed class AiCoreOrchestrator(
             IReadOnlyDictionary<string, AiModelCatalogEntry> catalogModelLookup,
             IReadOnlyDictionary<string, List<string>> bindingLookup)
         {
+            if (string.Equals(claim.WantCapability, "tagging", StringComparison.OrdinalIgnoreCase))
+            {
+                if (taggingModelsByScope is null || !taggingModelsByScope.TryGetValue(claim.WantScope, out var taggingModels) || taggingModels.Count == 0)
+                {
+                    return [];
+                }
+
+                return taggingModels
+                    .Where(static model => !string.IsNullOrWhiteSpace(model.ConfigName))
+                    .DistinctBy(static model => model.ConfigName, StringComparer.OrdinalIgnoreCase)
+                    .Select(model =>
+                    {
+                        var artifactKeys = model.Categories.Count > 0
+                            ? model.Categories
+                                .Where(static category => !string.IsNullOrWhiteSpace(category))
+                                .Select(static category => category.Trim())
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .ToArray()
+                            : [model.ConfigName];
+                        return CreateResolvedWantModel(model.ConfigName, artifactKeys, artifactKeys.Length == 1 ? artifactKeys[0] : null, model);
+                    })
+                    .ToArray();
+            }
+
             var boundModels = ResolveBoundModels(claim, bindingLookup);
             if (boundModels.Count > 0)
             {
@@ -610,36 +634,12 @@ public sealed class AiCoreOrchestrator(
                     .ToArray();
             }
 
-            if (!string.Equals(claim.WantCapability, "tagging", StringComparison.OrdinalIgnoreCase) || taggingModelsByScope is null)
-            {
-                return catalogModelLookup.Values
-                    .Where(model => model.Capabilities.Contains(claim.WantCapability, StringComparer.OrdinalIgnoreCase))
-                    .Where(model => model.SupportedScopes.Count == 0 || model.SupportedScopes.Contains(claim.WantScope, StringComparer.OrdinalIgnoreCase))
-                    .Where(static model => !string.IsNullOrWhiteSpace(model.ConfigName))
-                    .DistinctBy(static model => model.ConfigName, StringComparer.OrdinalIgnoreCase)
-                    .Select(model => CreateResolvedWantModel(model.ConfigName, [model.ConfigName], null, model))
-                    .ToArray();
-            }
-
-            if (!taggingModelsByScope.TryGetValue(claim.WantScope, out var models) || models.Count == 0)
-            {
-                return [];
-            }
-
-            return models
+            return catalogModelLookup.Values
+                .Where(model => model.Capabilities.Contains(claim.WantCapability, StringComparer.OrdinalIgnoreCase))
+                .Where(model => model.SupportedScopes.Count == 0 || model.SupportedScopes.Contains(claim.WantScope, StringComparer.OrdinalIgnoreCase))
                 .Where(static model => !string.IsNullOrWhiteSpace(model.ConfigName))
                 .DistinctBy(static model => model.ConfigName, StringComparer.OrdinalIgnoreCase)
-                .Select(model =>
-                {
-                    var artifactKeys = model.Categories.Count > 0
-                        ? model.Categories
-                            .Where(static category => !string.IsNullOrWhiteSpace(category))
-                            .Select(static category => category.Trim())
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
-                            .ToArray()
-                        : [model.ConfigName];
-                    return CreateResolvedWantModel(model.ConfigName, artifactKeys, artifactKeys.Length == 1 ? artifactKeys[0] : null, model);
-                })
+                .Select(model => CreateResolvedWantModel(model.ConfigName, [model.ConfigName], null, model))
                 .ToArray();
         }
 
