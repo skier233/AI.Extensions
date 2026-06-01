@@ -84,7 +84,7 @@ public sealed class AiFaceSuggesterTests
                     new
                     {
                         version = 1,
-                        embedder = "nsfw_ai_server:image_pipeline_face_embeddings_v1",
+                        embedder = "nsfw_ai_server:image_pipeline_dynamic_v4",
                         embedding_dim = 2,
                         pack_id = "stashdb-pack",
                         source_endpoint = "https://stashdb.org/graphql",

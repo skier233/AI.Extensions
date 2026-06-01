@@ -4,8 +4,6 @@ using Cove.Plugins;
 
 namespace AI.Faces;
 
-internal sealed record AiFaceReferenceSuggestionDecisionRequest(int ReferenceSuggestionId);
-
 internal sealed class AiFaceReferenceSuggestionDecisionStore
 {
     private const string StateStoreKey = "reference-suggestion-rejections";

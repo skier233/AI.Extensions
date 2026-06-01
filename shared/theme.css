@@ -1,0 +1,20 @@
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@theme inline reference {
+  --color-background: var(--color-background, #16181d);
+  --color-surface: var(--color-surface, #1a1c23);
+  --color-card: var(--color-card, #1e2028);
+  --color-card-hover: var(--color-card-hover, #252830);
+  --color-border: var(--color-border, #2a2d38);
+  --color-input: var(--color-input, rgba(0, 0, 0, 0.25));
+  --color-foreground: var(--color-foreground, #e8eaf0);
+  --color-secondary: var(--color-secondary, #9ea3b0);
+  --color-muted: var(--color-muted, #6b7085);
+  --color-muted-foreground: var(--color-secondary, #9ea3b0);
+  --color-accent: var(--color-accent, #4f8ff7);
+  --color-accent-hover: var(--color-accent-hover, #6ea4ff);
+  --color-overlay: var(--color-overlay, rgba(0, 0, 0, 0.55));
+  --color-nav: var(--color-nav, #111317);
+  --color-nav-active: var(--color-nav-active, #4f8ff7);
+}

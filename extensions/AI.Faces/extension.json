@@ -30,6 +30,7 @@
   "entryDll": "AI.Faces.dll",
   "sharedAssemblies": ["AI.Extensions.Abstractions"],
   "jsBundle": "dist/bundle.js",
+  "cssBundle": "dist/bundle.css",
   "dependencies": {
     "cove.ai.core": ">=0.1.0"
   }

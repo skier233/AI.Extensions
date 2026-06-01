@@ -13,7 +13,7 @@
       "description": "Audio embeddings, classification, and scene similarity workflows.",
       "parentTopicId": "cove.ai",
       "pages": ["scenes", "scene", "settings"],
-      "contexts": ["panel:audio-similarity", "feature:cove.ai.audio.similarity", "detail-tab:audio-similar", "tab:audio-similar"],
+      "contexts": ["panel:audio-similarity", "feature:audio-similarity", "detail-tab:audio-similar", "tab:audio-similar"],
       "order": 84,
       "slides": [
         {

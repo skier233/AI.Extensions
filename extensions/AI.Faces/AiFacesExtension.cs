@@ -9,13 +9,10 @@ using Microsoft.AspNetCore.Routing;
 
 using Cove.Core.Auth;
 using Cove.Core.Interfaces;
-using Cove.Data;
-using Cove.Data.Services;
 using Cove.Plugins;
 using Cove.Sdk;
 
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.EntityFrameworkCore;
 
 namespace AI.Faces;
 
@@ -72,6 +69,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
         services.AddSingleton<AiFacesPersistenceService>();
         services.AddSingleton<IAiCapabilityContributor, AiFacesContributor>();
         services.AddScoped<AiFaceReferencePerformerResolver>();
+        services.AddScoped<IFaceSuggestionDecisionHandler, AiFaceReferenceSuggestionDecisionHandler>();
         services.AddScoped<IFaceSuggester, AiFaceSuggester>();
     }
 
@@ -196,64 +194,6 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
                 new RequestSizeLimitAttribute(512L * 1024 * 1024),
                 new RequestFormLimitsAttribute { MultipartBodyLengthLimit = 512L * 1024 * 1024 });
 
-        group.MapPost("/reference/faces/{faceId:int}/reject", async (
-            int faceId,
-            AiFaceReferenceSuggestionDecisionRequest request,
-            CoveContext db,
-            AiFaceReferencePackStore packStore,
-            AiFaceReferenceSuggestionDecisionStore decisionStore,
-            ICurrentPrincipalAccessor principalAccessor,
-            CancellationToken ct) =>
-        {
-            if (RequirePermission(principalAccessor, ApplyReferencePermission) is { } denied)
-                return denied;
-
-            var faceExists = await db.Faces.AsNoTracking().AnyAsync(face => face.Id == faceId, ct);
-            if (!faceExists)
-                return Results.NotFound();
-
-            var pack = await packStore.GetActivePackAsync(ct);
-            if (pack is null || !AiFaceReferenceSuggestionIds.TryResolve(pack.Identities, request.ReferenceSuggestionId, out var identity) || identity is null)
-                return Results.BadRequest(new { error = "referenceSuggestionId did not resolve to an imported reference identity." });
-
-            await decisionStore.RejectAsync(faceId, identity.ExternalId, ct);
-            return Results.NoContent();
-        });
-
-        group.MapPost("/reference/faces/{faceId:int}/import-performer", async (
-            int faceId,
-            AiFaceReferenceSuggestionDecisionRequest request,
-            CoveContext db,
-            AiFaceReferencePackStore packStore,
-            AiFaceReferencePerformerResolver performerResolver,
-            AiFaceReferenceSuggestionDecisionStore decisionStore,
-            FacePerformerPropagationService facePerformerPropagationService,
-            ICurrentPrincipalAccessor principalAccessor,
-            CancellationToken ct) =>
-        {
-            if (RequirePermission(principalAccessor, ApplyReferencePermission) is { } denied)
-                return denied;
-
-            var face = await db.Faces.FirstOrDefaultAsync(item => item.Id == faceId, ct);
-            if (face is null)
-                return Results.NotFound();
-
-            var pack = await packStore.GetActivePackAsync(ct);
-            var status = await packStore.GetStatusAsync(ct);
-            if (pack is null || status is null)
-                return Results.BadRequest(new { error = "Import a reference .saie pack before linking reference identities." });
-
-            if (!AiFaceReferenceSuggestionIds.TryResolve(pack.Identities, request.ReferenceSuggestionId, out var identity) || identity is null)
-                return Results.BadRequest(new { error = "referenceSuggestionId did not resolve to an imported reference identity." });
-
-            var performer = await performerResolver.FindOrCreateAsync(identity, status.SourceEndpoint, ct);
-            await decisionStore.ClearAsync(faceId, identity.ExternalId, ct);
-            await facePerformerPropagationService.ApplyLinkChangeAsync(faceId, face.PerformerId, performer.Id, ct);
-            face.PerformerId = performer.Id;
-            await db.SaveChangesAsync(ct);
-
-            return Results.Ok(new { performerId = performer.Id, performerName = performer.Name });
-        });
     }
 
     private static IResult? RequirePermission(ICurrentPrincipalAccessor principalAccessor, string permission)

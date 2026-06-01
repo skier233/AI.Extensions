@@ -29,7 +29,7 @@ public sealed class AiFaceReferencePackStoreTests
                 new
                 {
                     version = 1,
-                    embedder = "nsfw_ai_server:image_pipeline_face_embeddings_v1",
+                    embedder = "nsfw_ai_server:image_pipeline_dynamic_v4",
                     embedding_dim = 4,
                     pack_id = "stashdb_server_20260323_202719",
                     source_endpoint = "https://stashdb.org/graphql",

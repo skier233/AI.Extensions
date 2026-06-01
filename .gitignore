@@ -9,4 +9,5 @@ dist/
 !extensions/AI.Faces/dist/
 !extensions/AI.Faces/dist/**
 .vs/
-.artifacts/
+.artifacts/**
+artifacts/**

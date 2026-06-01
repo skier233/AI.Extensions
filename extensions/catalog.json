@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "extensions": [
+    {
+      "name": "AI.Audio",
+      "id": "cove.ai.audio",
+      "path": "extensions/AI.Audio",
+      "tagPrefix": "ai-audio/"
+    },
+    {
+      "name": "AI.Core",
+      "id": "cove.ai.core",
+      "path": "extensions/AI.Core",
+      "tagPrefix": "ai-core/"
+    },
+    {
+      "name": "AI.Faces",
+      "id": "cove.ai.faces",
+      "path": "extensions/AI.Faces",
+      "tagPrefix": "ai-faces/"
+    },
+    {
+      "name": "AI.Full",
+      "id": "cove.ai.full",
+      "path": "extensions/AI.Full",
+      "tagPrefix": "ai-full/",
+      "manifestOnly": true
+    },
+    {
+      "name": "AI.Tagging",
+      "id": "cove.ai.tagging",
+      "path": "extensions/AI.Tagging",
+      "tagPrefix": "ai-tagging/"
+    },
+    {
+      "name": "AI.Visual",
+      "id": "cove.ai.visual",
+      "path": "extensions/AI.Visual",
+      "tagPrefix": "ai-visual/"
+    }
+  ]
+}

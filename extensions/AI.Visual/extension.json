@@ -13,7 +13,7 @@
       "description": "Visual embeddings, detections, and similarity search for scenes and images.",
       "parentTopicId": "cove.ai",
       "pages": ["scenes", "scene", "images", "image", "settings"],
-      "contexts": ["panel:visual-similarity", "feature:cove.ai.visual.similarity", "detail-tab:similar", "tab:similar"],
+      "contexts": ["panel:visual-similarity", "feature:visual-similarity", "detail-tab:similar", "tab:similar"],
       "order": 83,
       "slides": [
         {

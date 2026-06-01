@@ -18,6 +18,18 @@ $extensions = @(
     "AI.Full"
 )
 
+Write-Host "Building extension UI bundles..."
+Push-Location $repoRoot
+try {
+    npm run build:ui
+    if ($LASTEXITCODE -ne 0) {
+        throw "npm run build:ui failed with exit code $LASTEXITCODE"
+    }
+}
+finally {
+    Pop-Location
+}
+
 Write-Host "Building AI.Extensions ($Configuration)..."
 dotnet build (Join-Path $repoRoot "AI.Extensions.slnx") -c $Configuration --nologo
 if ($LASTEXITCODE -ne 0) {

@@ -1,0 +1,157 @@
+name: Build and Release AI Extensions
+
+on:
+  push:
+    tags:
+      - '*/v*'
+  pull_request:
+    branches: [main]
+
+env:
+  DOTNET_VERSION: '10.0.x'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.catalog.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate extension catalog and manifests
+        run: node scripts/validate-extension-repo.mjs
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const tag = process.env.GITHUB_REF_NAME;
+          const catalog = JSON.parse(fs.readFileSync('extensions/catalog.json', 'utf8'));
+          const matches = catalog.extensions.filter(entry => tag.startsWith(entry.tagPrefix));
+          const supportedTags = catalog.extensions.map(entry => `${entry.tagPrefix}v1.0.0`).sort();
+
+          if (matches.length !== 1) {
+            console.error(`ERROR: Release tag '${tag}' does not match exactly one extension tag prefix.`);
+            console.error('Use the lowercase tagPrefix from extensions/catalog.json, for example:');
+            for (const supportedTag of supportedTags) console.error(`  - ${supportedTag}`);
+            process.exit(1);
+          }
+
+          const extension = matches[0];
+          const versionTag = tag.slice(extension.tagPrefix.length);
+          if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(versionTag)) {
+            console.error(`ERROR: Release tag '${tag}' has invalid version '${versionTag}'. Expected a semantic version like '${extension.tagPrefix}v1.0.0'.`);
+            process.exit(1);
+          }
+
+          console.log(`Release tag '${tag}' targets ${extension.name} (${extension.id}) version ${versionTag.slice(1)}.`);
+          NODE
+      - name: Build extension matrix
+        id: catalog
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const catalog = JSON.parse(fs.readFileSync('extensions/catalog.json', 'utf8'));
+          let extensions = catalog.extensions;
+
+          if (process.env.GITHUB_EVENT_NAME !== 'pull_request') {
+            const tag = process.env.GITHUB_REF_NAME;
+            extensions = extensions.filter(entry => tag.startsWith(entry.tagPrefix));
+          }
+
+          if (extensions.length === 0) {
+            console.error(`ERROR: No extension matches release tag '${process.env.GITHUB_REF_NAME}'.`);
+            process.exit(1);
+          }
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ extension: extensions })}\n`);
+          NODE
+
+  build:
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.validate.outputs.matrix) }}
+    steps:
+      - name: Check if this extension was tagged
+        id: check
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "match=true" >> "$GITHUB_OUTPUT"
+            echo "version=0.0.0" >> "$GITHUB_OUTPUT"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+            if [[ "$TAG" == "${{ matrix.extension.tagPrefix }}"* ]]; then
+              echo "match=true" >> "$GITHUB_OUTPUT"
+              echo "version=${TAG#${{ matrix.extension.tagPrefix }}v}" >> "$GITHUB_OUTPUT"
+            else
+              echo "match=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.check.outputs.match == 'true'
+
+      - name: Setup .NET
+        if: steps.check.outputs.match == 'true' && !matrix.extension.manifestOnly
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        if: steps.check.outputs.match == 'true' && !matrix.extension.manifestOnly
+        run: dotnet restore ${{ matrix.extension.path }}
+
+      - name: Build
+        if: steps.check.outputs.match == 'true' && !matrix.extension.manifestOnly
+        run: dotnet build ${{ matrix.extension.path }} -c Release --no-restore -p:Version=${{ steps.check.outputs.version }} -p:ContinuousIntegrationBuild=true
+
+      - name: Publish
+        if: steps.check.outputs.match == 'true' && !matrix.extension.manifestOnly
+        run: dotnet publish ${{ matrix.extension.path }} -c Release -o artifacts/${{ matrix.extension.name }} --no-build -p:Version=${{ steps.check.outputs.version }} -p:ContinuousIntegrationBuild=true
+
+      - name: Create manifest-only package root
+        if: steps.check.outputs.match == 'true' && matrix.extension.manifestOnly
+        run: mkdir -p artifacts/${{ matrix.extension.name }}
+
+      - name: Copy extension.json
+        if: steps.check.outputs.match == 'true'
+        run: cp ${{ matrix.extension.path }}/extension.json artifacts/${{ matrix.extension.name }}/
+
+      - name: Stamp packaged extension.json version
+        if: steps.check.outputs.match == 'true'
+        run: |
+          node -e "const fs=require('fs'); const file='artifacts/${{ matrix.extension.name }}/extension.json'; const json=JSON.parse(fs.readFileSync(file,'utf8')); json.version='${{ steps.check.outputs.version }}'; fs.writeFileSync(file, JSON.stringify(json, null, 2) + '\n');"
+
+      - name: Package
+        if: steps.check.outputs.match == 'true' && github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          cd artifacts/${{ matrix.extension.name }}
+          zip -r ../../${{ matrix.extension.id }}-${{ steps.check.outputs.version }}.zip .
+
+      - name: Upload artifact
+        if: steps.check.outputs.match == 'true' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.extension.id }}
+          path: ${{ matrix.extension.id }}-*.zip
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: '*.zip'
+          generate_release_notes: true

@@ -108,7 +108,7 @@ public sealed class AiFaceReferenceBackfillServiceTests
 
     private static SaieReferencePack CreateReferencePack()
         => new(
-            new SaieManifest(1, "nsfw_ai_server:image_pipeline_face_embeddings_v1", 2, "pack-zazie", null, 1, DateTimeOffset.UtcNow),
+            new SaieManifest(1, "nsfw_ai_server:image_pipeline_dynamic_v4", 2, "pack-zazie", null, 1, DateTimeOffset.UtcNow),
             [new SaieReferenceIdentity(0, "ref-zazie", "Zazie Skymm", [], null, 1, 1.0, null)],
             [1f, 0f]);
 
