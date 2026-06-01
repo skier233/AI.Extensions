@@ -5,15 +5,30 @@
   "description": "Tagging capability contributions for image and video AI runs.",
   "author": "Cove Team",
   "url": "https://github.com/yourcove/AI.Extensions",
-  "categories": ["ai", "metadata", "automation"],
+  "categories": [
+    "ai",
+    "metadata",
+    "automation"
+  ],
   "tutorialTopics": [
     {
       "id": "cove.ai.tagging",
       "title": "AI Tagging",
       "description": "Generated tag claims and tag-name override settings.",
       "parentTopicId": "cove.ai",
-      "pages": ["tags", "tag", "scenes", "scene", "images", "image", "settings"],
-      "contexts": ["settings-tab:extensions/ai/tagging", "route:/settings/extensions/ai/tagging"],
+      "pages": [
+        "tags",
+        "tag",
+        "scenes",
+        "scene",
+        "images",
+        "image",
+        "settings"
+      ],
+      "contexts": [
+        "settings-tab:extensions/ai/tagging",
+        "route:/settings/extensions/ai/tagging"
+      ],
       "order": 82,
       "slides": [
         {
@@ -28,9 +43,11 @@
       ]
     }
   ],
-  "minCoveVersion": "0.0.10",
+  "minCoveVersion": "0.0.30",
   "entryDll": "AI.Tagging.dll",
-  "sharedAssemblies": ["AI.Extensions.Abstractions"],
+  "sharedAssemblies": [
+    "AI.Extensions.Abstractions"
+  ],
   "jsBundle": "dist/bundle.js",
   "cssBundle": "dist/bundle.css",
   "dependencies": {

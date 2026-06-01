@@ -5,14 +5,26 @@
   "description": "AI orchestration, model management, and nsfw_ai_server connectivity for Cove.",
   "author": "Cove Team",
   "url": "https://github.com/yourcove/AI.Extensions",
-  "categories": ["ai", "automation", "metadata", "tools"],
+  "categories": [
+    "ai",
+    "automation",
+    "metadata",
+    "tools"
+  ],
   "tutorialTopics": [
     {
       "id": "cove.ai",
       "title": "AI",
       "description": "Model setup, capability extensions, and AI-assisted media workflows.",
-      "pages": ["ai", "settings"],
-      "contexts": ["page:ai", "settings-tab:extensions/ai", "route:/settings/extensions/ai"],
+      "pages": [
+        "ai",
+        "settings"
+      ],
+      "contexts": [
+        "page:ai",
+        "settings-tab:extensions/ai",
+        "route:/settings/extensions/ai"
+      ],
       "order": 80,
       "slides": [
         {
@@ -21,7 +33,12 @@
           "caption": "The AI extensions work together: AI Core queues runs and specialist extensions contribute tagging, visual, audio, and face capabilities.",
           "bodyMarkdown": "Install **AI Core** first, then enable the capability extensions you need. Run AI on a small scene or image selection before broad cleanup so generated metadata stays reviewable.",
           "mockKind": "extension",
-          "links": [{ "label": "AI Extensions README", "url": "https://github.com/yourcove/AI.Extensions" }]
+          "links": [
+            {
+              "label": "AI Extensions README",
+              "url": "https://github.com/yourcove/AI.Extensions"
+            }
+          ]
         }
       ]
     },
@@ -30,7 +47,14 @@
       "title": "AI Core",
       "description": "AI model setup, run queues, and scene or image analysis workflows.",
       "parentTopicId": "cove.ai",
-      "pages": ["ai", "settings", "scenes", "scene", "images", "image"],
+      "pages": [
+        "ai",
+        "settings",
+        "scenes",
+        "scene",
+        "images",
+        "image"
+      ],
       "contexts": [
         "extension-handler:openRunAiDialog",
         "extension-action:cove.ai.core:ai-core-run-scene-toolbar",
@@ -57,9 +81,11 @@
       ]
     }
   ],
-  "minCoveVersion": "0.0.10",
+  "minCoveVersion": "0.0.30",
   "entryDll": "AI.Core.dll",
-  "sharedAssemblies": ["AI.Extensions.Abstractions"],
+  "sharedAssemblies": [
+    "AI.Extensions.Abstractions"
+  ],
   "jsBundle": "dist/bundle.js",
   "cssBundle": "dist/bundle.css",
   "dependencies": {}

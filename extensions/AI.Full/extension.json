@@ -6,8 +6,12 @@
   "description": "Dependency bundle that activates the full Cove AI extension family.",
   "author": "Cove Team",
   "url": "https://github.com/yourcove/AI.Extensions",
-  "categories": ["ai", "automation", "tools"],
-  "minCoveVersion": "0.0.10",
+  "categories": [
+    "ai",
+    "automation",
+    "tools"
+  ],
+  "minCoveVersion": "0.0.30",
   "dependencies": {
     "cove.ai.core": ">=0.1.0 <1.0.0",
     "cove.ai.tagging": ">=0.1.0 <1.0.0",

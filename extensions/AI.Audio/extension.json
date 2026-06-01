@@ -5,15 +5,28 @@
   "description": "Audio embedding and classification capability contributions for AI runs.",
   "author": "Cove Team",
   "url": "https://github.com/yourcove/AI.Extensions",
-  "categories": ["ai", "metadata", "automation"],
+  "categories": [
+    "ai",
+    "metadata",
+    "automation"
+  ],
   "tutorialTopics": [
     {
       "id": "cove.ai.audio",
       "title": "AI Audio",
       "description": "Audio embeddings, classification, and scene similarity workflows.",
       "parentTopicId": "cove.ai",
-      "pages": ["scenes", "scene", "settings"],
-      "contexts": ["panel:audio-similarity", "feature:audio-similarity", "detail-tab:audio-similar", "tab:audio-similar"],
+      "pages": [
+        "scenes",
+        "scene",
+        "settings"
+      ],
+      "contexts": [
+        "panel:audio-similarity",
+        "feature:audio-similarity",
+        "detail-tab:audio-similar",
+        "tab:audio-similar"
+      ],
       "order": 84,
       "slides": [
         {
@@ -26,9 +39,11 @@
       ]
     }
   ],
-  "minCoveVersion": "0.0.10",
+  "minCoveVersion": "0.0.30",
   "entryDll": "AI.Audio.dll",
-  "sharedAssemblies": ["AI.Extensions.Abstractions"],
+  "sharedAssemblies": [
+    "AI.Extensions.Abstractions"
+  ],
   "dependencies": {
     "cove.ai.core": ">=0.1.0"
   }

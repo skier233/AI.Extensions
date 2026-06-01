@@ -1,10 +1,7 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <AssemblyName>AI.Full</AssemblyName>
     <RootNamespace>AI.Full</RootNamespace>
-    <CoveSdkVersion Condition="'$(CoveSdkVersion)' == ''">0.0.1</CoveSdkVersion>
-    <UseLocalCoveSource Condition="'$(UseLocalCoveSource)' == '' and Exists('$(MSBuildThisFileDirectory)..\\..\\..\\cove\\src\\Cove.Sdk\\Cove.Sdk.csproj')">true</UseLocalCoveSource>
-    <UseLocalCoveSource Condition="'$(UseLocalCoveSource)' == ''">false</UseLocalCoveSource>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(UseLocalCoveSource)' == 'true' and Exists('$(MSBuildThisFileDirectory)..\\..\\..\\cove\\src\\Cove.Sdk\\Cove.Sdk.csproj')">
@@ -18,4 +15,3 @@
     <PackageReference Include="Cove.Sdk" Version="$(CoveSdkVersion)" />
   </ItemGroup>
 </Project>
-

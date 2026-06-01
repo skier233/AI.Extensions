@@ -5,15 +5,30 @@
   "description": "Visual detection and region-analysis capability contributions for image and video AI runs.",
   "author": "Cove Team",
   "url": "https://github.com/yourcove/AI.Extensions",
-  "categories": ["ai", "metadata", "automation"],
+  "categories": [
+    "ai",
+    "metadata",
+    "automation"
+  ],
   "tutorialTopics": [
     {
       "id": "cove.ai.visual",
       "title": "AI Visual",
       "description": "Visual embeddings, detections, and similarity search for scenes and images.",
       "parentTopicId": "cove.ai",
-      "pages": ["scenes", "scene", "images", "image", "settings"],
-      "contexts": ["panel:visual-similarity", "feature:visual-similarity", "detail-tab:similar", "tab:similar"],
+      "pages": [
+        "scenes",
+        "scene",
+        "images",
+        "image",
+        "settings"
+      ],
+      "contexts": [
+        "panel:visual-similarity",
+        "feature:visual-similarity",
+        "detail-tab:similar",
+        "tab:similar"
+      ],
       "order": 83,
       "slides": [
         {
@@ -28,9 +43,11 @@
       ]
     }
   ],
-  "minCoveVersion": "0.0.10",
+  "minCoveVersion": "0.0.30",
   "entryDll": "AI.Visual.dll",
-  "sharedAssemblies": ["AI.Extensions.Abstractions"],
+  "sharedAssemblies": [
+    "AI.Extensions.Abstractions"
+  ],
   "dependencies": {
     "cove.ai.core": ">=0.1.0"
   }
