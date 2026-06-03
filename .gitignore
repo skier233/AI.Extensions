@@ -11,3 +11,4 @@ dist/
 .vs/
 .artifacts/**
 artifacts/**
+dist/
