@@ -14,11 +14,11 @@
     {
       "id": "cove.ai.audio",
       "title": "AI Audio",
-      "description": "Audio embeddings, classification, and scene similarity workflows.",
+      "description": "Audio embeddings, classification, and video similarity workflows.",
       "parentTopicId": "cove.ai",
       "pages": [
-        "scenes",
-        "scene",
+        "videos",
+        "video",
         "settings"
       ],
       "contexts": [
@@ -32,9 +32,9 @@
         {
           "id": "audio-similarity",
           "title": "Compare media by sound",
-          "caption": "AI Audio contributes audio embedding and classification claims for scene similarity and downstream routing.",
-          "bodyMarkdown": "Run audio claims on scenes with usable audio, use similar-scene results from detail pages, and combine audio evidence with visual and tag signals.",
-          "mockKind": "scenePlayer"
+          "caption": "AI Audio contributes audio embedding and classification claims for video similarity and downstream routing.",
+          "bodyMarkdown": "Run audio claims on videos with usable audio, use similar-video results from detail pages, and combine audio evidence with visual and tag signals.",
+          "mockKind": "videoPlayer"
         }
       ]
     }

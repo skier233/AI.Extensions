@@ -38,8 +38,8 @@ public sealed class AiFaceReferenceBackfillServiceTests
             NextIdentityOrdinal = 3,
             Identities =
             [
-                CreatePromotedIdentity("face-0001", [1f, 0f], "scene-5634"),
-                CreatePromotedIdentity("face-0002", [0.48f, 0.8772685f], "scene-5634"),
+                CreatePromotedIdentity("face-0001", [1f, 0f], "video-5634"),
+                CreatePromotedIdentity("face-0002", [0.48f, 0.8772685f], "video-5634"),
             ],
         };
         await provider.GetRequiredService<IFaceIdentityStateStore>().SaveAsync(snapshot);
@@ -53,8 +53,8 @@ public sealed class AiFaceReferenceBackfillServiceTests
             await db.SaveChangesAsync();
 
             db.FaceAppearances.AddRange(
-                new FaceAppearance { FaceId = target.Id, HostType = FaceAppearanceHostType.Scene, HostId = 5634, SourceKey = "ext:ai.faces", SampleCount = 1 },
-                new FaceAppearance { FaceId = duplicate.Id, HostType = FaceAppearanceHostType.Scene, HostId = 5634, SourceKey = "ext:ai.faces", SampleCount = 1 });
+                new FaceAppearance { FaceId = target.Id, HostType = FaceAppearanceHostType.Video, HostId = 5634, SourceKey = "ext:ai.faces", SampleCount = 1 },
+                new FaceAppearance { FaceId = duplicate.Id, HostType = FaceAppearanceHostType.Video, HostId = 5634, SourceKey = "ext:ai.faces", SampleCount = 1 });
             await db.SaveChangesAsync();
         }
 

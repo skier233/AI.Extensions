@@ -64,12 +64,12 @@ public sealed class AiVisualExtension : FullExtensionBase
     {
         var group = endpoints.MapGroup("/api/ext/ai-visual").WithTags("AI.Visual");
 
-        group.MapPost("/scenes/search", async (HttpRequest httpRequest, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
+        group.MapPost("/videos/search", async (HttpRequest httpRequest, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
         {
             try
             {
-                var request = await AiVisualSearchRequestReader.ReadAsync<SceneFilter>(httpRequest, ct);
-                return Results.Ok(await searchService.SearchScenesAsync(request, ct));
+                var request = await AiVisualSearchRequestReader.ReadAsync<VideoFilter>(httpRequest, ct);
+                return Results.Ok(await searchService.SearchVideosAsync(request, ct));
             }
             catch (ArgumentException ex)
             {
@@ -106,19 +106,19 @@ public sealed class AiVisualExtension : FullExtensionBase
             }
         });
 
-        group.MapGet("/scenes/{sceneId:int}/similar-scenes", async (int sceneId, int? page, int? perPage, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
-            Results.Ok(await searchService.SimilarScenesForSceneAsync(sceneId, page ?? 1, perPage ?? 12, ct)));
+        group.MapGet("/videos/{videoId:int}/similar-videos", async (int videoId, int? page, int? perPage, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
+            Results.Ok(await searchService.SimilarVideosForVideoAsync(videoId, page ?? 1, perPage ?? 12, ct)));
 
-        group.MapGet("/scenes/{sceneId:int}/similar-images", async (int sceneId, int? page, int? perPage, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
-            Results.Ok(await searchService.SimilarImagesForSceneAsync(sceneId, page ?? 1, perPage ?? 12, ct)));
+        group.MapGet("/videos/{videoId:int}/similar-images", async (int videoId, int? page, int? perPage, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
+            Results.Ok(await searchService.SimilarImagesForVideoAsync(videoId, page ?? 1, perPage ?? 12, ct)));
 
-        group.MapGet("/images/{imageId:int}/similar-scenes", async (int imageId, int? page, int? perPage, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
-            Results.Ok(await searchService.SimilarScenesForImageAsync(imageId, page ?? 1, perPage ?? 12, ct)));
+        group.MapGet("/images/{imageId:int}/similar-videos", async (int imageId, int? page, int? perPage, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
+            Results.Ok(await searchService.SimilarVideosForImageAsync(imageId, page ?? 1, perPage ?? 12, ct)));
 
         group.MapGet("/images/{imageId:int}/similar-images", async (int imageId, int? page, int? perPage, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
             Results.Ok(await searchService.SimilarImagesForImageAsync(imageId, page ?? 1, perPage ?? 12, ct)));
 
-        group.MapGet("/scenes/{sceneId:int}/similar-scenes/segment", async (int sceneId, double? startSec, double? endSec, int? page, int? perPage, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
+        group.MapGet("/videos/{videoId:int}/similar-videos/segment", async (int videoId, double? startSec, double? endSec, int? page, int? perPage, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
         {
             if (startSec is null)
             {
@@ -127,7 +127,7 @@ public sealed class AiVisualExtension : FullExtensionBase
 
             try
             {
-                return Results.Ok(await searchService.SimilarScenesForSceneSegmentAsync(sceneId, startSec.Value, endSec, page ?? 1, perPage ?? 12, ct));
+                return Results.Ok(await searchService.SimilarVideosForVideoSegmentAsync(videoId, startSec.Value, endSec, page ?? 1, perPage ?? 12, ct));
             }
             catch (ArgumentException ex)
             {
@@ -135,13 +135,13 @@ public sealed class AiVisualExtension : FullExtensionBase
             }
         });
 
-        group.MapPost("/scenes/{sceneId:int}/similar-scenes/segment", async (int sceneId, HttpRequest httpRequest, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
+        group.MapPost("/videos/{videoId:int}/similar-videos/segment", async (int videoId, HttpRequest httpRequest, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
         {
             try
             {
                 var request = await AiVisualSearchRequestReader.ReadSegmentSimilarityAsync(httpRequest, ct);
-                return Results.Ok(await searchService.SimilarScenesForSceneSegmentAsync(
-                    sceneId,
+                return Results.Ok(await searchService.SimilarVideosForVideoSegmentAsync(
+                    videoId,
                     request.Intervals ?? [],
                     request.Page ?? 1,
                     request.PerPage ?? 12,

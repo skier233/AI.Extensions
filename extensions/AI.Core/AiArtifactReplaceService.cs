@@ -1,9 +1,7 @@
 using System.Text.Json;
 
 using Cove.Core.Entities;
-using Cove.Data;
-
-using Microsoft.EntityFrameworkCore;
+using Cove.Core.Interfaces;
 
 namespace AI.Core;
 
@@ -12,10 +10,13 @@ public interface IAiArtifactReplaceService
     Task ReplaceAsync(string? hostEntityType, int? hostEntityId, IReadOnlyList<AiRunExecutionPlan> plans, CancellationToken ct = default);
 }
 
-internal sealed class AiArtifactReplaceService(CoveContext dbContext) : IAiArtifactReplaceService
+internal sealed class AiArtifactReplaceService(
+    IEmbeddingRepository embeddingRepo,
+    IDetectionRepository detectionRepo,
+    IFaceRepository faceRepo,
+    ITagApplicationRepository tagAppRepo,
+    ISegmentRepository segmentRepo) : IAiArtifactReplaceService
 {
-    private readonly CoveContext _dbContext = dbContext;
-
     public async Task ReplaceAsync(string? hostEntityType, int? hostEntityId, IReadOnlyList<AiRunExecutionPlan> plans, CancellationToken ct = default)
     {
         if (plans.Count == 0 || !hostEntityId.HasValue || string.IsNullOrWhiteSpace(hostEntityType))
@@ -37,120 +38,91 @@ internal sealed class AiArtifactReplaceService(CoveContext dbContext) : IAiArtif
             return;
         }
 
-        var affectedTagPairs = new List<TagHostPair>();
+        var affectedTagEntityIds = new List<(AffinityHostType HostType, int HostId)>();
+
         foreach (var (sourceKey, modelKeys) in modelKeysBySource)
         {
             if (TryResolveEmbeddingHostType(normalizedHostType, out var embeddingHostType))
             {
-                var embeddings = await _dbContext.Embeddings
-                    .Where(embedding => embedding.SourceKey == sourceKey && embedding.HostType == embeddingHostType && embedding.HostId == hostEntityId.Value)
-                    .ToListAsync(ct);
-                var toRemove = embeddings.Where(embedding => MatchesModelKey(embedding.Meta, modelKeys)).ToArray();
+                var embeddings = await embeddingRepo.FindAsync(new EmbeddingFilter
+                {
+                    SourceKey = sourceKey,
+                    HostType = embeddingHostType,
+                    HostId = hostEntityId.Value,
+                }, ct);
+                var toRemove = embeddings.Where(e => MatchesModelKey(e.Meta, modelKeys)).ToArray();
                 if (toRemove.Length > 0)
                 {
-                    _dbContext.Embeddings.RemoveRange(toRemove);
+                    embeddingRepo.RemoveRange(toRemove);
                 }
             }
 
             if (TryResolveDetectionHostType(normalizedHostType, out var detectionHostType))
             {
-                var detections = await _dbContext.Set<Detection>()
-                    .Where(detection => detection.SourceKey == sourceKey && detection.HostType == detectionHostType && detection.HostId == hostEntityId.Value)
-                    .ToListAsync(ct);
-                var toRemove = detections.Where(detection => MatchesModelKey(detection.Extra, modelKeys)).ToArray();
+                var detections = await detectionRepo.FindAsync(new DetectionFilter
+                {
+                    SourceKey = sourceKey,
+                    HostType = detectionHostType,
+                    HostId = hostEntityId.Value,
+                }, ct);
+                var toRemove = detections.Where(d => MatchesModelKey(d.Extra, modelKeys)).ToArray();
                 if (toRemove.Length > 0)
                 {
-                    _dbContext.Set<Detection>().RemoveRange(toRemove);
+                    detectionRepo.RemoveRange(toRemove);
                 }
             }
 
-            if (normalizedHostType == "scene")
+            if (normalizedHostType == "video")
             {
-                var segments = await _dbContext.Segments
-                    .Where(segment => segment.SourceKey == sourceKey && segment.HostType == SegmentHostType.Scene && segment.HostId == hostEntityId.Value)
-                    .ToListAsync(ct);
-                var toRemove = segments.Where(segment => MatchesModelKey(segment.Payload, modelKeys)).ToArray();
+                var segments = await segmentRepo.FindAsync(new SegmentFilter
+                {
+                    SourceKey = sourceKey,
+                    HostType = SegmentHostType.Video,
+                    HostId = hostEntityId.Value,
+                }, ct);
+                var toRemove = segments.Where(s => MatchesModelKey(s.Payload, modelKeys)).ToArray();
                 if (toRemove.Length > 0)
                 {
-                    _dbContext.Segments.RemoveRange(toRemove);
+                    segmentRepo.RemoveRange(toRemove);
                 }
             }
 
-            if (normalizedHostType is "scene" or "image")
+            if (normalizedHostType is "video" or "image")
             {
-                var appearanceHostType = normalizedHostType == "scene" ? FaceAppearanceHostType.Scene : FaceAppearanceHostType.Image;
-                var appearances = await _dbContext.FaceAppearances
-                    .Where(appearance => appearance.SourceKey == sourceKey && appearance.HostType == appearanceHostType && appearance.HostId == hostEntityId.Value)
-                    .ToListAsync(ct);
-                var appearancesToRemove = appearances.Where(appearance => MatchesModelKey(appearance.Payload, modelKeys)).ToArray();
-                if (appearancesToRemove.Length > 0)
+                var appearanceHostType = normalizedHostType == "video" ? FaceAppearanceHostType.Video : FaceAppearanceHostType.Image;
+                var appearances = await faceRepo.FindAppearancesAsync(new FaceAppearanceFilter
                 {
-                    _dbContext.FaceAppearances.RemoveRange(appearancesToRemove);
+                    SourceKey = sourceKey,
+                    HostType = appearanceHostType,
+                    HostId = hostEntityId.Value,
+                }, ct);
+                var toRemove = appearances.Where(a => MatchesModelKey(a.Payload, modelKeys)).ToArray();
+                if (toRemove.Length > 0)
+                {
+                    faceRepo.RemoveAppearances(toRemove);
                 }
 
-                var affinityHostType = normalizedHostType == "scene" ? AffinityHostType.Scene : AffinityHostType.Image;
-                var applications = await _dbContext.TagApplications
-                    .Where(application => application.SourceKey == sourceKey && application.HostType == affinityHostType && application.HostId == hostEntityId.Value && modelKeys.Contains(application.ModelKey))
-                    .ToListAsync(ct);
+                var affinityHostType = normalizedHostType == "video" ? AffinityHostType.Video : AffinityHostType.Image;
+                var applications = await tagAppRepo.FindAsync(new TagApplicationFilter
+                {
+                    SourceKey = sourceKey,
+                    HostType = affinityHostType,
+                    HostId = hostEntityId.Value,
+                    ModelKeys = modelKeys,
+                }, ct);
                 if (applications.Count > 0)
                 {
-                    _dbContext.TagApplications.RemoveRange(applications);
-                    affectedTagPairs.AddRange(applications.Select(application => new TagHostPair(application.HostType, application.HostId, application.TagId)));
+                    tagAppRepo.RemoveRange(applications);
+                    affectedTagEntityIds.Add((affinityHostType, hostEntityId.Value));
                 }
             }
         }
 
-        if (_dbContext.ChangeTracker.HasChanges())
-        {
-            await _dbContext.SaveChangesAsync(ct);
-        }
+        await embeddingRepo.SaveChangesAsync(ct);
 
-        if (affectedTagPairs.Count > 0)
+        foreach (var (hostType, entityId) in affectedTagEntityIds.Distinct())
         {
-            await RemoveOrphanedTagLinksAsync(affectedTagPairs.Distinct().ToArray(), ct);
-        }
-    }
-
-    private async Task RemoveOrphanedTagLinksAsync(IReadOnlyCollection<TagHostPair> affectedPairs, CancellationToken ct)
-    {
-        var scenePairs = affectedPairs.Where(pair => pair.HostType == AffinityHostType.Scene).ToArray();
-        if (scenePairs.Length > 0)
-        {
-            var sceneIds = scenePairs.Select(static pair => pair.HostId).Distinct().ToArray();
-            var sceneTags = await _dbContext.Set<SceneTag>().Where(sceneTag => sceneIds.Contains(sceneTag.SceneId)).ToListAsync(ct);
-            var remainingPairs = await _dbContext.TagApplications
-                .Where(application => application.HostType == AffinityHostType.Scene && sceneIds.Contains(application.HostId))
-                .Select(application => new TagHostPair(application.HostType, application.HostId, application.TagId))
-                .Distinct()
-                .ToListAsync(ct);
-            var remainingSet = remainingPairs.ToHashSet();
-            var orphaned = scenePairs.Where(pair => !remainingSet.Contains(pair)).ToHashSet();
-            var toRemove = sceneTags.Where(sceneTag => orphaned.Contains(new TagHostPair(AffinityHostType.Scene, sceneTag.SceneId, sceneTag.TagId))).ToArray();
-            if (toRemove.Length > 0)
-            {
-                _dbContext.Set<SceneTag>().RemoveRange(toRemove);
-                await _dbContext.SaveChangesAsync(ct);
-            }
-        }
-
-        var imagePairs = affectedPairs.Where(pair => pair.HostType == AffinityHostType.Image).ToArray();
-        if (imagePairs.Length > 0)
-        {
-            var imageIds = imagePairs.Select(static pair => pair.HostId).Distinct().ToArray();
-            var imageTags = await _dbContext.Set<ImageTag>().Where(imageTag => imageIds.Contains(imageTag.ImageId)).ToListAsync(ct);
-            var remainingPairs = await _dbContext.TagApplications
-                .Where(application => application.HostType == AffinityHostType.Image && imageIds.Contains(application.HostId))
-                .Select(application => new TagHostPair(application.HostType, application.HostId, application.TagId))
-                .Distinct()
-                .ToListAsync(ct);
-            var remainingSet = remainingPairs.ToHashSet();
-            var orphaned = imagePairs.Where(pair => !remainingSet.Contains(pair)).ToHashSet();
-            var toRemove = imageTags.Where(imageTag => orphaned.Contains(new TagHostPair(AffinityHostType.Image, imageTag.ImageId, imageTag.TagId))).ToArray();
-            if (toRemove.Length > 0)
-            {
-                _dbContext.Set<ImageTag>().RemoveRange(toRemove);
-                await _dbContext.SaveChangesAsync(ct);
-            }
+            await tagAppRepo.RemoveOrphanedTagLinksAsync(hostType, [entityId], string.Empty, ct);
         }
     }
 
@@ -182,8 +154,8 @@ internal sealed class AiArtifactReplaceService(CoveContext dbContext) : IAiArtif
     {
         switch (hostEntityType)
         {
-            case "scene":
-                hostType = EmbeddingHostType.Scene;
+            case "video":
+                hostType = EmbeddingHostType.Video;
                 return true;
             case "image":
                 hostType = EmbeddingHostType.Image;
@@ -201,8 +173,8 @@ internal sealed class AiArtifactReplaceService(CoveContext dbContext) : IAiArtif
     {
         switch (hostEntityType)
         {
-            case "scene":
-                hostType = DetectionHostType.Scene;
+            case "video":
+                hostType = DetectionHostType.Video;
                 return true;
             case "image":
                 hostType = DetectionHostType.Image;
@@ -212,6 +184,4 @@ internal sealed class AiArtifactReplaceService(CoveContext dbContext) : IAiArtif
                 return false;
         }
     }
-
-    private sealed record TagHostPair(AffinityHostType HostType, int HostId, int TagId);
 }

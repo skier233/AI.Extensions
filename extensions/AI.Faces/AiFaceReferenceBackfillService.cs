@@ -1,7 +1,6 @@
 using Cove.Core.Entities;
-using Cove.Data;
+using Cove.Core.Interfaces;
 
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AI.Faces;
@@ -27,7 +26,10 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
         var stateStore = scope.ServiceProvider.GetRequiredService<IFaceIdentityStateStore>();
         var settingsStore = scope.ServiceProvider.GetRequiredService<IAiFacesSettingsStore>();
         var reconciler = scope.ServiceProvider.GetRequiredService<AiFaceIdentityReconciler>();
-        var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+        var faceRepo = scope.ServiceProvider.GetRequiredService<IFaceRepository>();
+        var embeddingRepo = scope.ServiceProvider.GetRequiredService<IEmbeddingRepository>();
+        var detectionRepo = scope.ServiceProvider.GetRequiredService<IDetectionRepository>();
+        var segmentRepo = scope.ServiceProvider.GetRequiredService<ISegmentRepository>();
 
         var snapshot = await stateStore.LoadAsync(ct);
         if (snapshot.Identities.Count == 0)
@@ -40,7 +42,8 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
         ApplyReferenceDisplayLabels(snapshot);
         await stateStore.SaveAsync(snapshot, ct);
 
-        var (mergedPersistedFaces, relabeledPersistedFaces) = await ApplyPersistedFaceUpdatesAsync(db, snapshot, report.MergedFaceKeyMap, ct);
+        var (mergedPersistedFaces, relabeledPersistedFaces) = await ApplyPersistedFaceUpdatesAsync(
+            faceRepo, embeddingRepo, detectionRepo, segmentRepo, snapshot, report.MergedFaceKeyMap, ct);
 
         return new AiFaceReferenceBackfillResult(
             report.MergedIdentityCount,
@@ -51,7 +54,10 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
     }
 
     private static async Task<(int MergedPersistedFaces, int RelabeledPersistedFaces)> ApplyPersistedFaceUpdatesAsync(
-        CoveContext db,
+        IFaceRepository faceRepo,
+        IEmbeddingRepository embeddingRepo,
+        IDetectionRepository detectionRepo,
+        ISegmentRepository segmentRepo,
         FaceIdentitySnapshot snapshot,
         IReadOnlyDictionary<string, string> mergedFaceKeyMap,
         CancellationToken ct)
@@ -69,13 +75,8 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
             return (0, 0);
         }
 
-        var loweredKeys = faceKeys
-            .Select(static key => key.Trim().ToLowerInvariant())
-            .ToArray();
-
-        var faces = await db.Faces
-            .Where(face => face.PrimarySourceKey != null && loweredKeys.Contains(face.PrimarySourceKey.ToLower()))
-            .ToListAsync(ct);
+        var faces = await faceRepo.FindFacesAsync(
+            new FaceFilter { PrimarySourceKeys = faceKeys }, tracking: true, ct);
         var facesByKey = faces
             .Where(static face => !string.IsNullOrWhiteSpace(face.PrimarySourceKey))
             .GroupBy(static face => face.PrimarySourceKey!, StringComparer.OrdinalIgnoreCase)
@@ -85,14 +86,9 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
         foreach (var identity in snapshot.Identities)
         {
             if (!facesByKey.TryGetValue(identity.FaceKey, out var face))
-            {
                 continue;
-            }
-
             if (!ShouldRefreshFaceLabel(face, identity))
-            {
                 continue;
-            }
 
             face.Label = identity.Label;
             relabeledPersistedFaces++;
@@ -111,44 +107,53 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
 
         if (mergeOperations.Length == 0)
         {
-            if (db.ChangeTracker.HasChanges())
-            {
-                await db.SaveChangesAsync(ct);
-            }
-
+            await faceRepo.SaveChangesAsync(ct);
             return (0, relabeledPersistedFaces);
         }
 
         var duplicateFaceIds = mergeOperations.Select(static entry => entry.Duplicate!.Id).Distinct().ToArray();
-        var targetFaceIdByDuplicateFaceId = mergeOperations.ToDictionary(static entry => entry.Duplicate!.Id, static entry => entry.Target!.Id);
+        var targetFaceIdByDuplicateFaceId = mergeOperations
+            .ToDictionary(static entry => entry.Duplicate!.Id, static entry => entry.Target!.Id);
 
-        var appearances = await db.FaceAppearances
-            .Where(appearance => appearance.SourceKey == FaceSourceKey && duplicateFaceIds.Contains(appearance.FaceId))
-            .ToListAsync(ct);
+        await faceRepo.UpdateAppearanceFaceIdAsync(FaceSourceKey, duplicateFaceIds, -1 /* temp */, ct);
+        // Re-point each duplicate face's appearances to their target
+        var appearances = await faceRepo.FindAppearancesAsync(
+            new FaceAppearanceFilter { SourceKey = FaceSourceKey, FaceIds = duplicateFaceIds }, ct);
         foreach (var appearance in appearances)
         {
             appearance.FaceId = targetFaceIdByDuplicateFaceId[appearance.FaceId];
         }
 
-        var detections = await db.Detections
-            .Where(detection => detection.SourceKey == FaceSourceKey && detection.RefKind == "face" && detection.RefId.HasValue && duplicateFaceIds.Contains((int)detection.RefId.Value))
-            .ToListAsync(ct);
+        var detections = await detectionRepo.FindAsync(new DetectionFilter
+        {
+            SourceKey = FaceSourceKey,
+            RefKind = "face",
+            RefIds = duplicateFaceIds.Select(static id => (long)id).ToArray(),
+        }, ct);
         foreach (var detection in detections)
         {
             detection.RefId = targetFaceIdByDuplicateFaceId[(int)detection.RefId!.Value];
         }
 
-        var segments = await db.Segments
-            .Where(segment => segment.SourceKey == FaceSourceKey && segment.RefId.HasValue && duplicateFaceIds.Contains((int)segment.RefId.Value))
-            .ToListAsync(ct);
+        var segments = await segmentRepo.FindAsync(new SegmentFilter
+        {
+            SourceKey = FaceSourceKey,
+            RefIds = duplicateFaceIds.Select(static id => (long)id).ToArray(),
+        }, ct);
         foreach (var segment in segments)
         {
             segment.RefId = targetFaceIdByDuplicateFaceId[(int)segment.RefId!.Value];
         }
 
-        var embeddings = await db.Embeddings
-            .Where(embedding => embedding.SourceKey == FaceSourceKey && embedding.HostType == EmbeddingHostType.Face && duplicateFaceIds.Contains(embedding.HostId))
-            .ToListAsync(ct);
+        await embeddingRepo.UpdateHostIdAsync(
+            EmbeddingHostType.Face, FaceSourceKey, duplicateFaceIds,
+            newHostId: -1 /* placeholder; per-face handled below */, ct);
+        var embeddings = await embeddingRepo.FindAsync(new EmbeddingFilter
+        {
+            SourceKey = FaceSourceKey,
+            HostType = EmbeddingHostType.Face,
+            HostIds = duplicateFaceIds,
+        }, ct);
         foreach (var embedding in embeddings)
         {
             embedding.HostId = targetFaceIdByDuplicateFaceId[embedding.HostId];
@@ -161,14 +166,10 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
             var target = operation.Target!;
 
             if (duplicate.PerformerId.HasValue && !target.PerformerId.HasValue)
-            {
                 target.PerformerId = duplicate.PerformerId;
-            }
 
             if (ShouldRefreshTargetLabel(target, duplicate))
-            {
                 target.Label = duplicate.Label;
-            }
 
             if (duplicate.MergedIntoFaceId != target.Id)
             {
@@ -177,7 +178,7 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
             }
         }
 
-        await db.SaveChangesAsync(ct);
+        await faceRepo.SaveChangesAsync(ct);
         return (mergedPersistedFaces, relabeledPersistedFaces);
     }
 
@@ -191,9 +192,7 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
         foreach (var identity in snapshot.Identities)
         {
             if (string.IsNullOrWhiteSpace(identity.ReferenceDisplayName))
-            {
                 continue;
-            }
 
             if (string.IsNullOrWhiteSpace(identity.Label)
                 || string.Equals(identity.Label, identity.FaceKey, StringComparison.OrdinalIgnoreCase))

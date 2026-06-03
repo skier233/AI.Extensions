@@ -2,14 +2,11 @@ using Cove.Core.Auth;
 using Cove.Core.DTOs;
 using Cove.Core.Entities;
 using Cove.Core.Interfaces;
-using Cove.Data;
-
-using Microsoft.EntityFrameworkCore;
 
 namespace AI.Audio;
 
-internal sealed record AiAudioSimilarSceneDto(
-    SceneDto Scene,
+internal sealed record AiAudioSimilarVideoDto(
+    VideoDto Video,
     float Distance,
     string Kind,
     string? KindFamily,
@@ -29,7 +26,8 @@ internal enum TargetEmbeddingScope
 }
 
 internal sealed class AiAudioSimilarityService(
-    CoveContext db,
+    IEmbeddingRepository embeddingRepository,
+    IVideoRepository videoRepository,
     IEmbeddingService embeddingService,
     IUserEngagementService? engagementService = null,
     ICurrentPrincipalAccessor? principalAccessor = null)
@@ -44,35 +42,35 @@ internal sealed class AiAudioSimilarityService(
     private const double AssetWeight = 1.0;
     private const double SectionWeight = 0.65;
 
-    private readonly CoveContext _db = db;
+    private readonly IEmbeddingRepository _embeddingRepository = embeddingRepository;
+    private readonly IVideoRepository _videoRepository = videoRepository;
     private readonly IEmbeddingService _embeddingService = embeddingService;
     private readonly IUserEngagementService? _engagementService = engagementService;
     private readonly ICurrentPrincipalAccessor? _principalAccessor = principalAccessor;
 
     private bool CanReadFiles => _principalAccessor?.Current?.Has(Permissions.FilesRead) == true;
-
     private bool HasUserScopedEngagement => _principalAccessor?.Current?.UserId != null;
 
-    public async Task<PaginatedResponse<AiAudioSimilarSceneDto>> SimilarScenesForSceneAsync(int sceneId, int page = 1, int perPage = DefaultSimilarPerPage, CancellationToken ct = default)
+    public async Task<PaginatedResponse<AiAudioSimilarVideoDto>> SimilarVideosForVideoAsync(int videoId, int page = 1, int perPage = DefaultSimilarPerPage, CancellationToken ct = default)
     {
         var pageInfo = NormalizeSimilarPage(page, perPage);
-        var queries = await LoadSimilarityQueriesAsync(sceneId, ct);
+        var queries = await LoadSimilarityQueriesAsync(videoId, ct);
         if (queries.Count == 0)
         {
-            return new PaginatedResponse<AiAudioSimilarSceneDto>([], 0, pageInfo.Page, pageInfo.PerPage);
+            return new PaginatedResponse<AiAudioSimilarVideoDto>([], 0, pageInfo.Page, pageInfo.PerPage);
         }
 
-        var ranked = await SearchSimilarAsync(queries, sceneId, ct);
+        var ranked = await SearchSimilarAsync(queries, videoId, ct);
         var pageMatches = ranked
             .Skip((pageInfo.Page - 1) * pageInfo.PerPage)
             .Take(pageInfo.PerPage)
             .ToArray();
-        var scenes = await BuildSceneResultsAsync(pageMatches, ct);
-        var sceneById = scenes.ToDictionary(static scene => scene.Id);
+        var videos = await BuildVideoResultsAsync(pageMatches, ct);
+        var videoById = videos.ToDictionary(static v => v.Id);
         var items = pageMatches
-            .Where(match => sceneById.ContainsKey(match.Embedding.HostId))
-            .Select(match => new AiAudioSimilarSceneDto(
-                sceneById[match.Embedding.HostId],
+            .Where(match => videoById.ContainsKey(match.Embedding.HostId))
+            .Select(match => new AiAudioSimilarVideoDto(
+                videoById[match.Embedding.HostId],
                 match.Distance,
                 match.Embedding.Kind,
                 match.Embedding.KindFamily,
@@ -81,33 +79,35 @@ internal sealed class AiAudioSimilarityService(
                 match.Embedding.EndSec))
             .ToList();
 
-        return new PaginatedResponse<AiAudioSimilarSceneDto>(items, ranked.Count, pageInfo.Page, pageInfo.PerPage);
+        return new PaginatedResponse<AiAudioSimilarVideoDto>(items, ranked.Count, pageInfo.Page, pageInfo.PerPage);
     }
 
-    private async Task<IReadOnlyList<AiAudioSimilarQuery>> LoadSimilarityQueriesAsync(int sceneId, CancellationToken ct)
+    private async Task<IReadOnlyList<AiAudioSimilarQuery>> LoadSimilarityQueriesAsync(int videoId, CancellationToken ct)
     {
-        var embeddings = await _db.Embeddings
-            .AsNoTracking()
-            .Where(embedding =>
-                embedding.HostType == EmbeddingHostType.Scene &&
-                embedding.HostId == sceneId &&
-                embedding.SourceKey == AudioSourceKey &&
-                embedding.Kind == AudioEmbeddingKind &&
-                embedding.KindFamily == AudioEmbeddingKindFamily &&
-                embedding.Modality == EmbeddingModality.Audio &&
-                !embedding.IsSemantic)
-            .OrderBy(static embedding => embedding.SectionIndex)
-            .ThenBy(static embedding => embedding.StartSec ?? double.MaxValue)
-            .ToListAsync(ct);
+        var embeddings = await _embeddingRepository.FindAsync(new EmbeddingFilter
+        {
+            HostType = EmbeddingHostType.Video,
+            HostId = videoId,
+            SourceKey = AudioSourceKey,
+            Kind = AudioEmbeddingKind,
+            KindFamily = AudioEmbeddingKindFamily,
+            Modality = EmbeddingModality.Audio,
+            IsSemantic = false,
+        }, ct);
+
+        var sorted = embeddings
+            .OrderBy(static e => e.SectionIndex)
+            .ThenBy(static e => e.StartSec ?? double.MaxValue)
+            .ToArray();
 
         var queries = new List<AiAudioSimilarQuery>();
-        var asset = embeddings.FirstOrDefault(static embedding => embedding.SectionIndex == 0);
+        var asset = sorted.FirstOrDefault(static e => e.SectionIndex == 0);
         if (asset is not null)
         {
             queries.Add(new AiAudioSimilarQuery(asset, TargetEmbeddingScope.Asset, AssetWeight));
         }
 
-        foreach (var section in SelectRepresentativeEmbeddings(embeddings.Where(static embedding => embedding.SectionIndex > 0).ToArray(), MaxSectionQueries))
+        foreach (var section in SelectRepresentativeEmbeddings(sorted.Where(static e => e.SectionIndex > 0).ToArray(), MaxSectionQueries))
         {
             queries.Add(new AiAudioSimilarQuery(section, TargetEmbeddingScope.Section, SectionWeight));
         }
@@ -115,17 +115,17 @@ internal sealed class AiAudioSimilarityService(
         return queries;
     }
 
-    private async Task<IReadOnlyList<EmbeddingSearchResult>> SearchSimilarAsync(IReadOnlyList<AiAudioSimilarQuery> queries, int sceneId, CancellationToken ct)
+    private async Task<IReadOnlyList<EmbeddingSearchResult>> SearchSimilarAsync(IReadOnlyList<AiAudioSimilarQuery> queries, int videoId, CancellationToken ct)
     {
         var candidates = new Dictionary<int, SimilarCandidate>();
-        foreach (var query in queries.Where(static query => query.Weight > 0d))
+        foreach (var query in queries.Where(static q => q.Weight > 0d))
         {
             var matches = await _embeddingService.KnnAsync(
                 query.Embedding.Vector,
                 int.MaxValue,
                 new EmbeddingSearchOptions
                 {
-                    HostType = EmbeddingHostType.Scene,
+                    HostType = EmbeddingHostType.Video,
                     Kind = query.Embedding.Kind,
                     KindFamily = query.Embedding.KindFamily,
                     Modality = EmbeddingModality.Audio,
@@ -135,7 +135,7 @@ internal sealed class AiAudioSimilarityService(
                 ct);
 
             var bestPerHost = matches
-                .Where(match => match.Embedding.HostId != sceneId)
+                .Where(match => match.Embedding.HostId != videoId)
                 .Where(match => MatchesTargetScope(match.Embedding, query.TargetScope))
                 .GroupBy(static match => match.Embedding.HostId)
                 .Select(static group => group
@@ -166,56 +166,46 @@ internal sealed class AiAudioSimilarityService(
             .ToArray();
     }
 
-    private async Task<List<SceneDto>> BuildSceneResultsAsync(IReadOnlyList<EmbeddingSearchResult> ranked, CancellationToken ct)
+    private async Task<List<VideoDto>> BuildVideoResultsAsync(IReadOnlyList<EmbeddingSearchResult> ranked, CancellationToken ct)
     {
-        var hostIds = ranked.Select(static match => match.Embedding.HostId).Distinct().ToArray();
-        var scenes = await _db.Scenes
-            .AsNoTracking()
-            .Include(static scene => scene.Studio)
-            .Include(static scene => scene.Urls)
-            .Include(static scene => scene.SceneTags).ThenInclude(static sceneTag => sceneTag.Tag)
-            .Include(static scene => scene.ScenePerformers).ThenInclude(static scenePerformer => scenePerformer.Performer)
-            .Include(static scene => scene.SceneGalleries).ThenInclude(static sceneGallery => sceneGallery.Gallery)
-            .Include(static scene => scene.GroupItems).ThenInclude(static groupItem => groupItem.Group)
-            .Include(static scene => scene.Files)
-            .AsSplitQuery()
-            .Where(scene => hostIds.Contains(scene.Id))
-            .ToDictionaryAsync(static scene => scene.Id, ct);
+        var hostIds = ranked.Select(static match => match.Embedding.HostId).Distinct().ToList();
+        var (videos, _) = await _videoRepository.FindAsync(new VideoFilter { Ids = hostIds }, null, ct);
+        var videoMap = videos.ToDictionary(static v => v.Id);
 
         var engagement = _engagementService == null
             ? []
-            : await _engagementService.GetSceneSnapshotsAsync(hostIds, ct);
+            : await _engagementService.GetVideoSnapshotsAsync(hostIds.ToArray(), ct);
 
-        var results = new List<SceneDto>(ranked.Count);
+        var results = new List<VideoDto>(ranked.Count);
         foreach (var match in ranked)
         {
-            if (scenes.TryGetValue(match.Embedding.HostId, out var scene))
+            if (videoMap.TryGetValue(match.Embedding.HostId, out var video))
             {
-                results.Add(MapScene(scene, engagement.GetValueOrDefault(scene.Id), HasUserScopedEngagement));
+                results.Add(MapVideo(video, engagement.GetValueOrDefault(video.Id), HasUserScopedEngagement));
             }
         }
 
         return results;
     }
 
-    private SceneDto MapScene(Scene scene, UserEngagementSnapshot? engagement, bool preferUserSnapshot)
+    private VideoDto MapVideo(Video video, UserEngagementSnapshot? engagement, bool preferUserSnapshot)
         => new(
-            scene.Id,
-            scene.Title,
-            scene.Code,
-            scene.Details,
-            scene.Director,
-            scene.Date?.ToString("yyyy-MM-dd"),
-            scene.Organized,
-            scene.IsVr,
-            scene.StudioId,
-            scene.Studio?.Name,
-            scene.Captions,
-            scene.InteractiveSpeed,
-            scene.Urls.Select(static url => url.Url).ToList(),
-            scene.SceneTags.Where(static sceneTag => sceneTag.Tag != null).Select(static sceneTag => new TagDto(sceneTag.Tag!.Id, sceneTag.Tag.Name, sceneTag.Tag.Description, sceneTag.Tag.Favorite, sceneTag.Tag.IgnoreAutoTag, [])).ToList(),
-            scene.ScenePerformers.Where(static scenePerformer => scenePerformer.Performer != null).Select(static scenePerformer => MapPerformer(scenePerformer.Performer!)).ToList(),
-            scene.Files.Select(file => new VideoFileDto(
+            video.Id,
+            video.Title,
+            video.Code,
+            video.Details,
+            video.Director,
+            video.Date?.ToString("yyyy-MM-dd"),
+            video.Organized,
+            video.IsVr,
+            video.StudioId,
+            video.Studio?.Name,
+            video.Captions,
+            video.InteractiveSpeed,
+            video.Urls.Select(static u => u.Url).ToList(),
+            video.VideoTags.Where(static vt => vt.Tag != null).Select(static vt => new TagDto(vt.Tag!.Id, vt.Tag.Name, vt.Tag.Description, vt.Tag.Favorite, vt.Tag.IgnoreAutoTag, [])).ToList(),
+            video.VideoPerformers.Where(static vp => vp.Performer != null).Select(static vp => MapPerformer(vp.Performer!)).ToList(),
+            video.Files.Select(file => new VideoFileDto(
                 file.Id,
                 CanReadFiles ? file.Path : string.Empty,
                 GetVisibleBasename(file.Path, file.Basename),
@@ -230,12 +220,12 @@ internal sealed class AiAudioSimilarityService(
                 file.Size,
                 [],
                 [])).ToList(),
-            MapSceneGroups(scene),
-            scene.SceneGalleries.Where(static sceneGallery => sceneGallery.Gallery != null).Select(static sceneGallery => new GallerySummaryDto(sceneGallery.Gallery!.Id, sceneGallery.Gallery.Title, sceneGallery.Gallery.Date?.ToString("yyyy-MM-dd"))).ToList(),
+            MapVideoGroups(video),
+            video.VideoGalleries.Where(static vg => vg.Gallery != null).Select(static vg => new GallerySummaryDto(vg.Gallery!.Id, vg.Gallery.Title, vg.Gallery.Date?.ToString("yyyy-MM-dd"))).ToList(),
             [],
-            scene.CustomFields,
-            scene.CreatedAt.ToString("o"),
-            scene.UpdatedAt.ToString("o"));
+            video.CustomFields,
+            video.CreatedAt.ToString("o"),
+            video.UpdatedAt.ToString("o"));
 
     private static PerformerSummaryDto MapPerformer(Performer performer)
         => new(
@@ -247,9 +237,9 @@ internal sealed class AiAudioSimilarityService(
             performer.Favorite,
             performer.ImageBlobId != null ? BuildEntityImageUrl($"/api/performers/{performer.Id}/image", performer.UpdatedAt) : null);
 
-    private static List<GroupSummaryDto> MapSceneGroups(Scene scene)
-        => scene.GroupItems
-            .Where(static item => item.Kind == GroupItemKind.Scene && item.Group != null)
+    private static List<GroupSummaryDto> MapVideoGroups(Video video)
+        => video.GroupItems
+            .Where(static item => item.Kind == GroupItemKind.Video && item.Group != null)
             .OrderBy(static item => item.OrderIndex)
             .Select(static item => new GroupSummaryDto(item.Group!.Id, item.Group.Name, item.OrderIndex))
             .ToList();
@@ -276,16 +266,8 @@ internal sealed class AiAudioSimilarityService(
 
     private static IEnumerable<int> SelectRepresentativeIndices(int count, int maxCount)
     {
-        if (maxCount <= 0 || count <= 0)
-        {
-            yield break;
-        }
-
-        if (maxCount == 1)
-        {
-            yield return 0;
-            yield break;
-        }
+        if (maxCount <= 0 || count <= 0) yield break;
+        if (maxCount == 1) { yield return 0; yield break; }
 
         var lastIndex = count - 1;
         var seen = new HashSet<int>();
@@ -328,11 +310,7 @@ internal sealed class AiAudioSimilarityService(
 
         public EmbeddingSearchResult? ToResult()
         {
-            if (_bestMatch is null || _totalWeight <= 0d)
-            {
-                return null;
-            }
-
+            if (_bestMatch is null || _totalWeight <= 0d) return null;
             return new EmbeddingSearchResult(_bestMatch.Embedding, (float)(_weightedDistance / _totalWeight));
         }
     }

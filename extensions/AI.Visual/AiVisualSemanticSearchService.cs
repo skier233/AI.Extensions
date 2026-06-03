@@ -5,7 +5,6 @@ using Cove.Core.DTOs;
 using Cove.Core.Entities;
 using Cove.Core.Enums;
 using Cove.Core.Interfaces;
-using Cove.Data;
 
 using Microsoft.EntityFrameworkCore;
 using Pgvector;
@@ -20,8 +19,8 @@ internal sealed class AiVisualSemanticSearchRequest<TFilter>
     public TFilter? ObjectFilter { get; init; }
 }
 
-internal sealed record AiVisualSimilarSceneDto(
-    SceneDto Scene,
+internal sealed record AiVisualSimilarVideoDto(
+    VideoDto Video,
     float Distance,
     string Kind,
     string? KindFamily,
@@ -75,10 +74,10 @@ internal enum TargetEmbeddingScope
 }
 
 internal sealed class AiVisualSemanticSearchService(
-    CoveContext db,
+    IEmbeddingRepository embeddingRepository,
     IEmbeddingService embeddingService,
     ITextEncoderRegistry textEncoderRegistry,
-    ISceneRepository sceneRepository,
+    IVideoRepository videoRepository,
     IImageRepository imageRepository,
     AiVisualLocalTextEncoder localTextEncoder,
     IUserEngagementService? engagementService = null,
@@ -107,10 +106,10 @@ internal sealed class AiVisualSemanticSearchService(
     private const double PartVisualWeight = 0.7;
     private const double PartSemanticWeight = 0.25;
 
-    private readonly CoveContext _db = db;
+    private readonly IEmbeddingRepository _embeddingRepository = embeddingRepository;
     private readonly IEmbeddingService _embeddingService = embeddingService;
     private readonly ITextEncoderRegistry _textEncoderRegistry = textEncoderRegistry;
-    private readonly ISceneRepository _sceneRepository = sceneRepository;
+    private readonly IVideoRepository _videoRepository = videoRepository;
     private readonly IImageRepository _imageRepository = imageRepository;
     private readonly AiVisualLocalTextEncoder _localTextEncoder = localTextEncoder;
     private readonly IUserEngagementService? _engagementService = engagementService;
@@ -120,16 +119,16 @@ internal sealed class AiVisualSemanticSearchService(
 
     private bool HasUserScopedEngagement => _principalAccessor?.Current?.UserId != null;
 
-    public async Task<PaginatedResponse<SceneDto>> SearchScenesAsync(AiVisualSemanticSearchRequest<SceneFilter> request, CancellationToken ct = default)
+    public async Task<PaginatedResponse<VideoDto>> SearchVideosAsync(AiVisualSemanticSearchRequest<VideoFilter> request, CancellationToken ct = default)
     {
         var findFilter = NormalizeFindFilter(request.FindFilter);
-        var allowedIds = await ResolveAllowedSceneIdsAsync(request.ObjectFilter, ct);
-        var ranked = await SearchRankedMatchesAsync(findFilter.Q, EmbeddingHostType.Scene, allowedIds, ct);
-        var sorted = await SortSceneMatchesAsync(ranked, findFilter, ct);
+        var allowedIds = await ResolveAllowedVideoIdsAsync(request.ObjectFilter, ct);
+        var ranked = await SearchRankedMatchesAsync(findFilter.Q, EmbeddingHostType.Video, allowedIds, ct);
+        var sorted = await SortVideoMatchesAsync(ranked, findFilter, ct);
         var pageMatches = Page(sorted, findFilter);
-        var items = await BuildSceneResultsAsync(pageMatches, ct);
+        var items = await BuildVideoResultsAsync(pageMatches, ct);
 
-        return new PaginatedResponse<SceneDto>(items, sorted.Count, findFilter.Page, findFilter.PerPage);
+        return new PaginatedResponse<VideoDto>(items, sorted.Count, findFilter.Page, findFilter.PerPage);
     }
 
     public async Task<PaginatedResponse<ImageDto>> SearchImagesAsync(AiVisualSemanticSearchRequest<ImageFilter> request, CancellationToken ct = default)
@@ -144,23 +143,23 @@ internal sealed class AiVisualSemanticSearchService(
         return new PaginatedResponse<ImageDto>(items, sorted.Count, findFilter.Page, findFilter.PerPage);
     }
 
-    public async Task<PaginatedResponse<AiVisualSimilarSceneDto>> SimilarScenesForSceneAsync(int sceneId, int page = 1, int perPage = DefaultSimilarPerPage, CancellationToken ct = default)
+    public async Task<PaginatedResponse<AiVisualSimilarVideoDto>> SimilarVideosForVideoAsync(int videoId, int page = 1, int perPage = DefaultSimilarPerPage, CancellationToken ct = default)
     {
         var pageInfo = NormalizeSimilarPage(page, perPage);
-        var queries = await LoadAssetSimilarityQueriesAsync(EmbeddingHostType.Scene, sceneId, TargetEmbeddingScope.Asset, includeSourceSections: true, ct);
+        var queries = await LoadAssetSimilarityQueriesAsync(EmbeddingHostType.Video, videoId, TargetEmbeddingScope.Asset, includeSourceSections: true, ct);
         if (queries.Count == 0)
         {
-            return EmptySimilarSceneResponse(pageInfo);
+            return EmptySimilarVideoResponse(pageInfo);
         }
 
-        var ranked = await SearchSimilarAsync(queries, EmbeddingHostType.Scene, excludeHostId: sceneId, ct);
-        return await BuildSimilarSceneResponseAsync(ranked, pageInfo, ct);
+        var ranked = await SearchSimilarAsync(queries, EmbeddingHostType.Video, excludeHostId: videoId, ct);
+        return await BuildSimilarVideoResponseAsync(ranked, pageInfo, ct);
     }
 
-    public async Task<PaginatedResponse<AiVisualSimilarImageDto>> SimilarImagesForSceneAsync(int sceneId, int page = 1, int perPage = DefaultSimilarPerPage, CancellationToken ct = default)
+    public async Task<PaginatedResponse<AiVisualSimilarImageDto>> SimilarImagesForVideoAsync(int videoId, int page = 1, int perPage = DefaultSimilarPerPage, CancellationToken ct = default)
     {
         var pageInfo = NormalizeSimilarPage(page, perPage);
-        var queries = await LoadAssetSimilarityQueriesAsync(EmbeddingHostType.Scene, sceneId, TargetEmbeddingScope.Asset, includeSourceSections: false, ct);
+        var queries = await LoadAssetSimilarityQueriesAsync(EmbeddingHostType.Video, videoId, TargetEmbeddingScope.Asset, includeSourceSections: false, ct);
         if (queries.Count == 0)
         {
             return EmptySimilarImageResponse(pageInfo);
@@ -170,17 +169,17 @@ internal sealed class AiVisualSemanticSearchService(
         return await BuildSimilarImageResponseAsync(ranked, pageInfo, ct);
     }
 
-    public async Task<PaginatedResponse<AiVisualSimilarSceneDto>> SimilarScenesForImageAsync(int imageId, int page = 1, int perPage = DefaultSimilarPerPage, CancellationToken ct = default)
+    public async Task<PaginatedResponse<AiVisualSimilarVideoDto>> SimilarVideosForImageAsync(int imageId, int page = 1, int perPage = DefaultSimilarPerPage, CancellationToken ct = default)
     {
         var pageInfo = NormalizeSimilarPage(page, perPage);
         var queries = await LoadAssetSimilarityQueriesAsync(EmbeddingHostType.Image, imageId, TargetEmbeddingScope.Any, includeSourceSections: false, ct);
         if (queries.Count == 0)
         {
-            return EmptySimilarSceneResponse(pageInfo);
+            return EmptySimilarVideoResponse(pageInfo);
         }
 
-        var ranked = await SearchSimilarAsync(queries, EmbeddingHostType.Scene, excludeHostId: null, ct);
-        return await BuildSimilarSceneResponseAsync(ranked, pageInfo, ct);
+        var ranked = await SearchSimilarAsync(queries, EmbeddingHostType.Video, excludeHostId: null, ct);
+        return await BuildSimilarVideoResponseAsync(ranked, pageInfo, ct);
     }
 
     public async Task<PaginatedResponse<AiVisualSimilarImageDto>> SimilarImagesForImageAsync(int imageId, int page = 1, int perPage = DefaultSimilarPerPage, CancellationToken ct = default)
@@ -196,8 +195,8 @@ internal sealed class AiVisualSemanticSearchService(
         return await BuildSimilarImageResponseAsync(ranked, pageInfo, ct);
     }
 
-    public async Task<PaginatedResponse<AiVisualSimilarSceneDto>> SimilarScenesForSceneSegmentAsync(
-        int sceneId,
+    public async Task<PaginatedResponse<AiVisualSimilarVideoDto>> SimilarVideosForVideoSegmentAsync(
+        int videoId,
         double startSec,
         double? endSec = null,
         int page = 1,
@@ -215,25 +214,25 @@ internal sealed class AiVisualSemanticSearchService(
         }
 
         var pageInfo = NormalizeSimilarPage(page, perPage);
-        return await SimilarScenesForSceneSegmentAsync(sceneId, [new AiVisualSegmentInterval(startSec, endSec)], pageInfo.Page, pageInfo.PerPage, ct);
+        return await SimilarVideosForVideoSegmentAsync(videoId, [new AiVisualSegmentInterval(startSec, endSec)], pageInfo.Page, pageInfo.PerPage, ct);
     }
 
-    public async Task<PaginatedResponse<AiVisualSimilarSceneDto>> SimilarScenesForSceneSegmentAsync(
-        int sceneId,
+    public async Task<PaginatedResponse<AiVisualSimilarVideoDto>> SimilarVideosForVideoSegmentAsync(
+        int videoId,
         IReadOnlyList<AiVisualSegmentInterval> intervals,
         int page = 1,
         int perPage = DefaultSimilarPerPage,
         CancellationToken ct = default)
     {
         var pageInfo = NormalizeSimilarPage(page, perPage);
-        var queries = await LoadSegmentSimilarityQueriesAsync(sceneId, NormalizeSegmentIntervals(intervals), ct);
+        var queries = await LoadSegmentSimilarityQueriesAsync(videoId, NormalizeSegmentIntervals(intervals), ct);
         if (queries.Count == 0)
         {
-            return EmptySimilarSceneResponse(pageInfo);
+            return EmptySimilarVideoResponse(pageInfo);
         }
 
-        var ranked = await SearchSimilarAsync(queries, EmbeddingHostType.Scene, excludeHostId: sceneId, ct);
-        return await BuildSimilarSceneResponseAsync(ranked, pageInfo, ct);
+        var ranked = await SearchSimilarAsync(queries, EmbeddingHostType.Video, excludeHostId: videoId, ct);
+        return await BuildSimilarVideoResponseAsync(ranked, pageInfo, ct);
     }
 
     private async Task<IReadOnlyList<AiVisualSimilarQuery>> LoadAssetSimilarityQueriesAsync(
@@ -256,7 +255,7 @@ internal sealed class AiVisualSemanticSearchService(
             queries.Add(new AiVisualSimilarQuery(ToQueryEmbedding(semantic), overallTargetScope, OverallSemanticWeight, SimilarQueryRole.OverallSemantic));
         }
 
-        if (includeSourceSections && hostType == EmbeddingHostType.Scene)
+        if (includeSourceSections && hostType == EmbeddingHostType.Video)
         {
             foreach (var section in await LoadRepresentativeSectionEmbeddingsAsync(hostId, VisualFeatureKind, FeatureKindFamily, isSemantic: false, ct))
             {
@@ -280,66 +279,57 @@ internal sealed class AiVisualSemanticSearchService(
         bool isSemantic,
         int sectionIndex,
         CancellationToken ct)
-        => await _db.Embeddings
-            .AsNoTracking()
-            .Where(embedding =>
-                embedding.HostType == hostType &&
-                embedding.HostId == hostId &&
-                embedding.SourceKey == VisualSourceKey &&
-                embedding.Kind == kind &&
-                embedding.KindFamily == kindFamily &&
-                embedding.Modality == EmbeddingModality.Visual &&
-                embedding.IsSemantic == isSemantic &&
-                embedding.SectionIndex == sectionIndex)
-            .OrderByDescending(static embedding => embedding.CreatedAt)
-            .FirstOrDefaultAsync(ct);
+    {
+        var results = await _embeddingRepository.FindAsync(new EmbeddingFilter
+        {
+            HostType = hostType, HostId = hostId, SourceKey = VisualSourceKey,
+            Kind = kind, KindFamily = kindFamily, Modality = EmbeddingModality.Visual,
+            IsSemantic = isSemantic,
+        }, ct);
+        return results.Where(e => e.SectionIndex == sectionIndex).OrderByDescending(static e => e.CreatedAt).FirstOrDefault();
+    }
 
     private async Task<IReadOnlyList<Embedding>> LoadRepresentativeSectionEmbeddingsAsync(
-        int sceneId,
+        int videoId,
         string kind,
         string kindFamily,
         bool isSemantic,
         CancellationToken ct)
     {
-        var sections = await LoadSectionEmbeddingsAsync(sceneId, kind, kindFamily, isSemantic, ct);
+        var sections = await LoadSectionEmbeddingsAsync(videoId, kind, kindFamily, isSemantic, ct);
         return SelectRepresentativeEmbeddings(sections, MaxPartSimilarityQueries);
     }
 
     private async Task<IReadOnlyList<Embedding>> LoadSectionEmbeddingsAsync(
-        int sceneId,
+        int videoId,
         string kind,
         string kindFamily,
         bool isSemantic,
         CancellationToken ct)
-        => await _db.Embeddings
-            .AsNoTracking()
-            .Where(embedding =>
-                embedding.HostType == EmbeddingHostType.Scene &&
-                embedding.HostId == sceneId &&
-                embedding.SourceKey == VisualSourceKey &&
-                embedding.Kind == kind &&
-                embedding.KindFamily == kindFamily &&
-                embedding.Modality == EmbeddingModality.Visual &&
-                embedding.IsSemantic == isSemantic &&
-                embedding.SectionIndex > 0)
-            .OrderBy(static embedding => embedding.StartSec ?? double.MaxValue)
-            .ThenBy(static embedding => embedding.SectionIndex)
-            .ToListAsync(ct);
+    {
+        var results = await _embeddingRepository.FindAsync(new EmbeddingFilter
+        {
+            HostType = EmbeddingHostType.Video, HostId = videoId, SourceKey = VisualSourceKey,
+            Kind = kind, KindFamily = kindFamily, Modality = EmbeddingModality.Visual,
+            IsSemantic = isSemantic, SectionIndexGreaterThan = 0,
+        }, ct);
+        return results.OrderBy(static e => e.StartSec ?? double.MaxValue).ThenBy(static e => e.SectionIndex).ToList();
+    }
 
     private async Task<IReadOnlyList<AiVisualSimilarQuery>> LoadSegmentSimilarityQueriesAsync(
-        int sceneId,
+        int videoId,
         IReadOnlyList<AiVisualSegmentInterval> intervals,
         CancellationToken ct)
     {
         var queries = new List<AiVisualSimilarQuery>();
 
-        var feature = await BuildSegmentQueryEmbeddingAsync(sceneId, intervals, VisualFeatureKind, FeatureKindFamily, isSemantic: false, ct);
+        var feature = await BuildSegmentQueryEmbeddingAsync(videoId, intervals, VisualFeatureKind, FeatureKindFamily, isSemantic: false, ct);
         if (feature is not null)
         {
             queries.Add(new AiVisualSimilarQuery(feature, TargetEmbeddingScope.Section, OverallVisualWeight, SimilarQueryRole.PartVisual));
         }
 
-        var semantic = await BuildSegmentQueryEmbeddingAsync(sceneId, intervals, VisualSemanticKind, SemanticKindFamily, isSemantic: true, ct);
+        var semantic = await BuildSegmentQueryEmbeddingAsync(videoId, intervals, VisualSemanticKind, SemanticKindFamily, isSemantic: true, ct);
         if (semantic is not null)
         {
             queries.Add(new AiVisualSimilarQuery(semantic, TargetEmbeddingScope.Section, OverallSemanticWeight, SimilarQueryRole.PartSemantic));
@@ -349,13 +339,13 @@ internal sealed class AiVisualSemanticSearchService(
         {
             foreach (var interval in SelectRepresentativeIntervals(intervals, MaxPartSimilarityQueries))
             {
-                var intervalFeature = await BuildSegmentQueryEmbeddingAsync(sceneId, [interval], VisualFeatureKind, FeatureKindFamily, isSemantic: false, ct);
+                var intervalFeature = await BuildSegmentQueryEmbeddingAsync(videoId, [interval], VisualFeatureKind, FeatureKindFamily, isSemantic: false, ct);
                 if (intervalFeature is not null)
                 {
                     queries.Add(new AiVisualSimilarQuery(intervalFeature, TargetEmbeddingScope.Section, PartVisualWeight, SimilarQueryRole.PartVisual));
                 }
 
-                var intervalSemantic = await BuildSegmentQueryEmbeddingAsync(sceneId, [interval], VisualSemanticKind, SemanticKindFamily, isSemantic: true, ct);
+                var intervalSemantic = await BuildSegmentQueryEmbeddingAsync(videoId, [interval], VisualSemanticKind, SemanticKindFamily, isSemantic: true, ct);
                 if (intervalSemantic is not null)
                 {
                     queries.Add(new AiVisualSimilarQuery(intervalSemantic, TargetEmbeddingScope.Section, PartSemanticWeight, SimilarQueryRole.PartSemantic));
@@ -367,14 +357,14 @@ internal sealed class AiVisualSemanticSearchService(
     }
 
     private async Task<AiVisualQueryEmbedding?> BuildSegmentQueryEmbeddingAsync(
-        int sceneId,
+        int videoId,
         IReadOnlyList<AiVisualSegmentInterval> intervals,
         string kind,
         string kindFamily,
         bool isSemantic,
         CancellationToken ct)
     {
-        var sections = await LoadSectionEmbeddingsAsync(sceneId, kind, kindFamily, isSemantic, ct);
+        var sections = await LoadSectionEmbeddingsAsync(videoId, kind, kindFamily, isSemantic, ct);
 
         if (sections.Count == 0)
         {
@@ -455,15 +445,15 @@ internal sealed class AiVisualSemanticSearchService(
             .ToArray();
     }
 
-    private async Task<PaginatedResponse<AiVisualSimilarSceneDto>> BuildSimilarSceneResponseAsync(IReadOnlyList<EmbeddingSearchResult> ranked, AiVisualSimilarPage pageInfo, CancellationToken ct)
+    private async Task<PaginatedResponse<AiVisualSimilarVideoDto>> BuildSimilarVideoResponseAsync(IReadOnlyList<EmbeddingSearchResult> ranked, AiVisualSimilarPage pageInfo, CancellationToken ct)
     {
         var pageMatches = PageSimilar(ranked, pageInfo);
-        var scenes = await BuildSceneResultsAsync(pageMatches, ct);
-        var sceneById = scenes.ToDictionary(static scene => scene.Id);
+        var videos = await BuildVideoResultsAsync(pageMatches, ct);
+        var videoById = videos.ToDictionary(static video => video.Id);
         var items = pageMatches
-            .Where(match => sceneById.ContainsKey(match.Embedding.HostId))
-            .Select(match => new AiVisualSimilarSceneDto(
-                sceneById[match.Embedding.HostId],
+            .Where(match => videoById.ContainsKey(match.Embedding.HostId))
+            .Select(match => new AiVisualSimilarVideoDto(
+                videoById[match.Embedding.HostId],
                 match.Distance,
                 match.Embedding.Kind,
                 match.Embedding.KindFamily,
@@ -473,7 +463,7 @@ internal sealed class AiVisualSemanticSearchService(
                 match.Embedding.EndSec))
             .ToList();
 
-        return new PaginatedResponse<AiVisualSimilarSceneDto>(items, ranked.Count, pageInfo.Page, pageInfo.PerPage);
+        return new PaginatedResponse<AiVisualSimilarVideoDto>(items, ranked.Count, pageInfo.Page, pageInfo.PerPage);
     }
 
     private async Task<PaginatedResponse<AiVisualSimilarImageDto>> BuildSimilarImageResponseAsync(IReadOnlyList<EmbeddingSearchResult> ranked, AiVisualSimilarPage pageInfo, CancellationToken ct)
@@ -780,7 +770,7 @@ internal sealed class AiVisualSemanticSearchService(
     private static AiVisualSimilarPage NormalizeSimilarPage(int page, int perPage)
         => new(Math.Max(1, page), Math.Clamp(perPage <= 0 ? DefaultSimilarPerPage : perPage, 1, MaxSimilarPerPage));
 
-    private static PaginatedResponse<AiVisualSimilarSceneDto> EmptySimilarSceneResponse(AiVisualSimilarPage pageInfo)
+    private static PaginatedResponse<AiVisualSimilarVideoDto> EmptySimilarVideoResponse(AiVisualSimilarPage pageInfo)
         => new([], 0, pageInfo.Page, pageInfo.PerPage);
 
     private static PaginatedResponse<AiVisualSimilarImageDto> EmptySimilarImageResponse(AiVisualSimilarPage pageInfo)
@@ -892,25 +882,31 @@ internal sealed class AiVisualSemanticSearchService(
             return null;
         }
 
-        var sceneIds = seeds.Where(static seed => seed.HostType == EmbeddingHostType.Scene).Select(static seed => seed.HostId).Distinct().ToArray();
+        var videoIds = seeds.Where(static seed => seed.HostType == EmbeddingHostType.Video).Select(static seed => seed.HostId).Distinct().ToArray();
         var imageIds = seeds.Where(static seed => seed.HostType == EmbeddingHostType.Image).Select(static seed => seed.HostId).Distinct().ToArray();
-        if (sceneIds.Length == 0 && imageIds.Length == 0)
+        if (videoIds.Length == 0 && imageIds.Length == 0)
         {
             return null;
         }
 
-        var embeddings = await _db.Embeddings
-            .AsNoTracking()
-            .Where(embedding =>
-                embedding.SourceKey == VisualSourceKey &&
-                embedding.Kind == VisualSemanticKind &&
-                embedding.KindFamily == SemanticKindFamily &&
-                embedding.Modality == EmbeddingModality.Visual &&
-                embedding.IsSemantic &&
-                embedding.SectionIndex == 0 &&
-                ((embedding.HostType == EmbeddingHostType.Scene && sceneIds.Contains(embedding.HostId)) ||
-                 (embedding.HostType == EmbeddingHostType.Image && imageIds.Contains(embedding.HostId))))
-            .ToListAsync(ct);
+        var videoEmbeddings = videoIds.Length > 0
+            ? await _embeddingRepository.FindAsync(new EmbeddingFilter
+            {
+                HostType = EmbeddingHostType.Video, HostIds = videoIds, SourceKey = VisualSourceKey,
+                Kind = VisualSemanticKind, KindFamily = SemanticKindFamily,
+                Modality = EmbeddingModality.Visual, IsSemantic = true,
+            }, ct)
+            : [];
+        var imageEmbeddings = imageIds.Length > 0
+            ? await _embeddingRepository.FindAsync(new EmbeddingFilter
+            {
+                HostType = EmbeddingHostType.Image, HostIds = imageIds, SourceKey = VisualSourceKey,
+                Kind = VisualSemanticKind, KindFamily = SemanticKindFamily,
+                Modality = EmbeddingModality.Visual, IsSemantic = true,
+            }, ct)
+            : [];
+        var embeddings = videoEmbeddings.Where(static e => e.SectionIndex == 0)
+            .Concat(imageEmbeddings.Where(static e => e.SectionIndex == 0)).ToList();
 
         if (embeddings.Count == 0)
         {
@@ -947,53 +943,30 @@ internal sealed class AiVisualSemanticSearchService(
             return [];
         }
 
-        var sceneCandidates = await _db.Scenes
-            .AsNoTracking()
-            .Where(scene =>
-                (scene.Title != null && scene.Title.ToLower().Contains(normalized)) ||
-                (scene.Details != null && scene.Details.ToLower().Contains(normalized)) ||
-                (scene.Code != null && scene.Code.ToLower().Contains(normalized)) ||
-                (scene.FileSearchText != null && scene.FileSearchText.ToLower().Contains(normalized)))
-            .OrderByDescending(static scene => scene.UpdatedAt)
-            .Take(LocalTextSeedScanLimit)
-            .Select(static scene => new
-            {
-                scene.Id,
-                scene.Title,
-                scene.Details,
-                scene.Code,
-                scene.FileSearchText,
-                scene.UpdatedAt,
-            })
-            .ToListAsync(ct);
+        var (videoResults, _) = await _videoRepository.FindAsync(
+            null,
+            new FindFilter { Q = normalized, PerPage = LocalTextSeedScanLimit, Sort = "updated_at", Direction = SortDirection.Desc },
+            ct);
+        var videoCandidates = videoResults.Select(static video => new
+        {
+            video.Id, video.Title, video.Details, video.Code, video.FileSearchText, video.UpdatedAt,
+        }).ToList();
 
-        var imageCandidates = await _db.Images
-            .AsNoTracking()
-            .Where(image =>
-                (image.Title != null && image.Title.ToLower().Contains(normalized)) ||
-                (image.Details != null && image.Details.ToLower().Contains(normalized)) ||
-                (image.Code != null && image.Code.ToLower().Contains(normalized)) ||
-                (image.Photographer != null && image.Photographer.ToLower().Contains(normalized)) ||
-                (image.FileSearchText != null && image.FileSearchText.ToLower().Contains(normalized)))
-            .OrderByDescending(static image => image.UpdatedAt)
-            .Take(LocalTextSeedScanLimit)
-            .Select(static image => new
-            {
-                image.Id,
-                image.Title,
-                image.Details,
-                image.Code,
-                image.Photographer,
-                image.FileSearchText,
-                image.UpdatedAt,
-            })
-            .ToListAsync(ct);
+        var (imageResults, _) = await _imageRepository.FindAsync(
+            null,
+            new FindFilter { Q = normalized, PerPage = LocalTextSeedScanLimit, Sort = "updated_at", Direction = SortDirection.Desc },
+            ct);
+        var imageCandidates = imageResults.Select(static image => new
+        {
+            image.Id, image.Title, image.Details, image.Code,
+            Photographer = (string?)null, image.FileSearchText, image.UpdatedAt,
+        }).ToList();
 
-        var sceneSeeds = sceneCandidates.Select(scene => new LocalTextSeed(
-            EmbeddingHostType.Scene,
-            scene.Id,
-            GetTextScore(normalized, scene.Title, scene.Details, scene.Code, scene.FileSearchText),
-            scene.UpdatedAt));
+        var videoSeeds = videoCandidates.Select(video => new LocalTextSeed(
+            EmbeddingHostType.Video,
+            video.Id,
+            GetTextScore(normalized, video.Title, video.Details, video.Code, video.FileSearchText),
+            video.UpdatedAt));
 
         var imageSeeds = imageCandidates.Select(image => new LocalTextSeed(
             EmbeddingHostType.Image,
@@ -1001,7 +974,7 @@ internal sealed class AiVisualSemanticSearchService(
             GetTextScore(normalized, image.Title, image.Details, image.Code, image.Photographer, image.FileSearchText),
             image.UpdatedAt));
 
-        return sceneSeeds
+        return videoSeeds
             .Concat(imageSeeds)
             .Where(seed => allowedIds is null || seed.HostType != targetHostType || allowedIds.Contains(seed.HostId))
             .OrderBy(static seed => seed.Score)
@@ -1100,60 +1073,54 @@ internal sealed class AiVisualSemanticSearchService(
         return new Vector(vector);
     }
 
-    private async Task<IReadOnlyList<EmbeddingSearchResult>> SortSceneMatchesAsync(IReadOnlyList<EmbeddingSearchResult> matches, FindFilter findFilter, CancellationToken ct)
+    private async Task<IReadOnlyList<EmbeddingSearchResult>> SortVideoMatchesAsync(IReadOnlyList<EmbeddingSearchResult> matches, FindFilter findFilter, CancellationToken ct)
     {
         if (IsVisualMatchSort(findFilter.Sort))
         {
             return SortByVisualMatch(matches, ShouldSortVisualMatchDescending(findFilter));
         }
 
-        var ids = matches.Select(static match => match.Embedding.HostId).Distinct().ToArray();
-        var scenes = await _db.Scenes
-            .AsNoTracking()
-            .Include(static scene => scene.Studio)
-            .Include(static scene => scene.Files).ThenInclude(static file => file.Fingerprints)
-            .Include(static scene => scene.ScenePerformers).ThenInclude(static scenePerformer => scenePerformer.Performer)
-            .Include(static scene => scene.LikeHistory)
-            .Where(scene => ids.Contains(scene.Id))
-            .ToDictionaryAsync(static scene => scene.Id, ct);
+        var ids = matches.Select(static match => match.Embedding.HostId).Distinct().ToList();
+        var (videoItems, _) = await _videoRepository.FindAsync(new VideoFilter { Ids = ids }, null, ct);
+        var videos = videoItems.ToDictionary(static v => v.Id);
 
         var visualOrder = BuildVisualOrder(matches);
-        var sortable = matches.Where(match => scenes.ContainsKey(match.Embedding.HostId)).ToArray();
+        var sortable = matches.Where(match => videos.ContainsKey(match.Embedding.HostId)).ToArray();
         var snapshots = _engagementService == null
             ? null
-            : await _engagementService.GetSceneSnapshotsAsync(ids, ct);
+            : await _engagementService.GetVideoSnapshotsAsync(ids, ct);
         var desc = findFilter.Direction == SortDirection.Desc;
         var sort = findFilter.Sort?.Trim().ToLowerInvariant();
 
         return sort switch
         {
-            "title" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].Title, desc, visualOrder),
-            "date" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].Date, desc, visualOrder),
+            "title" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].Title, desc, visualOrder),
+            "date" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].Date, desc, visualOrder),
             "rating" => OrderMatchesByKey(sortable, match => snapshots?.GetValueOrDefault(match.Embedding.HostId)?.Rating, desc, visualOrder),
             "play_count" => OrderMatchesByKey(sortable, match => snapshots?.GetValueOrDefault(match.Embedding.HostId)?.PlayCount, desc, visualOrder),
             "o_counter" or "like_counter" => OrderMatchesByKey(sortable, match => snapshots?.GetValueOrDefault(match.Embedding.HostId)?.LikeCount, desc, visualOrder),
-            "last_o_at" or "last_like_at" => OrderMatchesByKey(sortable, match => GetLastFavoriteAt(scenes[match.Embedding.HostId]), desc, visualOrder),
-            "organized" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].Organized, desc, visualOrder),
+            "last_o_at" or "last_like_at" => OrderMatchesByKey(sortable, match => GetLastFavoriteAt(videos[match.Embedding.HostId]), desc, visualOrder),
+            "organized" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].Organized, desc, visualOrder),
             "last_played_at" => OrderMatchesByKey(sortable, match => snapshots?.GetValueOrDefault(match.Embedding.HostId)?.LastPlayedAt, desc, visualOrder),
             "play_duration" => OrderMatchesByKey(sortable, match => snapshots?.GetValueOrDefault(match.Embedding.HostId)?.PlayDuration, desc, visualOrder),
             "resume_time" => OrderMatchesByKey(sortable, match => snapshots?.GetValueOrDefault(match.Embedding.HostId)?.ResumeTime, desc, visualOrder),
             "random" => OrderMatchesByRandom(sortable, findFilter.Seed, desc),
-            "duration" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].MaxDuration, desc, visualOrder),
-            "file_size" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].MaxFileSize, desc, visualOrder),
-            "file_mod_time" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].MaxFileModTime, desc, visualOrder),
-            "file_count" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].FileCount, desc, visualOrder),
-            "path" => OrderMatchesByKey(sortable, match => desc ? scenes[match.Embedding.HostId].MaxPath : scenes[match.Embedding.HostId].MinPath, desc, visualOrder),
-            "resolution" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].MaxHeight, desc, visualOrder),
-            "framerate" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].MaxFrameRate, desc, visualOrder),
-            "bitrate" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].MaxBitRate, desc, visualOrder),
-            "phash" or "perceptual_similarity" => OrderMatchesByKey(sortable, match => GetScenePhash(scenes[match.Embedding.HostId], desc), desc, visualOrder),
-            "tag_count" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].TagIds.Length, desc, visualOrder),
-            "performer_count" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].PerformerIds.Length, desc, visualOrder),
-            "performer_age" => OrderMatchesByKey(sortable, match => GetScenePerformerAge(scenes[match.Embedding.HostId], desc), desc, visualOrder),
-            "studio" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].Studio?.Name, desc, visualOrder),
-            "code" or "studio_code" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].Code, desc, visualOrder),
-            "created_at" => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].CreatedAt, desc, visualOrder),
-            _ => OrderMatchesByKey(sortable, match => scenes[match.Embedding.HostId].UpdatedAt, desc, visualOrder),
+            "duration" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].MaxDuration, desc, visualOrder),
+            "file_size" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].MaxFileSize, desc, visualOrder),
+            "file_mod_time" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].MaxFileModTime, desc, visualOrder),
+            "file_count" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].FileCount, desc, visualOrder),
+            "path" => OrderMatchesByKey(sortable, match => desc ? videos[match.Embedding.HostId].MaxPath : videos[match.Embedding.HostId].MinPath, desc, visualOrder),
+            "resolution" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].MaxHeight, desc, visualOrder),
+            "framerate" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].MaxFrameRate, desc, visualOrder),
+            "bitrate" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].MaxBitRate, desc, visualOrder),
+            "phash" or "perceptual_similarity" => OrderMatchesByKey(sortable, match => GetVideoPhash(videos[match.Embedding.HostId], desc), desc, visualOrder),
+            "tag_count" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].TagIds.Length, desc, visualOrder),
+            "performer_count" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].PerformerIds.Length, desc, visualOrder),
+            "performer_age" => OrderMatchesByKey(sortable, match => GetVideoPerformerAge(videos[match.Embedding.HostId], desc), desc, visualOrder),
+            "studio" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].Studio?.Name, desc, visualOrder),
+            "code" or "studio_code" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].Code, desc, visualOrder),
+            "created_at" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].CreatedAt, desc, visualOrder),
+            _ => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].UpdatedAt, desc, visualOrder),
         };
     }
 
@@ -1164,12 +1131,9 @@ internal sealed class AiVisualSemanticSearchService(
             return SortByVisualMatch(matches, ShouldSortVisualMatchDescending(findFilter));
         }
 
-        var ids = matches.Select(static match => match.Embedding.HostId).Distinct().ToArray();
-        var images = await _db.Images
-            .AsNoTracking()
-            .Include(static image => image.Files)
-            .Where(image => ids.Contains(image.Id))
-            .ToDictionaryAsync(static image => image.Id, ct);
+        var ids = matches.Select(static match => match.Embedding.HostId).Distinct().ToList();
+        var (imageItems, _) = await _imageRepository.FindAsync(new ImageFilter { Ids = ids }, null, ct);
+        var images = imageItems.ToDictionary(static i => i.Id);
 
         var visualOrder = BuildVisualOrder(matches);
         var sortable = matches.Where(match => images.ContainsKey(match.Embedding.HostId)).ToArray();
@@ -1196,15 +1160,15 @@ internal sealed class AiVisualSemanticSearchService(
         };
     }
 
-    private async Task<IReadOnlySet<int>?> ResolveAllowedSceneIdsAsync(SceneFilter? filter, CancellationToken ct)
+    private async Task<IReadOnlySet<int>?> ResolveAllowedVideoIdsAsync(VideoFilter? filter, CancellationToken ct)
     {
         if (filter is null)
         {
             return null;
         }
 
-        var (items, _) = await _sceneRepository.FindAsync(filter, new FindFilter { Page = 1, PerPage = MaxFilteredIds }, ct);
-        return items.Select(static scene => scene.Id).ToHashSet();
+        var (items, _) = await _videoRepository.FindAsync(filter, new FindFilter { Page = 1, PerPage = MaxFilteredIds }, ct);
+        return items.Select(static item => item.Id).ToHashSet();
     }
 
     private async Task<IReadOnlySet<int>?> ResolveAllowedImageIdsAsync(ImageFilter? filter, CancellationToken ct)
@@ -1218,35 +1182,19 @@ internal sealed class AiVisualSemanticSearchService(
         return items.Select(static image => image.Id).ToHashSet();
     }
 
-    private async Task<List<SceneDto>> BuildSceneResultsAsync(IReadOnlyList<EmbeddingSearchResult> ranked, CancellationToken ct)
+    private async Task<List<VideoDto>> BuildVideoResultsAsync(IReadOnlyList<EmbeddingSearchResult> ranked, CancellationToken ct)
     {
-        var hostIds = ranked.Select(static match => match.Embedding.HostId).Distinct().ToArray();
-        var scenes = await _db.Scenes
-            .AsNoTracking()
-            .Include(static scene => scene.Studio)
-            .Include(static scene => scene.Urls)
-            .Include(static scene => scene.SceneTags).ThenInclude(static sceneTag => sceneTag.Tag)
-            .Include(static scene => scene.ScenePerformers).ThenInclude(static scenePerformer => scenePerformer.Performer)
-            .Include(static scene => scene.SceneGalleries).ThenInclude(static sceneGallery => sceneGallery.Gallery)
-            .Include(static scene => scene.GroupItems).ThenInclude(static groupItem => groupItem.Group)
-            .Include(static scene => scene.Files)
-            .AsSplitQuery()
-            .Where(scene => hostIds.Contains(scene.Id))
-            .ToDictionaryAsync(static scene => scene.Id, ct);
+        var hostIds = ranked.Select(static match => match.Embedding.HostId).Distinct().ToList();
+        var (videos, _) = await _videoRepository.FindAsync(new VideoFilter { Ids = hostIds }, null, ct);
+        var videoMap = videos.ToDictionary(static v => v.Id);
 
-        var engagement = _engagementService == null
-            ? []
-            : await _engagementService.GetSceneSnapshotsAsync(hostIds, ct);
-
-        var results = new List<SceneDto>(ranked.Count);
+        var results = new List<VideoDto>(ranked.Count);
         foreach (var match in ranked)
         {
-            if (!scenes.TryGetValue(match.Embedding.HostId, out var scene))
+            if (videoMap.TryGetValue(match.Embedding.HostId, out var video))
             {
-                continue;
+                results.Add(MapVideo(video, null, false));
             }
-
-            results.Add(MapScene(scene, engagement.GetValueOrDefault(scene.Id), HasUserScopedEngagement));
         }
 
         return results;
@@ -1254,28 +1202,17 @@ internal sealed class AiVisualSemanticSearchService(
 
     private async Task<List<ImageDto>> BuildImageResultsAsync(IReadOnlyList<EmbeddingSearchResult> ranked, CancellationToken ct)
     {
-        var hostIds = ranked.Select(static match => match.Embedding.HostId).Distinct().ToArray();
-        var images = await _db.Images
-            .AsNoTracking()
-            .Include(static image => image.Studio)
-            .Include(static image => image.Urls)
-            .Include(static image => image.ImageTags).ThenInclude(static imageTag => imageTag.Tag)
-            .Include(static image => image.ImagePerformers).ThenInclude(static imagePerformer => imagePerformer.Performer)
-            .Include(static image => image.ImageGalleries).ThenInclude(static imageGallery => imageGallery.Gallery)
-            .Include(static image => image.Files)
-            .AsSplitQuery()
-            .Where(image => hostIds.Contains(image.Id))
-            .ToDictionaryAsync(static image => image.Id, ct);
+        var hostIds = ranked.Select(static match => match.Embedding.HostId).Distinct().ToList();
+        var (images, _) = await _imageRepository.FindAsync(new ImageFilter { Ids = hostIds }, null, ct);
+        var imageMap = images.ToDictionary(static i => i.Id);
 
         var results = new List<ImageDto>(ranked.Count);
         foreach (var match in ranked)
         {
-            if (!images.TryGetValue(match.Embedding.HostId, out var image))
+            if (imageMap.TryGetValue(match.Embedding.HostId, out var image))
             {
-                continue;
+                results.Add(MapImage(image));
             }
-
-            results.Add(MapImage(image));
         }
 
         return results;
@@ -1298,24 +1235,24 @@ internal sealed class AiVisualSemanticSearchService(
             .Take(findFilter.PerPage)
             .ToArray();
 
-    private SceneDto MapScene(Scene scene, UserEngagementSnapshot? engagement, bool preferUserSnapshot)
+    private VideoDto MapVideo(Video video, UserEngagementSnapshot? engagement, bool preferUserSnapshot)
         => new(
-            scene.Id,
-            scene.Title,
-            scene.Code,
-            scene.Details,
-            scene.Director,
-            scene.Date?.ToString("yyyy-MM-dd"),
-            scene.Organized,
-            scene.IsVr,
-            scene.StudioId,
-            scene.Studio?.Name,
-            scene.Captions,
-            scene.InteractiveSpeed,
-            scene.Urls.Select(static url => url.Url).ToList(),
-            scene.SceneTags.Where(static sceneTag => sceneTag.Tag != null).Select(static sceneTag => new TagDto(sceneTag.Tag!.Id, sceneTag.Tag.Name, sceneTag.Tag.Description, sceneTag.Tag.Favorite, sceneTag.Tag.IgnoreAutoTag, [])).ToList(),
-            scene.ScenePerformers.Where(static scenePerformer => scenePerformer.Performer != null).Select(static scenePerformer => MapPerformer(scenePerformer.Performer!)).ToList(),
-            scene.Files.Select(file => new VideoFileDto(
+            video.Id,
+            video.Title,
+            video.Code,
+            video.Details,
+            video.Director,
+            video.Date?.ToString("yyyy-MM-dd"),
+            video.Organized,
+            video.IsVr,
+            video.StudioId,
+            video.Studio?.Name,
+            video.Captions,
+            video.InteractiveSpeed,
+            video.Urls.Select(static url => url.Url).ToList(),
+            video.VideoTags.Where(static vt => vt.Tag != null).Select(static vt => new TagDto(vt.Tag!.Id, vt.Tag.Name, vt.Tag.Description, vt.Tag.Favorite, vt.Tag.IgnoreAutoTag, [])).ToList(),
+            video.VideoPerformers.Where(static vp => vp.Performer != null).Select(static vp => MapPerformer(vp.Performer!)).ToList(),
+            video.Files.Select(file => new VideoFileDto(
                 file.Id,
                 CanReadFiles ? file.Path : string.Empty,
                 GetVisibleBasename(file.Path, file.Basename),
@@ -1330,12 +1267,12 @@ internal sealed class AiVisualSemanticSearchService(
                 file.Size,
                 [],
                 [])).ToList(),
-            MapSceneGroups(scene),
-            scene.SceneGalleries.Where(static sceneGallery => sceneGallery.Gallery != null).Select(static sceneGallery => new GallerySummaryDto(sceneGallery.Gallery!.Id, sceneGallery.Gallery.Title, sceneGallery.Gallery.Date?.ToString("yyyy-MM-dd"))).ToList(),
+            MapVideoGroups(video),
+            video.VideoGalleries.Where(static vg => vg.Gallery != null).Select(static vg => new GallerySummaryDto(vg.Gallery!.Id, vg.Gallery.Title, vg.Gallery.Date?.ToString("yyyy-MM-dd"))).ToList(),
             [],
-            scene.CustomFields,
-            scene.CreatedAt.ToString("o"),
-            scene.UpdatedAt.ToString("o"));
+            video.CustomFields,
+            video.CreatedAt.ToString("o"),
+            video.UpdatedAt.ToString("o"));
 
     private ImageDto MapImage(Image image)
         => new(
@@ -1377,9 +1314,9 @@ internal sealed class AiVisualSemanticSearchService(
             performer.Favorite,
             performer.ImageBlobId != null ? BuildEntityImageUrl($"/api/performers/{performer.Id}/image", performer.UpdatedAt) : null);
 
-    private static List<GroupSummaryDto> MapSceneGroups(Scene scene)
-        => scene.GroupItems
-            .Where(static item => item.Kind == GroupItemKind.Scene && item.Group != null)
+    private static List<GroupSummaryDto> MapVideoGroups(Video video)
+        => video.GroupItems
+            .Where(static item => item.Kind == GroupItemKind.Video && item.Group != null)
             .OrderBy(static item => item.OrderIndex)
             .Select(static item => new GroupSummaryDto(item.Group!.Id, item.Group.Name, item.OrderIndex))
             .ToList();
@@ -1446,12 +1383,12 @@ internal sealed class AiVisualSemanticSearchService(
             ? matches.OrderByDescending(match => GetSeededSortKey(match.Embedding.HostId, seed)).ThenByDescending(static match => match.Embedding.HostId).ToArray()
             : matches.OrderBy(match => GetSeededSortKey(match.Embedding.HostId, seed)).ThenBy(static match => match.Embedding.HostId).ToArray();
 
-    private static DateTime? GetLastFavoriteAt(Scene scene)
-        => scene.LikeHistory.Select(static history => (DateTime?)history.OccurredAt).Max();
+    private static DateTime? GetLastFavoriteAt(Video video)
+        => video.LikeHistory.Select(static history => (DateTime?)history.OccurredAt).Max();
 
-    private static string? GetScenePhash(Scene scene, bool desc)
+    private static string? GetVideoPhash(Video video, bool desc)
     {
-        var values = scene.Files
+        var values = video.Files
             .SelectMany(static file => file.Fingerprints)
             .Where(static fingerprint => fingerprint.Type == "phash" && fingerprint.Value != string.Empty)
             .Select(static fingerprint => fingerprint.Value);
@@ -1459,19 +1396,19 @@ internal sealed class AiVisualSemanticSearchService(
         return desc ? values.OrderByDescending(static value => value).FirstOrDefault() : values.OrderBy(static value => value).FirstOrDefault();
     }
 
-    private static int? GetScenePerformerAge(Scene scene, bool desc)
+    private static int? GetVideoPerformerAge(Video video, bool desc)
     {
-        if (scene.Date is null)
+        if (video.Date is null)
         {
             return null;
         }
 
-        var ages = scene.ScenePerformers
-            .Where(static scenePerformer => scenePerformer.Performer?.Birthdate is not null)
-            .Select(scenePerformer =>
+        var ages = video.VideoPerformers
+            .Where(static videoPerformer => videoPerformer.Performer?.Birthdate is not null)
+            .Select(videoPerformer =>
             {
-                var birthdate = scenePerformer.Performer!.Birthdate!.Value;
-                var date = scene.Date.Value;
+                var birthdate = videoPerformer.Performer!.Birthdate!.Value;
+                var date = video.Date.Value;
                 return date.Year - birthdate.Year - ((date.Month < birthdate.Month || (date.Month == birthdate.Month && date.Day < birthdate.Day)) ? 1 : 0);
             })
             .ToArray();

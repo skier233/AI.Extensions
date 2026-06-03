@@ -45,7 +45,7 @@ internal static class AiFaceCoverGenerator
 
         return hostEntityType switch
         {
-            "scene" when coverDetection?.ObservedAtSeconds is { } seconds => await CreateFromVideoAsync(assetPath, seconds, coverBoundingBox, configuration, ct),
+            "video" when coverDetection?.ObservedAtSeconds is { } seconds => await CreateFromVideoAsync(assetPath, seconds, coverBoundingBox, configuration, ct),
             "image" => await CreateFromImageAsync(assetPath, coverBoundingBox, ct),
             _ => null,
         };

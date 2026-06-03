@@ -4,9 +4,8 @@ using System.Text.Json;
 using AI.Extensions.Abstractions;
 
 using Cove.Core.Entities;
-using Cove.Data;
+using Cove.Core.Interfaces;
 
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 using Pgvector;
@@ -27,28 +26,32 @@ internal sealed class AiVisualPersistenceService(IServiceScopeFactory scopeFacto
         }
 
         var hostEntityType = NormalizeHostEntityType(request.Context.HostEntityType);
-        if (hostEntityType is not ("scene" or "image"))
+        if (hostEntityType is not ("video" or "image"))
         {
             return [$"AI.Visual persistence does not support host entity type '{request.Context.HostEntityType}'."];
         }
 
         await using var scope = _scopeFactory.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-        var hostType = hostEntityType == "scene" ? EmbeddingHostType.Scene : EmbeddingHostType.Image;
+        var embeddingRepo = scope.ServiceProvider.GetRequiredService<IEmbeddingRepository>();
+        var hostType = hostEntityType == "video" ? EmbeddingHostType.Video : EmbeddingHostType.Image;
         var hostId = request.Context.HostEntityId.Value;
 
-        var existingEmbeddings = await db.Embeddings
-            .Where(embedding => embedding.HostType == hostType && embedding.HostId == hostId && embedding.SourceKey == VisualSourceKey)
-            .ToListAsync(ct);
+        var existingEmbeddings = await embeddingRepo.FindAsync(new EmbeddingFilter
+        {
+            HostType = hostType,
+            HostId = hostId,
+            SourceKey = VisualSourceKey,
+        }, ct);
+
         if (existingEmbeddings.Count > 0)
         {
-            db.Embeddings.RemoveRange(existingEmbeddings);
+            embeddingRepo.RemoveRange(existingEmbeddings);
         }
 
         var inserted = 0;
         foreach (var embedding in batch.Embeddings)
         {
-            db.Embeddings.Add(new Embedding
+            embeddingRepo.Add(new Embedding
             {
                 HostType = hostType,
                 HostId = hostId,
@@ -74,7 +77,7 @@ internal sealed class AiVisualPersistenceService(IServiceScopeFactory scopeFacto
             inserted++;
         }
 
-        await db.SaveChangesAsync(ct);
+        await embeddingRepo.SaveChangesAsync(ct);
 
         if (inserted > 0)
         {
@@ -118,7 +121,7 @@ internal sealed class AiVisualPersistenceService(IServiceScopeFactory scopeFacto
     private static string NormalizeHostEntityType(string hostEntityType)
         => hostEntityType.Trim().ToLowerInvariant() switch
         {
-            "scenes" => "scene",
+            "video" or "videos" => "video",
             "images" => "image",
             var normalized => normalized,
         };

@@ -883,8 +883,8 @@ function writeRunDialogDefaults(selection, form) {
 
 function normalizeEntityType(entityType) {
   const normalized = (entityType || "").trim().toLowerCase();
-  if (normalized === "scenes") {
-    return "scene";
+  if (normalized === "videos") {
+    return "video";
   }
   if (normalized === "images") {
     return "image";
@@ -924,7 +924,7 @@ function getMediaKindsForSelection(selection) {
     return MEDIA_KINDS.filter((kind) => kind.value === "image");
   }
 
-  if (selection.entityType === "scene") {
+  if (selection.entityType === "video") {
     return MEDIA_KINDS.filter((kind) => kind.value !== "image");
   }
 
@@ -936,7 +936,7 @@ function formatSelectionTitle(selection) {
     return "Run AI";
   }
 
-  const noun = selection.entityType === "image" ? "image" : "scene";
+  const noun = selection.entityType === "image" ? "image" : "video";
   const count = selection.count || selection.entityIds.length;
   return `Run AI on ${count} ${noun}${count === 1 ? "" : "s"}`;
 }
@@ -950,7 +950,7 @@ function formatSelectionDescription(selection) {
     return "The selected Cove images will be resolved to concrete files before the AI run is queued.";
   }
 
-  return "The selected Cove scenes will be resolved to their source media before the AI run is queued.";
+  return "The selected Cove videos will be resolved to their source media before the AI run is queued.";
 }
 
   function useAutosaveSettings(settings, enabled, onStart, onSaved, onError) {
@@ -1839,7 +1839,7 @@ function RunComposer({ capabilities, catalog, settings, busy, message, onQueue, 
   return h("div", { className: "ai-core-stack" }, [
     hasSelectionTargets
       ? h("div", { className: "ai-core-selection-summary rounded-xl border border-border bg-card p-4", key: "selection" }, [
-          h("span", { className: "ai-core-label" }, selection.entityType === "image" ? "Selected images" : "Selected scenes"),
+          h("span", { className: "ai-core-label" }, selection.entityType === "image" ? "Selected images" : "Selected videos"),
           h("strong", { className: "ai-core-selection-title" }, formatSelectionTitle(selection)),
           h("p", { className: "ai-core-muted ai-core-selection-copy" }, formatSelectionDescription(selection)),
         ])
@@ -2154,7 +2154,7 @@ function AiCoreRunDialog({ selection, onComplete }) {
 function openRunAiDialog(_action, payload) {
   const selection = normalizeSelectionPayload(payload);
   if (!selection) {
-    throw new Error("Run AI requires a non-empty Scene or Image selection.");
+    throw new Error("Run AI requires a non-empty Video or Image selection.");
   }
 
   return new Promise((resolve) => {

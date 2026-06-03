@@ -120,7 +120,6 @@ if (!coveMinVersion) errors.push("Directory.Build.props missing CoveMinVersion")
 if (coveMinVersion) {
   validateVersionFloor("Directory.Build.props", "CoveSdkVersion", buildProps.CoveSdkVersion, coveMinVersion);
   validateVersionFloor("Directory.Build.props", "CoveCoreVersion", buildProps.CoveCoreVersion, coveMinVersion);
-  validateVersionFloor("Directory.Build.props", "CoveDataVersion", buildProps.CoveDataVersion, coveMinVersion);
 }
 
 const ids = new Set();

@@ -11,9 +11,9 @@ public sealed class AiPathMapperTests
     {
         var mapped = AiPathMapper.MapPath(
             [new AiPathMapping { FromPrefix = "C:/media", ToPrefix = "/mnt/media" }],
-            "C:/media/scenes/example.mp4");
+            "C:/media/videos/example.mp4");
 
-        Assert.Equal("/mnt/media/scenes/example.mp4", mapped);
+        Assert.Equal("/mnt/media/videos/example.mp4", mapped);
     }
 
     [Fact]

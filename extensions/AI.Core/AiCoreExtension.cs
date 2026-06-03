@@ -85,9 +85,9 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
                 searchKeywords: ["ai", "model server", "nsfw", "path mappings", "models"],
                 aliases: ["extensions-ai", "extensions/ai/core"])
             .AddSettingsPanel(new UISettingsPanel("ai-core-settings", "AI Core", Id, "AiCoreSettingsPanel", 40, TargetTab: "extensions/ai"))
-            .AddAction("ai-core-run-scene-toolbar", "Run AI", "toolbar", ["scene"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission, suppressSuccessAlert: true)
+            .AddAction("ai-core-run-video-toolbar", "Run AI", "toolbar", ["video"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission, suppressSuccessAlert: true)
             .AddAction("ai-core-run-image-toolbar", "Run AI", "toolbar", ["image"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission, suppressSuccessAlert: true)
-            .AddAction("ai-core-run-scenes-bulk", "Run AI", "bulk", ["scene"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission, suppressSuccessAlert: true)
+            .AddAction("ai-core-run-videos-bulk", "Run AI", "bulk", ["video"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission, suppressSuccessAlert: true)
             .AddAction("ai-core-run-images-bulk", "Run AI", "bulk", ["image"], icon: null, apiEndpoint: "/api/ext/ai-core/actions/run", handlerName: "openRunAiDialog", order: 20, requiredPermission: RunPermission, suppressSuccessAlert: true)
             .Build();
 
@@ -109,7 +109,7 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
             id: "run-selection",
             name: "Run AI",
             handler: RunSelectionJobAsync,
-            description: "Runs the AI pipeline over selected Scene/Image entities or explicit media paths.",
+            description: "Runs the AI pipeline over selected Video/Image entities or explicit media paths.",
             supportsParameters: true);
     }
 

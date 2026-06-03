@@ -5,9 +5,7 @@ using AI.Extensions.Abstractions;
 
 using Cove.Core.Entities;
 using Cove.Core.Interfaces;
-using Cove.Data;
 
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 using Pgvector;
@@ -32,160 +30,87 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         }
 
         var hostEntityType = NormalizeHostEntityType(request.Context.HostEntityType);
-        if (hostEntityType is not ("scene" or "image"))
+        if (hostEntityType is not ("video" or "image"))
         {
             return [$"AI.Faces persistence does not support host entity type '{request.Context.HostEntityType}'."];
         }
 
         await using var scope = _scopeFactory.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-        var hostEntityId = request.Context.HostEntityId.Value;
-        var detectionHostType = hostEntityType == "scene" ? DetectionHostType.Scene : DetectionHostType.Image;
-        var appearanceHostType = hostEntityType == "scene" ? FaceAppearanceHostType.Scene : FaceAppearanceHostType.Image;
+        var faceRepo = scope.ServiceProvider.GetRequiredService<IFaceRepository>();
+        var detectionRepo = scope.ServiceProvider.GetRequiredService<IDetectionRepository>();
+        var segmentRepo = scope.ServiceProvider.GetRequiredService<ISegmentRepository>();
+        var embeddingRepo = scope.ServiceProvider.GetRequiredService<IEmbeddingRepository>();
+        var customFieldRepo = scope.ServiceProvider.GetRequiredService<ICustomFieldRepository>();
 
-        var facesByKey = await ResolveFacesAsync(db, batch.Faces, ct);
+        var hostEntityId = request.Context.HostEntityId.Value;
+        var detectionHostType = hostEntityType == "video" ? DetectionHostType.Video : DetectionHostType.Image;
+        var appearanceHostType = hostEntityType == "video" ? FaceAppearanceHostType.Video : FaceAppearanceHostType.Image;
+
+        var facesByKey = await ResolveFacesAsync(faceRepo, batch.Faces, ct);
         var affectedFaceIds = new HashSet<int>(facesByKey.Values.Select(static face => face.Id));
 
-        var existingAppearances = await db.FaceAppearances
-            .Where(appearance => appearance.HostType == appearanceHostType && appearance.HostId == hostEntityId && appearance.SourceKey == FaceSourceKey)
-            .ToListAsync(ct);
-        foreach (var appearance in existingAppearances)
+        var existingAppearances = await faceRepo.FindAppearancesAsync(new FaceAppearanceFilter
         {
-            affectedFaceIds.Add(appearance.FaceId);
-        }
+            HostType = appearanceHostType, HostId = hostEntityId, SourceKey = FaceSourceKey,
+        }, ct);
+        foreach (var appearance in existingAppearances) affectedFaceIds.Add(appearance.FaceId);
 
-        var existingDetections = await db.Detections
-            .Where(detection => detection.HostType == detectionHostType && detection.HostId == hostEntityId && detection.SourceKey == FaceSourceKey)
-            .ToListAsync(ct);
+        var existingDetections = await detectionRepo.FindAsync(new DetectionFilter
+        {
+            HostType = detectionHostType, HostId = hostEntityId, SourceKey = FaceSourceKey,
+        }, ct);
         foreach (var detection in existingDetections)
         {
-            if (detection.RefKind is not null && detection.RefKind.Equals("face", StringComparison.OrdinalIgnoreCase) && detection.RefId is { } refId && refId > 0)
-            {
-                affectedFaceIds.Add((int)refId);
-            }
+            if (detection.RefKind?.Equals("face", StringComparison.OrdinalIgnoreCase) == true && detection.RefId is { } rid && rid > 0)
+                affectedFaceIds.Add((int)rid);
         }
 
-        var existingSegments = hostEntityType == "scene"
-            ? await db.Segments
-                .Where(segment => segment.HostType == SegmentHostType.Scene && segment.HostId == hostEntityId && segment.SourceKey == FaceSourceKey)
-                .ToListAsync(ct)
-            : [];
+        var existingSegments = hostEntityType == "video"
+            ? await segmentRepo.FindAsync(new SegmentFilter { HostType = SegmentHostType.Video, HostId = hostEntityId, SourceKey = FaceSourceKey }, ct)
+            : (IReadOnlyList<Segment>)[];
         foreach (var segment in existingSegments)
         {
-            if (segment.RefId is { } refId && refId > 0)
-            {
-                affectedFaceIds.Add((int)refId);
-            }
+            if (segment.RefId is { } rid && rid > 0) affectedFaceIds.Add((int)rid);
         }
 
-        foreach (var detection in batch.Detections)
-        {
-            var faceId = ResolveFaceId(facesByKey, detection.RefKey);
-            if (faceId > 0)
-            {
-                affectedFaceIds.Add(faceId);
-            }
-        }
-
-        foreach (var appearance in batch.FaceAppearances)
-        {
-            var faceId = ResolveFaceId(facesByKey, appearance.RefKey);
-            if (faceId > 0)
-            {
-                affectedFaceIds.Add(faceId);
-            }
-        }
-
-        foreach (var segment in batch.Segments)
-        {
-            var faceId = ResolveFaceId(facesByKey, segment.RefKey);
-            if (faceId > 0)
-            {
-                affectedFaceIds.Add(faceId);
-            }
-        }
-
-        foreach (var embedding in batch.Embeddings)
-        {
-            var faceId = ResolveFaceId(facesByKey, embedding.HostRefKey);
-            if (faceId > 0)
-            {
-                affectedFaceIds.Add(faceId);
-            }
-        }
+        foreach (var detection in batch.Detections) { var id = ResolveFaceId(facesByKey, detection.RefKey); if (id > 0) affectedFaceIds.Add(id); }
+        foreach (var appearance in batch.FaceAppearances) { var id = ResolveFaceId(facesByKey, appearance.RefKey); if (id > 0) affectedFaceIds.Add(id); }
+        foreach (var segment in batch.Segments) { var id = ResolveFaceId(facesByKey, segment.RefKey); if (id > 0) affectedFaceIds.Add(id); }
+        foreach (var embedding in batch.Embeddings) { var id = ResolveFaceId(facesByKey, embedding.HostRefKey); if (id > 0) affectedFaceIds.Add(id); }
 
         var existingEmbeddings = affectedFaceIds.Count == 0
-            ? []
-            : await db.Embeddings
-                .Where(embedding => embedding.HostType == EmbeddingHostType.Face && affectedFaceIds.Contains(embedding.HostId) && embedding.SourceKey == FaceSourceKey)
-                .ToListAsync(ct);
+            ? (IReadOnlyList<Embedding>)[]
+            : await embeddingRepo.FindAsync(new EmbeddingFilter
+            {
+                HostType = EmbeddingHostType.Face, HostIds = affectedFaceIds.ToArray(), SourceKey = FaceSourceKey,
+            }, ct);
 
-        if (existingDetections.Count > 0)
-        {
-            db.Detections.RemoveRange(existingDetections);
-        }
+        detectionRepo.RemoveRange(existingDetections);
+        segmentRepo.RemoveRange(existingSegments);
+        embeddingRepo.RemoveRange(existingEmbeddings);
+        faceRepo.RemoveAppearances(existingAppearances);
 
-        if (existingSegments.Count > 0)
-        {
-            db.Segments.RemoveRange(existingSegments);
-        }
+        var persistedAppearances = PersistFaceAppearances(faceRepo, hostEntityId, appearanceHostType, batch, facesByKey, request);
+        var persistedDetections = PersistDetections(detectionRepo, hostEntityId, detectionHostType, batch, facesByKey, request);
+        var persistedSegments = hostEntityType == "video" ? PersistSegments(segmentRepo, hostEntityId, batch, facesByKey, request) : 0;
+        var persistedEmbeddings = PersistEmbeddings(embeddingRepo, batch, facesByKey, request);
+        var persistedFaceCovers = await PersistFaceCoversAsync(scope.ServiceProvider, customFieldRepo, faceRepo, hostEntityType, batch, facesByKey, ct);
 
-        if (existingEmbeddings.Count > 0)
-        {
-            db.Embeddings.RemoveRange(existingEmbeddings);
-        }
-
-        if (existingAppearances.Count > 0)
-        {
-            db.FaceAppearances.RemoveRange(existingAppearances);
-        }
-
-        var persistedAppearances = PersistFaceAppearances(db, hostEntityId, appearanceHostType, batch, facesByKey, request);
-        var persistedDetections = PersistDetections(db, hostEntityId, detectionHostType, batch, facesByKey, request);
-        var persistedSegments = hostEntityType == "scene"
-            ? PersistSegments(db, hostEntityId, batch, facesByKey, request)
-            : 0;
-        var persistedEmbeddings = PersistEmbeddings(db, batch, facesByKey, request);
-        var persistedFaceCovers = await PersistFaceCoversAsync(scope.ServiceProvider, db, hostEntityType, batch, facesByKey, ct);
-
-        await db.SaveChangesAsync(ct);
+        await faceRepo.SaveChangesAsync(ct);
 
         if (affectedFaceIds.Count > 0)
         {
-            await RefreshFaceStatsAsync(db, affectedFaceIds, ct);
-            await db.SaveChangesAsync(ct);
+            await RefreshFaceStatsAsync(faceRepo, detectionRepo, affectedFaceIds, ct);
+            await faceRepo.SaveChangesAsync(ct);
         }
 
         var notes = new List<string>();
-        if (batch.Faces.Count > 0)
-        {
-            notes.Add($"Resolved {batch.Faces.Count} AI face identity candidate(s) into Cove face cluster(s).");
-        }
-
-        if (persistedAppearances > 0)
-        {
-            notes.Add($"Persisted {persistedAppearances} AI-generated face appearance(s) onto the {hostEntityType}.");
-        }
-
-        if (persistedDetections > 0)
-        {
-            notes.Add($"Persisted {persistedDetections} retained AI-generated face spatial sample(s) onto the {hostEntityType}.");
-        }
-
-        if (persistedSegments > 0)
-        {
-            notes.Add($"Persisted {persistedSegments} AI-generated face segment(s) onto the scene timeline.");
-        }
-
-        if (persistedEmbeddings > 0)
-        {
-            notes.Add($"Persisted {persistedEmbeddings} face embedding(s) for similarity and clustering workflows.");
-        }
-
-        if (persistedFaceCovers > 0)
-        {
-            notes.Add($"Generated {persistedFaceCovers} face cover image(s) for face detail pages.");
-        }
+        if (batch.Faces.Count > 0) notes.Add($"Resolved {batch.Faces.Count} AI face identity candidate(s) into Cove face cluster(s).");
+        if (persistedAppearances > 0) notes.Add($"Persisted {persistedAppearances} AI-generated face appearance(s) onto the {hostEntityType}.");
+        if (persistedDetections > 0) notes.Add($"Persisted {persistedDetections} retained AI-generated face spatial sample(s) onto the {hostEntityType}.");
+        if (persistedSegments > 0) notes.Add($"Persisted {persistedSegments} AI-generated face segment(s) onto the video timeline.");
+        if (persistedEmbeddings > 0) notes.Add($"Persisted {persistedEmbeddings} face embedding(s) for similarity and clustering workflows.");
+        if (persistedFaceCovers > 0) notes.Add($"Generated {persistedFaceCovers} face cover image(s) for face detail pages.");
 
         if (notes.Count == 0)
         {
@@ -197,37 +122,25 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         return notes;
     }
 
-    private static async Task<Dictionary<string, Face>> ResolveFacesAsync(CoveContext db, IReadOnlyList<AiPreparedFaceIdentity> faces, CancellationToken ct)
+    private static async Task<Dictionary<string, Face>> ResolveFacesAsync(IFaceRepository faceRepo, IReadOnlyList<AiPreparedFaceIdentity> faces, CancellationToken ct)
     {
-        var persistableFaces = faces
-            .Where(IsPersistableFace)
-            .ToArray();
+        var persistableFaces = faces.Where(IsPersistableFace).ToArray();
         var faceKeys = persistableFaces
-            .Select(static face => face.FaceKey)
-            .Where(static faceKey => !string.IsNullOrWhiteSpace(faceKey))
+            .Select(static f => f.FaceKey)
+            .Where(static k => !string.IsNullOrWhiteSpace(k))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
         if (faceKeys.Length == 0)
-        {
             return new Dictionary<string, Face>(StringComparer.OrdinalIgnoreCase);
-        }
 
-        var loweredKeys = faceKeys
-            .Select(static faceKey => faceKey.Trim().ToLowerInvariant())
-            .ToArray();
-
-        var existingFaces = await db.Faces
-            .Where(face => face.PrimarySourceKey != null && loweredKeys.Contains(face.PrimarySourceKey.ToLower()))
-            .ToListAsync(ct);
+        var existingFaces = await faceRepo.FindFacesAsync(new FaceFilter { PrimarySourceKeys = faceKeys }, tracking: true, ct);
         var facesByKey = new Dictionary<string, Face>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var face in existingFaces)
         {
             if (!string.IsNullOrWhiteSpace(face.PrimarySourceKey) && !facesByKey.ContainsKey(face.PrimarySourceKey))
-            {
                 facesByKey[face.PrimarySourceKey] = face;
-            }
         }
 
         foreach (var preparedFace in persistableFaces)
@@ -236,10 +149,7 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
             {
                 existing.PrimarySourceKey ??= preparedFace.FaceKey;
                 if (string.IsNullOrWhiteSpace(existing.Label))
-                {
                     existing.Label = Clean(preparedFace.Label) ?? preparedFace.FaceKey;
-                }
-
                 existing.CustomFields = MergeCustomFields(existing.CustomFields, preparedFace);
                 continue;
             }
@@ -250,234 +160,153 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
                 PrimarySourceKey = preparedFace.FaceKey,
                 CustomFields = MergeCustomFields(null, preparedFace),
             };
-
-            db.Faces.Add(created);
+            faceRepo.AddFace(created);
             facesByKey[preparedFace.FaceKey] = created;
         }
 
-        if (db.ChangeTracker.HasChanges())
-        {
-            await db.SaveChangesAsync(ct);
-        }
-
+        await faceRepo.SaveChangesAsync(ct);
         return facesByKey;
     }
 
     private static bool IsPersistableFace(AiPreparedFaceIdentity face)
     {
-        if (!face.IsProvisional)
-        {
-            return true;
-        }
-
-        if (face.Metadata is null)
-        {
-            return false;
-        }
-
-        return face.Metadata.TryGetValue("lifecycle", out var lifecycle)
-               && lifecycle.Equals("promoted", StringComparison.OrdinalIgnoreCase);
+        if (!face.IsProvisional) return true;
+        if (face.Metadata is null) return false;
+        return face.Metadata.TryGetValue("lifecycle", out var lifecycle) && lifecycle.Equals("promoted", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static int PersistFaceAppearances(CoveContext db, int hostEntityId, FaceAppearanceHostType hostType, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, AiDispatchRequest request)
+    private static int PersistFaceAppearances(IFaceRepository faceRepo, int hostEntityId, FaceAppearanceHostType hostType, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, AiDispatchRequest request)
     {
         var inserted = 0;
         foreach (var appearance in batch.FaceAppearances)
         {
             var faceId = ResolveFaceId(facesByKey, appearance.RefKey);
-            if (faceId <= 0)
+            if (faceId <= 0) continue;
+            faceRepo.AddAppearance(new FaceAppearance
             {
-                continue;
-            }
-
-            db.FaceAppearances.Add(new FaceAppearance
-            {
-                FaceId = faceId,
-                HostType = hostType,
-                HostId = hostEntityId,
-                FirstSeenAtSec = appearance.FirstSeenSeconds,
-                LastSeenAtSec = appearance.LastSeenSeconds,
+                FaceId = faceId, HostType = hostType, HostId = hostEntityId,
+                FirstSeenAtSec = appearance.FirstSeenSeconds, LastSeenAtSec = appearance.LastSeenSeconds,
                 SampleCount = Math.Max(0, appearance.SampleCount),
                 RetainedSpatialSampleCount = Math.Max(0, appearance.RetainedSpatialSampleCount),
                 SegmentCount = Math.Max(0, appearance.SegmentCount),
                 RepresentativeFrameSec = appearance.RepresentativeFrameSeconds,
                 TopConfidence = appearance.TopConfidence is null ? null : (float)appearance.TopConfidence.Value,
                 GroupKey = Clean(appearance.GroupKey),
-                Payload = SerializeMetadata(appearance.Metadata, new Dictionary<string, string?>
-                {
-                    ["assetId"] = appearance.AssetId,
-                    ["refKind"] = appearance.RefKind,
-                    ["refKey"] = appearance.RefKey,
-                    ["runId"] = request.Context.RunId,
-                }),
-                SourceKey = appearance.SourceKey,
-                SourceRunId = request.Context.RunId,
+                Payload = SerializeMetadata(appearance.Metadata, new Dictionary<string, string?> { ["assetId"] = appearance.AssetId, ["refKind"] = appearance.RefKind, ["refKey"] = appearance.RefKey, ["runId"] = request.Context.RunId }),
+                SourceKey = appearance.SourceKey, SourceRunId = request.Context.RunId,
             });
             inserted++;
         }
-
         return inserted;
     }
 
-    private static int PersistDetections(CoveContext db, int hostEntityId, DetectionHostType hostType, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, AiDispatchRequest request)
+    private static int PersistDetections(IDetectionRepository detectionRepo, int hostEntityId, DetectionHostType hostType, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, AiDispatchRequest request)
     {
         var inserted = 0;
         foreach (var detection in batch.Detections)
         {
             var refId = ResolveFaceId(facesByKey, detection.RefKey);
-            if (refId <= 0)
+            if (refId <= 0) continue;
+            detectionRepo.Add(new Detection
             {
-                continue;
-            }
-
-            db.Detections.Add(new Detection
-            {
-                HostType = hostType,
-                HostId = hostEntityId,
+                HostType = hostType, HostId = hostEntityId,
                 ObservedAtSec = detection.ObservedAtSeconds,
-                FrameWidth = NormalizedFrameSize,
-                FrameHeight = NormalizedFrameSize,
+                FrameWidth = NormalizedFrameSize, FrameHeight = NormalizedFrameSize,
                 Class = Clean(detection.Class) ?? "face",
                 Score = (float)detection.Score,
-                X = (float)detection.BoundingBox.X1,
-                Y = (float)detection.BoundingBox.Y1,
-                W = (float)detection.BoundingBox.Width,
-                H = (float)detection.BoundingBox.Height,
-                Extra = SerializeMetadata(detection.Metadata, new Dictionary<string, string?>
-                {
-                    ["assetId"] = detection.AssetId,
-                    ["modelKey"] = detection.ModelKey,
-                    ["refKey"] = detection.RefKey,
-                    ["runId"] = request.Context.RunId,
-                }),
-                RefKind = "face",
-                RefId = refId,
+                X = (float)detection.BoundingBox.X1, Y = (float)detection.BoundingBox.Y1,
+                W = (float)detection.BoundingBox.Width, H = (float)detection.BoundingBox.Height,
+                Extra = SerializeMetadata(detection.Metadata, new Dictionary<string, string?> { ["assetId"] = detection.AssetId, ["modelKey"] = detection.ModelKey, ["refKey"] = detection.RefKey, ["runId"] = request.Context.RunId }),
+                RefKind = "face", RefId = refId,
                 GroupKey = Clean(detection.GroupKey),
-                SourceKey = detection.SourceKey,
-                SourceRunId = request.Context.RunId,
+                SourceKey = detection.SourceKey, SourceRunId = request.Context.RunId,
             });
             inserted++;
         }
-
         return inserted;
     }
 
-    private static int PersistSegments(CoveContext db, int sceneId, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, AiDispatchRequest request)
+    private static int PersistSegments(ISegmentRepository segmentRepo, int videoId, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, AiDispatchRequest request)
     {
         var inserted = 0;
         foreach (var segment in batch.Segments)
         {
             var refId = ResolveFaceId(facesByKey, segment.RefKey);
             var title = ResolveFaceLabel(facesByKey, segment.RefKey) ?? Clean(segment.Title) ?? segment.RefKey;
-
-            db.Segments.Add(new Segment
+            segmentRepo.Add(new Segment
             {
-                HostType = SegmentHostType.Scene,
-                HostId = sceneId,
-                StartSec = segment.StartSeconds,
-                EndSec = segment.EndSeconds,
-                Kind = Clean(segment.Kind),
-                RefId = refId > 0 ? refId : null,
-                Payload = SerializeMetadata(segment.Metadata, new Dictionary<string, string?>
-                {
-                    ["assetId"] = segment.AssetId,
-                    ["refKind"] = segment.RefKind,
-                    ["refKey"] = segment.RefKey,
-                    ["runId"] = request.Context.RunId,
-                }),
-                SourceKey = segment.SourceKey,
-                SourceRunId = request.Context.RunId,
+                HostType = SegmentHostType.Video, HostId = videoId,
+                StartSec = segment.StartSeconds, EndSec = segment.EndSeconds,
+                Kind = Clean(segment.Kind), RefId = refId > 0 ? refId : null,
+                Payload = SerializeMetadata(segment.Metadata, new Dictionary<string, string?> { ["assetId"] = segment.AssetId, ["refKind"] = segment.RefKind, ["refKey"] = segment.RefKey, ["runId"] = request.Context.RunId }),
+                SourceKey = segment.SourceKey, SourceRunId = request.Context.RunId,
                 Confidence = segment.Confidence is null ? null : (float)segment.Confidence.Value,
                 Title = title,
             });
             inserted++;
         }
-
         return inserted;
     }
 
-    private static int PersistEmbeddings(CoveContext db, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, AiDispatchRequest request)
+    private static int PersistEmbeddings(IEmbeddingRepository embeddingRepo, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, AiDispatchRequest request)
     {
         var inserted = 0;
         foreach (var embedding in batch.Embeddings)
         {
             var faceId = ResolveFaceId(facesByKey, embedding.HostRefKey);
-            if (faceId <= 0)
+            if (faceId <= 0) continue;
+            embeddingRepo.Add(new Embedding
             {
-                continue;
-            }
-
-            db.Embeddings.Add(new Embedding
-            {
-                HostType = EmbeddingHostType.Face,
-                HostId = faceId,
-                Kind = embedding.Kind,
-                KindFamily = Clean(embedding.KindFamily),
-                Modality = EmbeddingModality.Face,
-                IsSemantic = embedding.IsSemantic,
-                Dim = embedding.Vector.Count,
-                Vector = new Vector(embedding.Vector.ToArray()),
-                SectionIndex = embedding.SectionIndex,
-                StartSec = embedding.StartSeconds,
-                EndSec = embedding.EndSeconds,
-                SourceKey = embedding.SourceKey,
-                SourceRunId = request.Context.RunId,
-                Meta = SerializeMetadata(embedding.Metadata, new Dictionary<string, string?>
-                {
-                    ["assetId"] = embedding.AssetId,
-                    ["hostRefKind"] = embedding.HostRefKind,
-                    ["hostRefKey"] = embedding.HostRefKey,
-                    ["modelKey"] = embedding.ModelKey,
-                    ["norm"] = embedding.Norm?.ToString(CultureInfo.InvariantCulture),
-                    ["runId"] = request.Context.RunId,
-                }),
+                HostType = EmbeddingHostType.Face, HostId = faceId,
+                Kind = embedding.Kind, KindFamily = Clean(embedding.KindFamily),
+                Modality = EmbeddingModality.Face, IsSemantic = embedding.IsSemantic,
+                Dim = embedding.Vector.Count, Vector = new Vector(embedding.Vector.ToArray()),
+                SectionIndex = embedding.SectionIndex, StartSec = embedding.StartSeconds, EndSec = embedding.EndSeconds,
+                SourceKey = embedding.SourceKey, SourceRunId = request.Context.RunId,
+                Meta = SerializeMetadata(embedding.Metadata, new Dictionary<string, string?> { ["assetId"] = embedding.AssetId, ["hostRefKind"] = embedding.HostRefKind, ["hostRefKey"] = embedding.HostRefKey, ["modelKey"] = embedding.ModelKey, ["norm"] = embedding.Norm?.ToString(CultureInfo.InvariantCulture), ["runId"] = request.Context.RunId }),
             });
             inserted++;
         }
-
         return inserted;
     }
 
-    private static async Task<int> PersistFaceCoversAsync(IServiceProvider services, CoveContext db, string hostEntityType, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, CancellationToken ct)
+    private static async Task<int> PersistFaceCoversAsync(IServiceProvider services, ICustomFieldRepository customFieldRepo, IFaceRepository faceRepo, string hostEntityType, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, CancellationToken ct)
     {
         var blobService = services.GetService<IBlobService>();
-        if (blobService is null || batch.Faces.Count == 0)
-        {
-            return 0;
-        }
+        if (blobService is null || batch.Faces.Count == 0) return 0;
 
         var configuration = services.GetService<CoveConfiguration>();
         var generated = 0;
 
         foreach (var preparedFace in batch.Faces)
         {
-            if (!facesByKey.TryGetValue(preparedFace.FaceKey, out var face))
-            {
-                continue;
-            }
+            if (!facesByKey.TryGetValue(preparedFace.FaceKey, out var face)) continue;
 
             var incomingCoverQuality = ReadPreparedCoverQuality(preparedFace);
-            var currentCoverQuality = await ReadPersistedCoverBlobQualityAsync(db, face.Id, ct);
-            if (!ShouldGenerateCover(face, incomingCoverQuality, currentCoverQuality))
-            {
-                continue;
-            }
+            var currentCoverQuality = await customFieldRepo.FindNumberValueAsync(CustomFieldEntityTypes.Face, face.Id, CoverBlobQualityScoreField, ct);
+            if (!ShouldGenerateCover(face, incomingCoverQuality, currentCoverQuality is null ? null : (double?)currentCoverQuality)) continue;
 
             var coverDetection = ResolveCoverDetection(batch, preparedFace);
             await using var coverStream = await AiFaceCoverGenerator.CreateAsync(hostEntityType, preparedFace, coverDetection, configuration, ct);
-            if (coverStream is null)
-            {
-                continue;
-            }
+            if (coverStream is null) continue;
 
             var previousBlobId = face.CoverBlobId;
             face.CoverBlobId = await blobService.StoreBlobAsync(coverStream, "image/jpeg", ct);
             face.CustomFields = SetCoverBlobQuality(face.CustomFields, incomingCoverQuality);
-            await PersistCoverBlobQualityAsync(db, face.Id, incomingCoverQuality, ct);
-            if (!string.IsNullOrWhiteSpace(previousBlobId) && !string.Equals(previousBlobId, face.CoverBlobId, StringComparison.Ordinal))
+
+            if (incomingCoverQuality.HasValue)
             {
-                await blobService.DeleteBlobAsync(previousBlobId, ct);
+                var definition = await customFieldRepo.FindOrCreateDefinitionAsync(new CustomFieldDefinition
+                {
+                    Key = CoverBlobQualityScoreField, Label = "AI Faces Cover Quality",
+                    Type = CustomFieldTypes.Number, EntityTypes = [CustomFieldEntityTypes.Face],
+                    Filterable = false, Sortable = false, DisplayOrder = -1000,
+                }, ct);
+                await customFieldRepo.UpsertNumberValueAsync(CustomFieldEntityTypes.Face, face.Id, definition.Id, Convert.ToDecimal(incomingCoverQuality.Value, CultureInfo.InvariantCulture), ct);
             }
+
+            if (!string.IsNullOrWhiteSpace(previousBlobId) && !string.Equals(previousBlobId, face.CoverBlobId, StringComparison.Ordinal))
+                await blobService.DeleteBlobAsync(previousBlobId, ct);
 
             generated++;
         }
@@ -485,103 +314,46 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         return generated;
     }
 
-    private static AiPreparedDetection? ResolveCoverDetection(AiPreparedArtifactBatch batch, AiPreparedFaceIdentity preparedFace)
+    private static async Task RefreshFaceStatsAsync(IFaceRepository faceRepo, IDetectionRepository detectionRepo, IReadOnlyCollection<int> faceIds, CancellationToken ct)
     {
-        var candidates = batch.Detections
-            .Where(detection => !string.IsNullOrWhiteSpace(detection.RefKey)
-                && detection.RefKey.Equals(preparedFace.FaceKey, StringComparison.OrdinalIgnoreCase));
+        if (faceIds.Count == 0) return;
 
-        if (preparedFace.CoverBoundingBox is { } coverBoundingBox)
+        var detections = await detectionRepo.FindAsync(new DetectionFilter
         {
-            var exactMatch = candidates
-                .Where(detection => BoundingBoxesMatch(detection.BoundingBox, coverBoundingBox))
-                .OrderByDescending(detection => detection.Score)
-                .FirstOrDefault();
-            if (exactMatch is not null)
+            RefKind = "face",
+            RefIds = faceIds.Select(static id => (long)id).ToArray(),
+        }, ct);
+
+        var retainedDetectionStatsByFaceId = detections
+            .GroupBy(static d => (int)d.RefId!.Value)
+            .ToDictionary(static g => g.Key, static g => new
             {
-                return exactMatch;
-            }
-        }
+                DetectionCount = g.Count(),
+                VideoCount = g.Where(static d => d.HostType == DetectionHostType.Video).Select(static d => d.HostId).Distinct().Count(),
+                ImageCount = g.Where(static d => d.HostType == DetectionHostType.Image).Select(static d => d.HostId).Distinct().Count(),
+            });
 
-        return candidates
-            .OrderByDescending(detection => detection.Score)
-            .FirstOrDefault();
-    }
-
-    private static bool BoundingBoxesMatch(AiBoundingBox left, AiBoundingBox right)
-        => Math.Abs(left.X1 - right.X1) <= 0.0001
-           && Math.Abs(left.Y1 - right.Y1) <= 0.0001
-           && Math.Abs(left.X2 - right.X2) <= 0.0001
-           && Math.Abs(left.Y2 - right.Y2) <= 0.0001;
-
-    private static async Task RefreshFaceStatsAsync(CoveContext db, IReadOnlyCollection<int> faceIds, CancellationToken ct)
-    {
-        if (faceIds.Count == 0)
-        {
-            return;
-        }
-
-        var faceIdValues = faceIds.Select(static faceId => (long)faceId).ToArray();
-        var detectionRows = await db.Detections
-            .Where(detection =>
-                detection.RefKind != null
-                && detection.RefKind.ToLower() == "face"
-                && detection.RefId.HasValue
-                && faceIdValues.Contains(detection.RefId.Value))
-            .Select(detection => new
+        var appearances = await faceRepo.FindAppearancesAsync(new FaceAppearanceFilter { FaceIds = faceIds.ToArray() }, ct);
+        var appearanceStatsByFaceId = appearances
+            .GroupBy(static a => a.FaceId)
+            .ToDictionary(static g => g.Key, static g => new
             {
-                FaceId = detection.RefId!.Value,
-                detection.HostType,
-                detection.HostId,
-            })
-            .ToListAsync(ct);
+                AppearanceCount = g.Count(),
+                FrameSampleCount = g.Sum(static a => a.SampleCount),
+                VideoCount = g.Where(static a => a.HostType == FaceAppearanceHostType.Video).Select(static a => a.HostId).Distinct().Count(),
+                ImageCount = g.Where(static a => a.HostType == FaceAppearanceHostType.Image).Select(static a => a.HostId).Distinct().Count(),
+            });
 
-        var retainedDetectionStatsByFaceId = detectionRows
-            .GroupBy(static row => (int)row.FaceId)
-            .ToDictionary(
-                static group => group.Key,
-                static group => new
-                {
-                    DetectionCount = group.Count(),
-                    SceneCount = group.Where(static row => row.HostType == DetectionHostType.Scene).Select(static row => row.HostId).Distinct().Count(),
-                    ImageCount = group.Where(static row => row.HostType == DetectionHostType.Image).Select(static row => row.HostId).Distinct().Count(),
-                });
-
-        var appearanceRows = await db.FaceAppearances
-            .Where(appearance => faceIds.Contains(appearance.FaceId))
-            .Select(appearance => new
-            {
-                appearance.FaceId,
-                appearance.HostType,
-                appearance.HostId,
-                appearance.SampleCount,
-            })
-            .ToListAsync(ct);
-
-        var appearanceStatsByFaceId = appearanceRows
-            .GroupBy(static row => row.FaceId)
-            .ToDictionary(
-                static group => group.Key,
-                static group => new
-                {
-                    AppearanceCount = group.Count(),
-                    FrameSampleCount = group.Sum(static row => row.SampleCount),
-                    SceneCount = group.Where(static row => row.HostType == FaceAppearanceHostType.Scene).Select(static row => row.HostId).Distinct().Count(),
-                    ImageCount = group.Where(static row => row.HostType == FaceAppearanceHostType.Image).Select(static row => row.HostId).Distinct().Count(),
-                });
-
-        var trackedFaces = await db.Faces
-            .Where(face => faceIds.Contains(face.Id))
-            .ToListAsync(ct);
+        var trackedFaces = await faceRepo.FindFacesAsync(new FaceFilter { Ids = faceIds.ToArray() }, tracking: true, ct);
         foreach (var face in trackedFaces)
         {
             retainedDetectionStatsByFaceId.TryGetValue(face.Id, out var detectionStats);
             if (!appearanceStatsByFaceId.TryGetValue(face.Id, out var appearanceStats))
             {
                 face.DetectionCount = detectionStats?.DetectionCount ?? 0;
-                face.AppearanceCount = detectionStats is null ? 0 : detectionStats.SceneCount + detectionStats.ImageCount;
+                face.AppearanceCount = detectionStats is null ? 0 : detectionStats.VideoCount + detectionStats.ImageCount;
                 face.FrameSampleCount = detectionStats?.DetectionCount ?? 0;
-                face.SceneCount = detectionStats?.SceneCount ?? 0;
+                face.VideoCount = detectionStats?.VideoCount ?? 0;
                 face.ImageCount = detectionStats?.ImageCount ?? 0;
                 continue;
             }
@@ -589,184 +361,71 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
             face.DetectionCount = detectionStats?.DetectionCount ?? 0;
             face.AppearanceCount = appearanceStats.AppearanceCount;
             face.FrameSampleCount = appearanceStats.FrameSampleCount;
-            face.SceneCount = appearanceStats.SceneCount;
+            face.VideoCount = appearanceStats.VideoCount;
             face.ImageCount = appearanceStats.ImageCount;
         }
     }
 
+    private static AiPreparedDetection? ResolveCoverDetection(AiPreparedArtifactBatch batch, AiPreparedFaceIdentity preparedFace)
+    {
+        var candidates = batch.Detections.Where(d => !string.IsNullOrWhiteSpace(d.RefKey) && d.RefKey.Equals(preparedFace.FaceKey, StringComparison.OrdinalIgnoreCase));
+        if (preparedFace.CoverBoundingBox is { } coverBox)
+        {
+            var exact = candidates.Where(d => BoundingBoxesMatch(d.BoundingBox, coverBox)).OrderByDescending(static d => d.Score).FirstOrDefault();
+            if (exact is not null) return exact;
+        }
+        return candidates.OrderByDescending(static d => d.Score).FirstOrDefault();
+    }
+
+    private static bool BoundingBoxesMatch(AiBoundingBox left, AiBoundingBox right)
+        => Math.Abs(left.X1 - right.X1) <= 0.0001 && Math.Abs(left.Y1 - right.Y1) <= 0.0001 && Math.Abs(left.X2 - right.X2) <= 0.0001 && Math.Abs(left.Y2 - right.Y2) <= 0.0001;
+
     private static Dictionary<string, object>? MergeCustomFields(Dictionary<string, object>? current, AiPreparedFaceIdentity preparedFace)
     {
-        var fields = current is null
-            ? new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, object>(current, StringComparer.OrdinalIgnoreCase);
-
+        var fields = current is null ? new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase) : new Dictionary<string, object>(current, StringComparer.OrdinalIgnoreCase);
         fields["ai.faces.faceKey"] = preparedFace.FaceKey;
-        if (preparedFace.QualityScore.HasValue)
-        {
-            fields["ai.faces.qualityScore"] = preparedFace.QualityScore.Value;
-        }
-
-        if (!string.IsNullOrWhiteSpace(preparedFace.CoverAssetId))
-        {
-            fields["ai.faces.coverAssetId"] = preparedFace.CoverAssetId;
-        }
-
-        if (preparedFace.CoverBoundingBox is { } coverBoundingBox)
-        {
-            fields["ai.faces.coverBoundingBox"] = new[]
-            {
-                coverBoundingBox.X1,
-                coverBoundingBox.Y1,
-                coverBoundingBox.X2,
-                coverBoundingBox.Y2,
-            };
-        }
-
-        if (preparedFace.Metadata is not null)
-        {
-            foreach (var (key, value) in preparedFace.Metadata)
-            {
-                fields[$"ai.faces.{key}"] = value;
-            }
-        }
-
-        var coverQualityScore = ReadPreparedCoverQuality(preparedFace);
-        if (coverQualityScore.HasValue)
-        {
-            fields[CoverQualityScoreField] = coverQualityScore.Value;
-        }
-
+        if (preparedFace.QualityScore.HasValue) fields["ai.faces.qualityScore"] = preparedFace.QualityScore.Value;
+        if (!string.IsNullOrWhiteSpace(preparedFace.CoverAssetId)) fields["ai.faces.coverAssetId"] = preparedFace.CoverAssetId;
+        if (preparedFace.CoverBoundingBox is { } box) fields["ai.faces.coverBoundingBox"] = new[] { box.X1, box.Y1, box.X2, box.Y2 };
+        if (preparedFace.Metadata is not null) foreach (var (key, value) in preparedFace.Metadata) fields[$"ai.faces.{key}"] = value;
+        var coverQuality = ReadPreparedCoverQuality(preparedFace);
+        if (coverQuality.HasValue) fields[CoverQualityScoreField] = coverQuality.Value;
         return fields.Count == 0 ? null : fields;
     }
 
     private static bool ShouldGenerateCover(Face face, double? incomingCoverQuality, double? persistedCoverQuality)
     {
-        if (string.IsNullOrWhiteSpace(face.CoverBlobId))
-        {
-            return true;
-        }
-
-        if (!incomingCoverQuality.HasValue)
-        {
-            return false;
-        }
-
+        if (string.IsNullOrWhiteSpace(face.CoverBlobId)) return true;
+        if (!incomingCoverQuality.HasValue) return false;
         var currentBlobQuality = persistedCoverQuality ?? ReadCustomDouble(face.CustomFields, CoverBlobQualityScoreField);
         return !currentBlobQuality.HasValue || incomingCoverQuality.Value > currentBlobQuality.Value + CoverReplacementQualityMargin;
     }
 
-    private static async Task<double?> ReadPersistedCoverBlobQualityAsync(CoveContext db, int faceId, CancellationToken ct)
-    {
-        var row = await db.CustomFieldValues
-            .AsNoTracking()
-            .Include(value => value.Definition)
-            .Where(value => value.EntityType == CustomFieldEntityTypes.Face
-                && value.EntityId == faceId
-                && value.Definition != null
-                && value.Definition.Key == CoverBlobQualityScoreField)
-            .OrderBy(value => value.Position)
-            .Select(value => value.NumberValue)
-            .FirstOrDefaultAsync(ct);
-
-        return row.HasValue ? (double)row.Value : null;
-    }
-
-    private static async Task PersistCoverBlobQualityAsync(CoveContext db, int faceId, double? coverQualityScore, CancellationToken ct)
-    {
-        if (!coverQualityScore.HasValue)
-        {
-            return;
-        }
-
-        var definition = await EnsureCoverBlobQualityDefinitionAsync(db, ct);
-        var existingValues = await db.CustomFieldValues
-            .Where(value => value.EntityType == CustomFieldEntityTypes.Face
-                && value.EntityId == faceId
-                && value.DefinitionId == definition.Id)
-            .ToListAsync(ct);
-        db.CustomFieldValues.RemoveRange(existingValues);
-        db.CustomFieldValues.Add(new CustomFieldValue
-        {
-            DefinitionId = definition.Id,
-            EntityType = CustomFieldEntityTypes.Face,
-            EntityId = faceId,
-            NumberValue = Convert.ToDecimal(coverQualityScore.Value, CultureInfo.InvariantCulture),
-        });
-    }
-
-    private static async Task<CustomFieldDefinition> EnsureCoverBlobQualityDefinitionAsync(CoveContext db, CancellationToken ct)
-    {
-        var definition = await db.CustomFieldDefinitions
-            .FirstOrDefaultAsync(item => item.Key == CoverBlobQualityScoreField, ct);
-        if (definition is null)
-        {
-            definition = new CustomFieldDefinition
-            {
-                Key = CoverBlobQualityScoreField,
-                Label = "AI Faces Cover Quality",
-                Type = CustomFieldTypes.Number,
-                EntityTypes = [CustomFieldEntityTypes.Face],
-                Filterable = false,
-                Sortable = false,
-                DisplayOrder = -1000,
-            };
-            db.CustomFieldDefinitions.Add(definition);
-            await db.SaveChangesAsync(ct);
-            return definition;
-        }
-
-        if (!definition.EntityTypes.Contains(CustomFieldEntityTypes.Face, StringComparer.OrdinalIgnoreCase))
-        {
-            definition.EntityTypes = [.. definition.EntityTypes, CustomFieldEntityTypes.Face];
-        }
-
-        if (!string.Equals(definition.Type, CustomFieldTypes.Number, StringComparison.OrdinalIgnoreCase))
-        {
-            definition.Type = CustomFieldTypes.Number;
-        }
-
-        definition.Filterable = false;
-        definition.Sortable = false;
-        return definition;
-    }
-
     private static Dictionary<string, object>? SetCoverBlobQuality(Dictionary<string, object>? current, double? coverQualityScore)
     {
-        if (!coverQualityScore.HasValue)
-        {
-            return current;
-        }
-
-        var fields = current is null
-            ? new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, object>(current, StringComparer.OrdinalIgnoreCase);
+        if (!coverQualityScore.HasValue) return current;
+        var fields = current is null ? new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase) : new Dictionary<string, object>(current, StringComparer.OrdinalIgnoreCase);
         fields[CoverBlobQualityScoreField] = coverQualityScore.Value;
         return fields;
     }
 
     private static double? ReadPreparedCoverQuality(AiPreparedFaceIdentity preparedFace)
         => preparedFace.Metadata is not null && preparedFace.Metadata.TryGetValue("coverQualityScore", out var value)
-            && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
-            ? parsed
-            : null;
+            && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
 
     private static double? ReadCustomDouble(Dictionary<string, object>? fields, string key)
     {
-        if (fields is null || !fields.TryGetValue(key, out var value) || value is null)
-        {
-            return null;
-        }
-
+        if (fields is null || !fields.TryGetValue(key, out var value) || value is null) return null;
         return value switch
         {
-            double doubleValue when double.IsFinite(doubleValue) => doubleValue,
-            float floatValue when float.IsFinite(floatValue) => floatValue,
-            decimal decimalValue => (double)decimalValue,
-            int intValue => intValue,
-            long longValue => longValue,
-            string stringValue when double.TryParse(stringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) => parsed,
-            JsonElement { ValueKind: JsonValueKind.Number } element when element.TryGetDouble(out var parsed) => parsed,
-            JsonElement { ValueKind: JsonValueKind.String } element when double.TryParse(element.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) => parsed,
+            double d when double.IsFinite(d) => d,
+            float f when float.IsFinite(f) => f,
+            decimal dec => (double)dec,
+            int i => i,
+            long l => l,
+            string s when double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var p) => p,
+            JsonElement { ValueKind: JsonValueKind.Number } e when e.TryGetDouble(out var p) => p,
+            JsonElement { ValueKind: JsonValueKind.String } e when double.TryParse(e.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var p) => p,
             _ => null,
         };
     }
@@ -774,29 +433,8 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
     private static JsonDocument? SerializeMetadata(IReadOnlyDictionary<string, string>? metadata, IReadOnlyDictionary<string, string?>? extras = null)
     {
         var payload = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-        if (metadata is not null)
-        {
-            foreach (var (key, value) in metadata)
-            {
-                if (!string.IsNullOrWhiteSpace(key) && !string.IsNullOrWhiteSpace(value))
-                {
-                    payload[key] = value;
-                }
-            }
-        }
-
-        if (extras is not null)
-        {
-            foreach (var (key, value) in extras)
-            {
-                if (!string.IsNullOrWhiteSpace(key) && !string.IsNullOrWhiteSpace(value))
-                {
-                    payload[key] = value;
-                }
-            }
-        }
-
+        if (metadata is not null) foreach (var (k, v) in metadata) { if (!string.IsNullOrWhiteSpace(k) && !string.IsNullOrWhiteSpace(v)) payload[k] = v; }
+        if (extras is not null) foreach (var (k, v) in extras) { if (!string.IsNullOrWhiteSpace(k) && !string.IsNullOrWhiteSpace(v)) payload[k] = v; }
         return payload.Count == 0 ? null : JsonDocument.Parse(JsonSerializer.Serialize(payload));
     }
 
@@ -805,17 +443,10 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
 
     private static string? ResolveFaceLabel(IReadOnlyDictionary<string, Face> facesByKey, string? faceKey)
         => !string.IsNullOrWhiteSpace(faceKey) && facesByKey.TryGetValue(faceKey.Trim(), out var face)
-            ? Clean(face.Label) ?? Clean(face.PrimarySourceKey)
-            : null;
+            ? Clean(face.Label) ?? Clean(face.PrimarySourceKey) : null;
 
     private static string NormalizeHostEntityType(string hostEntityType)
-        => hostEntityType.Trim().ToLowerInvariant() switch
-        {
-            "scenes" => "scene",
-            "images" => "image",
-            var normalized => normalized,
-        };
+        => hostEntityType.Trim().ToLowerInvariant() switch { "video" or "videos" => "video", "images" => "image", var n => n };
 
-    private static string? Clean(string? value)
-        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 }

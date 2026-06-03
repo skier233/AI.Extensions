@@ -676,9 +676,9 @@ public sealed record AiQueueRunRequest
             throw new ArgumentException("Image selections can only be queued with media kind 'image'.", nameof(MediaKind));
         }
 
-        if (normalizedEntityType == "scene" && normalizedMediaKind == AiMediaKinds.Image)
+        if ((normalizedEntityType == "video") && normalizedMediaKind == AiMediaKinds.Image)
         {
-            throw new ArgumentException("Scene selections do not support media kind 'image'.", nameof(MediaKind));
+            throw new ArgumentException("Video selections do not support media kind 'image'.", nameof(MediaKind));
         }
 
         var normalizedClaimIds = NormalizeStringList(ClaimIds);
@@ -803,7 +803,7 @@ public sealed record AiQueueRunRequest
         var normalized = entityType?.Trim().ToLowerInvariant();
         return normalized switch
         {
-            "scene" or "scenes" => "scene",
+            "video" or "videos" => "video",
             "image" or "images" => "image",
             null or "" => null,
             _ => normalized,
@@ -814,7 +814,7 @@ public sealed record AiQueueRunRequest
         => entityType switch
         {
             "image" => AiMediaKinds.Image,
-            "scene" => AiMediaKinds.Video,
+            "video" => AiMediaKinds.Video,
             _ => null,
         };
 

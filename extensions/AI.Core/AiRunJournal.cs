@@ -1,9 +1,7 @@
 using System.Text.Json;
 
 using Cove.Core.Entities;
-using Cove.Data;
-
-using Microsoft.EntityFrameworkCore;
+using Cove.Core.Interfaces;
 
 namespace AI.Core;
 
@@ -33,11 +31,11 @@ public sealed record AiRunJournalCompletion(
     IReadOnlyList<string> ClaimIds,
     int DispatchResultCount);
 
-internal sealed class AiRunJournal(CoveContext dbContext) : IAiRunJournal
+internal sealed class AiRunJournal(IAiRunRepository runRepo) : IAiRunJournal
 {
     private const string SourceKey = "ext:ai.core";
 
-    private readonly CoveContext _dbContext = dbContext;
+    private readonly IAiRunRepository _runRepo = runRepo;
 
     public async Task RecordStartAsync(AiRunJournalStart entry, CancellationToken ct = default)
     {
@@ -46,21 +44,7 @@ internal sealed class AiRunJournal(CoveContext dbContext) : IAiRunJournal
             return;
         }
 
-        var run = await _dbContext.AiRuns.FirstOrDefaultAsync(
-            candidate => candidate.RunKey == entry.RunKey && candidate.SourceKey == SourceKey,
-            ct);
-        if (run is null)
-        {
-            run = new AiRun
-            {
-                RunKey = entry.RunKey,
-                SourceKey = SourceKey,
-                TargetType = targetType,
-                TargetId = targetId,
-                StartedAt = DateTime.UtcNow,
-            };
-            _dbContext.AiRuns.Add(run);
-        }
+        var run = await _runRepo.FindOrCreateAsync(entry.RunKey, SourceKey, targetType, targetId, AiRunStatus.Running, ct);
 
         run.Trigger = entry.Trigger;
         run.Status = AiRunStatus.Running;
@@ -68,13 +52,22 @@ internal sealed class AiRunJournal(CoveContext dbContext) : IAiRunJournal
         run.FrameIntervalSec = entry.FrameIntervalSec;
         run.Vr = entry.Vr;
         run.Request = Serialize(entry.RequestPayload);
+        if (run.StartedAt == default)
+        {
+            run.StartedAt = DateTime.UtcNow;
+        }
 
-        await _dbContext.SaveChangesAsync(ct);
+        await _runRepo.UpdateAsync(run, ct);
     }
 
     public async Task RecordCompletionAsync(AiRunJournalCompletion completion, CancellationToken ct = default)
     {
-        var run = await FindRunAsync(completion.RunKey, ct);
+        if (!TryResolveRunKey(completion.RunKey, out var runKey))
+        {
+            return;
+        }
+
+        var run = await _runRepo.FindOrCreateAsync(runKey, SourceKey, default, 0, AiRunStatus.Running, ct);
         if (run is null)
         {
             return;
@@ -86,13 +79,19 @@ internal sealed class AiRunJournal(CoveContext dbContext) : IAiRunJournal
         run.Summary = BuildSummary(completion);
         run.Error = null;
 
-        await _dbContext.SaveChangesAsync(ct);
+        await _runRepo.UpdateAsync(run, ct);
     }
 
     public async Task RecordFailureAsync(string runKey, Exception exception, CancellationToken ct = default)
     {
         var effectiveCt = ct.IsCancellationRequested ? CancellationToken.None : ct;
-        var run = await FindRunAsync(runKey, effectiveCt);
+
+        if (!TryResolveRunKey(runKey, out var resolvedRunKey))
+        {
+            return;
+        }
+
+        var run = await _runRepo.FindOrCreateAsync(resolvedRunKey, SourceKey, default, 0, AiRunStatus.Running, effectiveCt);
         if (run is null)
         {
             return;
@@ -102,11 +101,14 @@ internal sealed class AiRunJournal(CoveContext dbContext) : IAiRunJournal
         run.CompletedAt = DateTime.UtcNow;
         run.Error = exception.Message;
 
-        await _dbContext.SaveChangesAsync(effectiveCt);
+        await _runRepo.UpdateAsync(run, effectiveCt);
     }
 
-    private Task<AiRun?> FindRunAsync(string runKey, CancellationToken ct)
-        => _dbContext.AiRuns.FirstOrDefaultAsync(candidate => candidate.RunKey == runKey && candidate.SourceKey == SourceKey, ct);
+    private static bool TryResolveRunKey(string? runKey, out string resolved)
+    {
+        resolved = runKey ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(runKey);
+    }
 
     private static bool TryResolveTarget(string? hostEntityType, int? hostEntityId, out AiRunTargetType targetType, out int targetId)
     {
@@ -120,8 +122,8 @@ internal sealed class AiRunJournal(CoveContext dbContext) : IAiRunJournal
 
         switch (hostEntityType.Trim().ToLowerInvariant())
         {
-            case "scene":
-                targetType = AiRunTargetType.Scene;
+            case "video":
+                targetType = AiRunTargetType.Video;
                 targetId = hostEntityId.Value;
                 return true;
             case "image":

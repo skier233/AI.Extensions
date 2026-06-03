@@ -4,9 +4,7 @@ using System.Text.Json;
 using AI.Extensions.Abstractions;
 
 using Cove.Core.Entities;
-using Cove.Data;
-
-using Microsoft.EntityFrameworkCore;
+using Cove.Core.Interfaces;
 
 namespace AI.Core;
 
@@ -53,9 +51,20 @@ public interface IAiRunPlanner
         CancellationToken ct = default);
 }
 
-internal sealed class AiRunPlanner(CoveContext dbContext) : IAiRunPlanner
+internal sealed class AiRunPlanner(
+    IAiRunRepository runRepo,
+    IEmbeddingRepository embeddingRepo,
+    IDetectionRepository detectionRepo,
+    IFaceRepository faceRepo,
+    ITagApplicationRepository tagAppRepo,
+    ISegmentRepository segmentRepo) : IAiRunPlanner
 {
-    private readonly CoveContext _dbContext = dbContext;
+    private readonly IAiRunRepository _runRepo = runRepo;
+    private readonly IEmbeddingRepository _embeddingRepo = embeddingRepo;
+    private readonly IDetectionRepository _detectionRepo = detectionRepo;
+    private readonly IFaceRepository _faceRepo = faceRepo;
+    private readonly ITagApplicationRepository _tagAppRepo = tagAppRepo;
+    private readonly ISegmentRepository _segmentRepo = segmentRepo;
 
     public async Task<IReadOnlyList<AiRunExecutionPlan>> PlanAsync(
         AiCoreConnectionSettings settings,
@@ -81,14 +90,9 @@ internal sealed class AiRunPlanner(CoveContext dbContext) : IAiRunPlanner
             return wants.Select(want => BuildRunPlan(want, forced: OverlapsForce(want, forceSet), ["No persisted Cove host identity was supplied, so sufficiency cannot be evaluated."])).ToArray();
         }
 
-        var completedRuns = await _dbContext.AiRuns
-            .AsNoTracking()
-            .Where(run => run.TargetType == targetType
-                && run.TargetId == targetId
-                && run.Status == AiRunStatus.Completed
-                && run.SourceKey == "ext:ai.core")
+        var completedRuns = (await _runRepo.GetCompletedAsync(targetType, targetId, "ext:ai.core", ct) ?? [])
             .OrderByDescending(run => run.CompletedAt ?? run.StartedAt)
-            .ToListAsync(ct);
+            .ToList();
 
         var currentArtifactKeyCache = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         var results = new List<AiRunExecutionPlan>(wants.Count);
@@ -263,7 +267,7 @@ internal sealed class AiRunPlanner(CoveContext dbContext) : IAiRunPlanner
         string sourceKey,
         CancellationToken ct)
     {
-        var cacheKey = $"{hostEntityType}\u001F{hostEntityId}\u001F{sourceKey}";
+        var cacheKey = $"{hostEntityType}{hostEntityId}{sourceKey}";
         if (cache.TryGetValue(cacheKey, out var existing))
         {
             return existing;
@@ -272,33 +276,35 @@ internal sealed class AiRunPlanner(CoveContext dbContext) : IAiRunPlanner
         var resolved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var normalizedHostType = hostEntityType.Trim().ToLowerInvariant();
 
-        if (normalizedHostType is "scene" or "image")
+        if (normalizedHostType is "video" or "image")
         {
-            var affinityHostType = normalizedHostType == "scene" ? AffinityHostType.Scene : AffinityHostType.Image;
-            var tagModels = await _dbContext.TagApplications
-                .AsNoTracking()
-                .Where(application => application.SourceKey == sourceKey && application.HostType == affinityHostType && application.HostId == hostEntityId)
-                .Select(application => application.ModelKey)
-                .ToListAsync(ct);
-            foreach (var model in tagModels)
+            var affinityHostType = normalizedHostType == "video" ? AffinityHostType.Video : AffinityHostType.Image;
+            var tagApps = await _tagAppRepo.FindAsync(new TagApplicationFilter
             {
-                if (!string.IsNullOrWhiteSpace(model))
+                SourceKey = sourceKey,
+                HostType = affinityHostType,
+                HostId = hostEntityId,
+            }, ct);
+            foreach (var application in tagApps)
+            {
+                if (!string.IsNullOrWhiteSpace(application.ModelKey))
                 {
-                    resolved.Add(model.Trim());
+                    resolved.Add(application.ModelKey.Trim());
                 }
             }
         }
 
-        if (normalizedHostType == "scene")
+        if (normalizedHostType == "video")
         {
-            var segmentModels = await _dbContext.Segments
-                .AsNoTracking()
-                .Where(segment => segment.SourceKey == sourceKey && segment.HostType == SegmentHostType.Scene && segment.HostId == hostEntityId)
-                .Select(segment => segment.Payload)
-                .ToListAsync(ct);
-            foreach (var payload in segmentModels)
+            var segments = await _segmentRepo.FindAsync(new SegmentFilter
             {
-                if (TryExtractModelKey(payload, out var modelKey))
+                SourceKey = sourceKey,
+                HostType = SegmentHostType.Video,
+                HostId = hostEntityId,
+            }, ct);
+            foreach (var segment in segments)
+            {
+                if (TryExtractModelKey(segment.Payload, out var modelKey))
                 {
                     resolved.Add(modelKey);
                 }
@@ -307,14 +313,15 @@ internal sealed class AiRunPlanner(CoveContext dbContext) : IAiRunPlanner
 
         if (TryResolveEmbeddingHostType(normalizedHostType, out var embeddingHostType))
         {
-            var embeddingModels = await _dbContext.Embeddings
-                .AsNoTracking()
-                .Where(embedding => embedding.SourceKey == sourceKey && embedding.HostType == embeddingHostType && embedding.HostId == hostEntityId)
-                .Select(embedding => embedding.Meta)
-                .ToListAsync(ct);
-            foreach (var meta in embeddingModels)
+            var embeddings = await _embeddingRepo.FindAsync(new EmbeddingFilter
             {
-                if (TryExtractModelKey(meta, out var modelKey))
+                SourceKey = sourceKey,
+                HostType = embeddingHostType,
+                HostId = hostEntityId,
+            }, ct);
+            foreach (var embedding in embeddings)
+            {
+                if (TryExtractModelKey(embedding.Meta, out var modelKey))
                 {
                     resolved.Add(modelKey);
                 }
@@ -323,31 +330,33 @@ internal sealed class AiRunPlanner(CoveContext dbContext) : IAiRunPlanner
 
         if (TryResolveDetectionHostType(normalizedHostType, out var detectionHostType))
         {
-            var detectionModels = await _dbContext.Set<Detection>()
-                .AsNoTracking()
-                .Where(detection => detection.SourceKey == sourceKey && detection.HostType == detectionHostType && detection.HostId == hostEntityId)
-                .Select(detection => detection.Extra)
-                .ToListAsync(ct);
-            foreach (var extra in detectionModels)
+            var detections = await _detectionRepo.FindAsync(new DetectionFilter
             {
-                if (TryExtractModelKey(extra, out var modelKey))
+                SourceKey = sourceKey,
+                HostType = detectionHostType,
+                HostId = hostEntityId,
+            }, ct);
+            foreach (var detection in detections)
+            {
+                if (TryExtractModelKey(detection.Extra, out var modelKey))
                 {
                     resolved.Add(modelKey);
                 }
             }
         }
 
-        if (normalizedHostType is "scene" or "image")
+        if (normalizedHostType is "video" or "image")
         {
-            var appearanceHostType = normalizedHostType == "scene" ? FaceAppearanceHostType.Scene : FaceAppearanceHostType.Image;
-            var faceAppearances = await _dbContext.FaceAppearances
-                .AsNoTracking()
-                .Where(appearance => appearance.SourceKey == sourceKey && appearance.HostType == appearanceHostType && appearance.HostId == hostEntityId)
-                .Select(appearance => new { appearance.FaceId, appearance.Payload })
-                .ToListAsync(ct);
-            foreach (var payload in faceAppearances.Select(static appearance => appearance.Payload))
+            var appearanceHostType = normalizedHostType == "video" ? FaceAppearanceHostType.Video : FaceAppearanceHostType.Image;
+            var faceAppearances = await _faceRepo.FindAppearancesAsync(new FaceAppearanceFilter
             {
-                if (TryExtractModelKey(payload, out var modelKey))
+                SourceKey = sourceKey,
+                HostType = appearanceHostType,
+                HostId = hostEntityId,
+            }, ct);
+            foreach (var appearance in faceAppearances)
+            {
+                if (TryExtractModelKey(appearance.Payload, out var modelKey))
                 {
                     resolved.Add(modelKey);
                 }
@@ -359,14 +368,15 @@ internal sealed class AiRunPlanner(CoveContext dbContext) : IAiRunPlanner
                 .ToArray();
             if (faceIds.Length > 0)
             {
-                var faceEmbeddingModels = await _dbContext.Embeddings
-                    .AsNoTracking()
-                    .Where(embedding => embedding.SourceKey == sourceKey && embedding.HostType == EmbeddingHostType.Face && faceIds.Contains(embedding.HostId))
-                    .Select(embedding => embedding.Meta)
-                    .ToListAsync(ct);
-                foreach (var meta in faceEmbeddingModels)
+                var faceEmbeddings = await _embeddingRepo.FindAsync(new EmbeddingFilter
                 {
-                    if (TryExtractModelKey(meta, out var modelKey))
+                    SourceKey = sourceKey,
+                    HostType = EmbeddingHostType.Face,
+                    HostIds = faceIds,
+                }, ct);
+                foreach (var embedding in faceEmbeddings)
+                {
+                    if (TryExtractModelKey(embedding.Meta, out var modelKey))
                     {
                         resolved.Add(modelKey);
                     }
@@ -761,8 +771,8 @@ internal sealed class AiRunPlanner(CoveContext dbContext) : IAiRunPlanner
 
         switch (hostEntityType.Trim().ToLowerInvariant())
         {
-            case "scene":
-                targetType = AiRunTargetType.Scene;
+            case "video":
+                targetType = AiRunTargetType.Video;
                 targetId = hostEntityId.Value;
                 return true;
             case "image":
@@ -786,8 +796,8 @@ internal sealed class AiRunPlanner(CoveContext dbContext) : IAiRunPlanner
     {
         switch (hostEntityType)
         {
-            case "scene":
-                hostType = EmbeddingHostType.Scene;
+            case "video":
+                hostType = EmbeddingHostType.Video;
                 return true;
             case "image":
                 hostType = EmbeddingHostType.Image;
@@ -805,8 +815,8 @@ internal sealed class AiRunPlanner(CoveContext dbContext) : IAiRunPlanner
     {
         switch (hostEntityType)
         {
-            case "scene":
-                hostType = DetectionHostType.Scene;
+            case "video":
+                hostType = DetectionHostType.Video;
                 return true;
             case "image":
                 hostType = DetectionHostType.Image;

@@ -19,8 +19,8 @@
       "pages": [
         "tags",
         "tag",
-        "scenes",
-        "scene",
+        "videos",
+        "video",
         "images",
         "image",
         "settings"
@@ -34,7 +34,7 @@
         {
           "id": "tag-claims",
           "title": "Generate reviewable tags",
-          "caption": "AI Tagging contributes tag claims that AI Core can request during scene and image runs.",
+          "caption": "AI Tagging contributes tag claims that AI Core can request during video and image runs.",
           "bodyMarkdown": "Choose tagging claims in the run dialog, use settings to normalize generated tag names, then review the results in tagger and detail views before broad cleanup.",
           "imageSrc": "docs/manual/tag-claims.svg",
           "imageAlt": "AI Tagging generated tag claims review screen",

@@ -19,7 +19,7 @@ public sealed class AiFaceIdentityReconcilerTests
                     FaceKey = "face-0001",
                     LifecycleStatus = StoredFaceIdentityLifecycle.Provisional,
                     ObservationCount = 3,
-                    AssetIds = ["scene-a"],
+                    AssetIds = ["video-a"],
                     Anchors =
                     [
                         new StoredFaceAnchor
@@ -35,7 +35,7 @@ public sealed class AiFaceIdentityReconcilerTests
                     FaceKey = "face-0002",
                     LifecycleStatus = StoredFaceIdentityLifecycle.Provisional,
                     ObservationCount = 2,
-                    AssetIds = ["scene-b"],
+                    AssetIds = ["video-b"],
                     Anchors =
                     [
                         new StoredFaceAnchor
@@ -88,8 +88,8 @@ public sealed class AiFaceIdentityReconcilerTests
             NextIdentityOrdinal = 3,
             Identities =
             [
-                CreatePromotedIdentity("face-0001", [1f, 0f], "scene-5634"),
-                CreatePromotedIdentity("face-0002", [0.999f, 0.001f], "scene-5634"),
+                CreatePromotedIdentity("face-0001", [1f, 0f], "video-5634"),
+                CreatePromotedIdentity("face-0002", [0.999f, 0.001f], "video-5634"),
             ],
         };
 
@@ -109,8 +109,8 @@ public sealed class AiFaceIdentityReconcilerTests
             NextIdentityOrdinal = 3,
             Identities =
             [
-                CreatePromotedIdentity("face-0001", [1f, 0f], "scene-5634", "ref-zazie", "Zazie Skymm", "reference"),
-                CreatePromotedIdentity("face-0002", [0.48f, 0.8772685f], "scene-5634"),
+                CreatePromotedIdentity("face-0001", [1f, 0f], "video-5634", "ref-zazie", "Zazie Skymm", "reference"),
+                CreatePromotedIdentity("face-0002", [0.48f, 0.8772685f], "video-5634"),
             ],
         };
 
@@ -130,9 +130,9 @@ public sealed class AiFaceIdentityReconcilerTests
             NextIdentityOrdinal = 4,
             Identities =
             [
-                CreatePromotedIdentity("face-0001", [1f, 0f, 0f], "scene-5634"),
-                CreatePromotedIdentity("face-0002", [0.48f, 0.8772685f, 0f], "scene-5634"),
-                CreatePromotedIdentity("face-0003", [0.43f, 0.3517f, 0.8315f], "scene-5634"),
+                CreatePromotedIdentity("face-0001", [1f, 0f, 0f], "video-5634"),
+                CreatePromotedIdentity("face-0002", [0.48f, 0.8772685f, 0f], "video-5634"),
+                CreatePromotedIdentity("face-0003", [0.43f, 0.3517f, 0.8315f], "video-5634"),
             ],
         };
 
@@ -153,8 +153,8 @@ public sealed class AiFaceIdentityReconcilerTests
             NextIdentityOrdinal = 3,
             Identities =
             [
-                CreatePromotedIdentity("face-0001", [1f, 0f], "scene-5634", "ref-tiffany", "Tiffany Tatum", "reference"),
-                CreatePromotedIdentity("face-0002", [0.61f, 0.792401f], "scene-5634", "ref-tiffany", "Tiffany Tatum", "reference"),
+                CreatePromotedIdentity("face-0001", [1f, 0f], "video-5634", "ref-tiffany", "Tiffany Tatum", "reference"),
+                CreatePromotedIdentity("face-0002", [0.61f, 0.792401f], "video-5634", "ref-tiffany", "Tiffany Tatum", "reference"),
             ],
         };
 

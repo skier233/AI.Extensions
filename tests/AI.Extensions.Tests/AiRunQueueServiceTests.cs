@@ -22,11 +22,11 @@ public sealed class AiRunQueueServiceTests
             orchestrator,
             new FixedTargetResolver([
                 new AiResolvedRunTarget(
-                    UnitId: "scene:23",
-                    Label: "Scene 23",
+                    UnitId: "video:23",
+                    Label: "Video 23",
                     Path: "E:/test/Content/Videos/example.mp4",
                     EntityId: 23,
-                    EntityType: "scene")
+                    EntityType: "video")
             ]),
             new StubJobService(),
                     CreateScopeFactory(orchestrator),
@@ -58,11 +58,11 @@ public sealed class AiRunQueueServiceTests
             requestOrchestrator,
             new FixedTargetResolver([
                 new AiResolvedRunTarget(
-                    UnitId: "scene:23",
-                    Label: "Scene 23",
+                    UnitId: "video:23",
+                    Label: "Video 23",
                     Path: "E:/test/Content/Videos/example.mp4",
                     EntityId: 23,
-                    EntityType: "scene")
+                    EntityType: "video")
             ]),
             jobService,
             CreateScopeFactory(queuedOrchestrator),

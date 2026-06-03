@@ -23,28 +23,28 @@ namespace AI.Extensions.Tests;
 public sealed class AiVisualSemanticSearchServiceTests
 {
     [Fact]
-    public async Task SearchAsync_ReturnsDistinctSceneMatchesOrderedByVisualDistance()
+    public async Task SearchAsync_ReturnsDistinctVideoMatchesOrderedByVisualDistance()
     {
         await using var provider = CreateProvider();
         await using (var scope = provider.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-            var nearScene = new Scene { Title = "Blue Room" };
-            var farScene = new Scene { Title = "Red Hall" };
-            db.Scenes.AddRange(nearScene, farScene);
+            var nearVideo = new Video { Title = "Blue Room" };
+            var farVideo = new Video { Title = "Red Hall" };
+            db.Videos.AddRange(nearVideo, farVideo);
             await db.SaveChangesAsync();
 
             db.Embeddings.AddRange(
-                CreateVisualEmbedding(EmbeddingHostType.Scene, nearScene.Id, [0.8f, 0.2f], sectionIndex: 0),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, nearScene.Id, [1f, 0f], sectionIndex: 1, startSec: 12.0, endSec: 18.0),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, farScene.Id, [0f, 1f], sectionIndex: 0));
+                CreateVisualEmbedding(EmbeddingHostType.Video, nearVideo.Id, [0.8f, 0.2f], sectionIndex: 0),
+                CreateVisualEmbedding(EmbeddingHostType.Video, nearVideo.Id, [1f, 0f], sectionIndex: 1, startSec: 12.0, endSec: 18.0),
+                CreateVisualEmbedding(EmbeddingHostType.Video, farVideo.Id, [0f, 1f], sectionIndex: 0));
             await db.SaveChangesAsync();
         }
 
         await using var searchScope = provider.CreateAsyncScope();
         var service = searchScope.ServiceProvider.GetRequiredService<AiVisualSemanticSearchService>();
 
-        var response = await service.SearchScenesAsync(new AiVisualSemanticSearchRequest<SceneFilter>
+        var response = await service.SearchVideosAsync(new AiVisualSemanticSearchRequest<VideoFilter>
         {
             FindFilter = new FindFilter { Q = "blue room", Page = 1, PerPage = 10 },
         });
@@ -91,30 +91,30 @@ public sealed class AiVisualSemanticSearchServiceTests
         await using (var scope = provider.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-            var scenes = Enumerable.Range(1, 6).Select(index => new Scene { Title = $"Candidate {index}" }).ToArray();
-            db.Scenes.AddRange(scenes);
+            var videos = Enumerable.Range(1, 6).Select(index => new Video { Title = $"Candidate {index}" }).ToArray();
+            db.Videos.AddRange(videos);
             await db.SaveChangesAsync();
 
             db.Embeddings.AddRange(
-                CreateVisualEmbedding(EmbeddingHostType.Scene, scenes[0].Id, [1f, 0f], sectionIndex: 0),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, scenes[1].Id, [0.999f, 0.001f], sectionIndex: 0),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, scenes[2].Id, [0.998f, 0.002f], sectionIndex: 0),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, scenes[3].Id, [0.997f, 0.003f], sectionIndex: 0),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, scenes[4].Id, [0.996f, 0.004f], sectionIndex: 0),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, scenes[5].Id, [0f, 1f], sectionIndex: 0));
+                CreateVisualEmbedding(EmbeddingHostType.Video, videos[0].Id, [1f, 0f], sectionIndex: 0),
+                CreateVisualEmbedding(EmbeddingHostType.Video, videos[1].Id, [0.999f, 0.001f], sectionIndex: 0),
+                CreateVisualEmbedding(EmbeddingHostType.Video, videos[2].Id, [0.998f, 0.002f], sectionIndex: 0),
+                CreateVisualEmbedding(EmbeddingHostType.Video, videos[3].Id, [0.997f, 0.003f], sectionIndex: 0),
+                CreateVisualEmbedding(EmbeddingHostType.Video, videos[4].Id, [0.996f, 0.004f], sectionIndex: 0),
+                CreateVisualEmbedding(EmbeddingHostType.Video, videos[5].Id, [0f, 1f], sectionIndex: 0));
             await db.SaveChangesAsync();
         }
 
         await using var searchScope = provider.CreateAsyncScope();
         var service = searchScope.ServiceProvider.GetRequiredService<AiVisualSemanticSearchService>();
 
-        var response = await service.SearchScenesAsync(new AiVisualSemanticSearchRequest<SceneFilter>
+        var response = await service.SearchVideosAsync(new AiVisualSemanticSearchRequest<VideoFilter>
         {
             FindFilter = new FindFilter { Q = "blue room", Page = 1, PerPage = 10 },
         });
 
         Assert.Equal(5, response.TotalCount);
-        Assert.DoesNotContain(response.Items, scene => scene.Title == "Candidate 6");
+        Assert.DoesNotContain(response.Items, video => video.Title == "Candidate 6");
     }
 
     [Fact]
@@ -124,25 +124,25 @@ public sealed class AiVisualSemanticSearchServiceTests
         await using (var scope = provider.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-            var closeScene = new Scene { Title = "Zulu" };
-            var laterScene = new Scene { Title = "Alpha" };
-            db.Scenes.AddRange(closeScene, laterScene);
+            var closeVideo = new Video { Title = "Zulu" };
+            var laterVideo = new Video { Title = "Alpha" };
+            db.Videos.AddRange(closeVideo, laterVideo);
             await db.SaveChangesAsync();
 
             db.Embeddings.AddRange(
-                CreateVisualEmbedding(EmbeddingHostType.Scene, closeScene.Id, [1f, 0f], sectionIndex: 0),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, laterScene.Id, [0.9f, 0.1f], sectionIndex: 0));
+                CreateVisualEmbedding(EmbeddingHostType.Video, closeVideo.Id, [1f, 0f], sectionIndex: 0),
+                CreateVisualEmbedding(EmbeddingHostType.Video, laterVideo.Id, [0.9f, 0.1f], sectionIndex: 0));
             await db.SaveChangesAsync();
         }
 
         await using var searchScope = provider.CreateAsyncScope();
         var service = searchScope.ServiceProvider.GetRequiredService<AiVisualSemanticSearchService>();
 
-        var visualResponse = await service.SearchScenesAsync(new AiVisualSemanticSearchRequest<SceneFilter>
+        var visualResponse = await service.SearchVideosAsync(new AiVisualSemanticSearchRequest<VideoFilter>
         {
             FindFilter = new FindFilter { Q = "blue room", Page = 1, PerPage = 10, Sort = "visual_match", Direction = SortDirection.Desc },
         });
-        var titleResponse = await service.SearchScenesAsync(new AiVisualSemanticSearchRequest<SceneFilter>
+        var titleResponse = await service.SearchVideosAsync(new AiVisualSemanticSearchRequest<VideoFilter>
         {
             FindFilter = new FindFilter { Q = "blue room", Page = 1, PerPage = 10, Sort = "title" },
         });
@@ -211,7 +211,7 @@ public sealed class AiVisualSemanticSearchServiceTests
     }
 
     [Fact]
-    public async Task SimilarScenesForSceneAsync_BlendsFeatureAndSemanticButLeansFeature()
+    public async Task SimilarVideosForVideoAsync_BlendsFeatureAndSemanticButLeansFeature()
     {
         await using var provider = CreateProvider();
         int sourceId;
@@ -220,67 +220,67 @@ public sealed class AiVisualSemanticSearchServiceTests
         await using (var scope = provider.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-            var source = new Scene { Title = "Source" };
-            var featureMatch = new Scene { Title = "Feature Match" };
-            var semanticMatch = new Scene { Title = "Semantic Match" };
-            db.Scenes.AddRange(source, featureMatch, semanticMatch);
+            var source = new Video { Title = "Source" };
+            var featureMatch = new Video { Title = "Feature Match" };
+            var semanticMatch = new Video { Title = "Semantic Match" };
+            db.Videos.AddRange(source, featureMatch, semanticMatch);
             await db.SaveChangesAsync();
             sourceId = source.Id;
             featureMatchId = featureMatch.Id;
             semanticMatchId = semanticMatch.Id;
 
             db.Embeddings.AddRange(
-                CreateVisualEmbedding(EmbeddingHostType.Scene, sourceId, [1f, 0f], sectionIndex: 0, isSemantic: false),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, sourceId, [1f, 0f], sectionIndex: 0),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, featureMatchId, [0.99f, 0.01f], sectionIndex: 0, isSemantic: false),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, featureMatchId, [0f, 1f], sectionIndex: 0),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, semanticMatchId, [0f, 1f], sectionIndex: 0, isSemantic: false),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, semanticMatchId, [1f, 0f], sectionIndex: 0));
+                CreateVisualEmbedding(EmbeddingHostType.Video, sourceId, [1f, 0f], sectionIndex: 0, isSemantic: false),
+                CreateVisualEmbedding(EmbeddingHostType.Video, sourceId, [1f, 0f], sectionIndex: 0),
+                CreateVisualEmbedding(EmbeddingHostType.Video, featureMatchId, [0.99f, 0.01f], sectionIndex: 0, isSemantic: false),
+                CreateVisualEmbedding(EmbeddingHostType.Video, featureMatchId, [0f, 1f], sectionIndex: 0),
+                CreateVisualEmbedding(EmbeddingHostType.Video, semanticMatchId, [0f, 1f], sectionIndex: 0, isSemantic: false),
+                CreateVisualEmbedding(EmbeddingHostType.Video, semanticMatchId, [1f, 0f], sectionIndex: 0));
             await db.SaveChangesAsync();
         }
 
         await using var searchScope = provider.CreateAsyncScope();
         var service = searchScope.ServiceProvider.GetRequiredService<AiVisualSemanticSearchService>();
 
-        var response = await service.SimilarScenesForSceneAsync(sourceId, page: 1, perPage: 10);
+        var response = await service.SimilarVideosForVideoAsync(sourceId, page: 1, perPage: 10);
 
         Assert.Equal(2, response.TotalCount);
-        Assert.Equal("Feature Match", response.Items[0].Scene.Title);
-        Assert.Equal("Semantic Match", response.Items[1].Scene.Title);
+        Assert.Equal("Feature Match", response.Items[0].Video.Title);
+        Assert.Equal("Semantic Match", response.Items[1].Video.Title);
     }
 
     [Fact]
-    public async Task SimilarScenesForSceneSegmentAsync_UsesAllIntervalsForUnionQuery()
+    public async Task SimilarVideosForVideoSegmentAsync_UsesAllIntervalsForUnionQuery()
     {
         await using var provider = CreateProvider();
         int sourceId;
         await using (var scope = provider.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-            var source = new Scene { Title = "Union Source" };
-            var secondIntervalMatch = new Scene { Title = "Second Interval Match" };
-            db.Scenes.AddRange(source, secondIntervalMatch);
+            var source = new Video { Title = "Union Source" };
+            var secondIntervalMatch = new Video { Title = "Second Interval Match" };
+            db.Videos.AddRange(source, secondIntervalMatch);
             await db.SaveChangesAsync();
             sourceId = source.Id;
 
             db.Embeddings.AddRange(
-                CreateVisualEmbedding(EmbeddingHostType.Scene, source.Id, [1f, 0f], sectionIndex: 1, startSec: 0, endSec: 10, isSemantic: false),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, source.Id, [0f, 1f], sectionIndex: 2, startSec: 40, endSec: 50, isSemantic: false),
-                CreateVisualEmbedding(EmbeddingHostType.Scene, secondIntervalMatch.Id, [0f, 1f], sectionIndex: 1, startSec: 4, endSec: 12, isSemantic: false));
+                CreateVisualEmbedding(EmbeddingHostType.Video, source.Id, [1f, 0f], sectionIndex: 1, startSec: 0, endSec: 10, isSemantic: false),
+                CreateVisualEmbedding(EmbeddingHostType.Video, source.Id, [0f, 1f], sectionIndex: 2, startSec: 40, endSec: 50, isSemantic: false),
+                CreateVisualEmbedding(EmbeddingHostType.Video, secondIntervalMatch.Id, [0f, 1f], sectionIndex: 1, startSec: 4, endSec: 12, isSemantic: false));
             await db.SaveChangesAsync();
         }
 
         await using var searchScope = provider.CreateAsyncScope();
         var service = searchScope.ServiceProvider.GetRequiredService<AiVisualSemanticSearchService>();
 
-        var response = await service.SimilarScenesForSceneSegmentAsync(
+        var response = await service.SimilarVideosForVideoSegmentAsync(
             sourceId,
             [new AiVisualSegmentInterval(0, 10), new AiVisualSegmentInterval(40, 50)],
             page: 1,
             perPage: 10);
         var result = Assert.Single(response.Items);
 
-        Assert.Equal("Second Interval Match", result.Scene.Title);
+        Assert.Equal("Second Interval Match", result.Video.Title);
         Assert.True(result.Distance < 0.5f);
     }
 
@@ -296,7 +296,7 @@ public sealed class AiVisualSemanticSearchServiceTests
             }
             """));
 
-        var request = await AiVisualSearchRequestReader.ReadAsync<SceneFilter>(context.Request, CancellationToken.None);
+        var request = await AiVisualSearchRequestReader.ReadAsync<VideoFilter>(context.Request, CancellationToken.None);
 
         Assert.Equal("couch", request.FindFilter?.Q);
         Assert.NotNull(request.ObjectFilter?.PerformersCriterion);
@@ -335,7 +335,7 @@ public sealed class AiVisualSemanticSearchServiceTests
         var databaseName = $"ai-visual-semantic-search-{Guid.NewGuid():N}";
         var databaseRoot = new InMemoryDatabaseRoot();
         services.AddDbContext<CoveContext>(options => options.UseInMemoryDatabase(databaseName, databaseRoot));
-        services.AddScoped<ISceneRepository, SceneRepository>();
+        services.AddScoped<IVideoRepository, VideoRepository>();
         services.AddScoped<IImageRepository, ImageRepository>();
         services.AddScoped<ITextEncoder>(_ => textEncoder ?? new FakeTextEncoder());
         services.AddScoped<EmbeddingService>();

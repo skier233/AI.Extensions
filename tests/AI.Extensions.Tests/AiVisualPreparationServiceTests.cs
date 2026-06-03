@@ -23,7 +23,7 @@ public sealed class AiVisualPreparationServiceTests
         var result = new AiAnalyzeResult
         {
             MediaKind = AiMediaKinds.Video,
-            AssetId = "scene-visual",
+            AssetId = "video-visual",
             FrameIntervalSeconds = 1.0,
             Frames =
             [
@@ -36,7 +36,7 @@ public sealed class AiVisualPreparationServiceTests
             ],
         };
 
-        var batch = service.Prepare(AiTestData.CreateRequest(AiMediaKinds.Video, [claim], result, "scene-visual"));
+        var batch = service.Prepare(AiTestData.CreateRequest(AiMediaKinds.Video, [claim], result, "video-visual"));
 
         Assert.Equal(3, batch.Embeddings.Count);
         Assert.Contains(batch.Embeddings, embedding => embedding.SectionIndex == 0);

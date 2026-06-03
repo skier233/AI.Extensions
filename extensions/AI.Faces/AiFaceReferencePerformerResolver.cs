@@ -1,7 +1,5 @@
 using Cove.Core.Entities;
-using Cove.Data;
-
-using Microsoft.EntityFrameworkCore;
+using Cove.Core.Interfaces;
 
 namespace AI.Faces;
 
@@ -12,9 +10,9 @@ internal sealed record AiFaceReferencePerformerMatch(
     bool LocalPerformerHasImage,
     bool LocalPerformerIsLocalOnly);
 
-internal sealed class AiFaceReferencePerformerResolver(CoveContext db)
+internal sealed class AiFaceReferencePerformerResolver(IPerformerRepository performerRepository)
 {
-    private readonly CoveContext _db = db;
+    private readonly IPerformerRepository _performerRepository = performerRepository;
 
     public async Task<IReadOnlyDictionary<string, AiFaceReferencePerformerMatch>> ResolveAsync(
         IReadOnlyCollection<SaieReferenceIdentity> identities,
@@ -33,16 +31,8 @@ internal sealed class AiFaceReferencePerformerResolver(CoveContext db)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        var performers = await _db.Performers
-            .AsNoTracking()
-            .Include(performer => performer.Aliases)
-            .Include(performer => performer.RemoteIds)
-            .Where(performer =>
-                (!string.IsNullOrWhiteSpace(sourceEndpoint)
-                 && performer.RemoteIds.Any(remoteId => remoteId.Endpoint == sourceEndpoint && externalIds.Contains(remoteId.RemoteId)))
-                || searchNames.Contains(performer.Name)
-                || performer.Aliases.Any(alias => searchNames.Contains(alias.Alias)))
-            .ToListAsync(ct);
+        var performers = await _performerRepository.FindByNamesOrRemoteIdsAsync(
+            searchNames, sourceEndpoint, externalIds, ct);
 
         var matches = new Dictionary<string, AiFaceReferencePerformerMatch>(StringComparer.OrdinalIgnoreCase);
         foreach (var identity in identities)
@@ -69,20 +59,15 @@ internal sealed class AiFaceReferencePerformerResolver(CoveContext db)
     {
         if (!string.IsNullOrWhiteSpace(sourceEndpoint))
         {
-            var existingByRemoteId = await _db.Performers
-                .Include(performer => performer.RemoteIds)
-                .FirstOrDefaultAsync(
-                    performer => performer.RemoteIds.Any(remoteId => remoteId.Endpoint == sourceEndpoint && remoteId.RemoteId == identity.ExternalId),
-                    ct);
+            var existingByRemoteId = await _performerRepository.FindByRemoteIdAsync(
+                sourceEndpoint, identity.ExternalId, ct);
             if (existingByRemoteId is not null)
                 return existingByRemoteId;
         }
 
         var searchNames = GetSearchNames(identity).ToArray();
-        var nameMatches = await _db.Performers
-            .Include(performer => performer.Aliases)
-            .Where(performer => searchNames.Contains(performer.Name) || performer.Aliases.Any(alias => searchNames.Contains(alias.Alias)))
-            .ToListAsync(ct);
+        var nameMatches = await _performerRepository.FindByNamesOrRemoteIdsAsync(
+            searchNames, null, [], ct);
         if (nameMatches.Count == 1)
             return nameMatches[0];
 
@@ -110,8 +95,7 @@ internal sealed class AiFaceReferencePerformerResolver(CoveContext db)
             });
         }
 
-        _db.Performers.Add(performer);
-        return performer;
+        return await _performerRepository.AddAsync(performer, ct);
     }
 
     private static Performer? SelectMatch(IReadOnlyCollection<Performer> performers, SaieReferenceIdentity identity, string? sourceEndpoint)

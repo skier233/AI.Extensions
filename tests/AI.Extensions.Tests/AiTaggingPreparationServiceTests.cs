@@ -18,7 +18,7 @@ public sealed class AiTaggingPreparationServiceTests
         var result = new AiAnalyzeResult
         {
             MediaKind = AiMediaKinds.Video,
-            AssetId = "scene-1",
+            AssetId = "video-1",
             FrameIntervalSeconds = 1.0,
             Frames =
             [
@@ -29,7 +29,7 @@ public sealed class AiTaggingPreparationServiceTests
             ],
         };
 
-        var batch = service.Prepare(AiTestData.CreateRequest(AiMediaKinds.Video, [claim], result, "scene-1"));
+        var batch = service.Prepare(AiTestData.CreateRequest(AiMediaKinds.Video, [claim], result, "video-1"));
 
         Assert.Equal(2, batch.Segments.Count);
         Assert.Equal(0.0, batch.Segments[0].StartSeconds);
@@ -46,7 +46,7 @@ public sealed class AiTaggingPreparationServiceTests
                 using var document = JsonDocument.Parse(
                         """
                         {
-                            "asset_id": "scene-legacy",
+                            "asset_id": "video-legacy",
                             "frame_interval": 2.0,
                             "frames": [
                                 {
@@ -67,7 +67,7 @@ public sealed class AiTaggingPreparationServiceTests
 
                 var result = AiAnalyzeResultParser.Parse(AiMediaKinds.Video, document.RootElement);
 
-                var batch = service.Prepare(AiTestData.CreateRequest(AiMediaKinds.Video, [claim], result, "scene-legacy"));
+                var batch = service.Prepare(AiTestData.CreateRequest(AiMediaKinds.Video, [claim], result, "video-legacy"));
 
                 var segment = Assert.Single(batch.Segments);
                 Assert.Equal(10.0, segment.StartSeconds);

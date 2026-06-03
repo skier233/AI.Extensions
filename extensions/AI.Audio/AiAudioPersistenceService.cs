@@ -4,9 +4,8 @@ using System.Text.Json;
 using AI.Extensions.Abstractions;
 
 using Cove.Core.Entities;
-using Cove.Data;
+using Cove.Core.Interfaces;
 
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -34,7 +33,7 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
         }
 
         var hostEntityType = NormalizeHostEntityType(request.Context.HostEntityType);
-        if (hostEntityType != "scene")
+        if (hostEntityType != "video")
         {
             _logger.LogWarning(
                 "AI.Audio skipped persistence for run {RunId} because host entity type {HostEntityType} is unsupported.",
@@ -44,46 +43,54 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
         }
 
         await using var scope = _scopeFactory.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-        var sceneId = request.Context.HostEntityId.Value;
+        var embeddingRepo = scope.ServiceProvider.GetRequiredService<IEmbeddingRepository>();
+        var segmentRepo = scope.ServiceProvider.GetRequiredService<ISegmentRepository>();
+        var videoId = request.Context.HostEntityId.Value;
 
         _logger.LogInformation(
-            "AI.Audio persistence starting for run {RunId} scene {SceneId} with {EmbeddingCount} embedding(s) and {SegmentCount} segment(s).",
+            "AI.Audio persistence starting for run {RunId} video {VideoId} with {EmbeddingCount} embedding(s) and {SegmentCount} segment(s).",
             request.Context.RunId,
-            sceneId,
+            videoId,
             batch.Embeddings.Count,
             batch.Segments.Count);
 
-        var existingEmbeddings = await db.Embeddings
-            .Where(embedding => embedding.HostType == EmbeddingHostType.Scene && embedding.HostId == sceneId && embedding.SourceKey == AudioSourceKey)
-            .ToListAsync(ct);
-        var existingSegments = await db.Segments
-            .Where(segment => segment.HostType == SegmentHostType.Scene && segment.HostId == sceneId && segment.SourceKey == AudioSourceKey)
-            .ToListAsync(ct);
+        var existingEmbeddings = await embeddingRepo.FindAsync(new EmbeddingFilter
+        {
+            HostType = EmbeddingHostType.Video,
+            HostId = videoId,
+            SourceKey = AudioSourceKey,
+        }, ct);
+
+        var existingSegments = await segmentRepo.FindAsync(new SegmentFilter
+        {
+            HostType = SegmentHostType.Video,
+            HostId = videoId,
+            SourceKey = AudioSourceKey,
+        }, ct);
 
         _logger.LogInformation(
-            "AI.Audio found {ExistingEmbeddingCount} existing embedding row(s) and {ExistingSegmentCount} existing segment row(s) for scene {SceneId}.",
+            "AI.Audio found {ExistingEmbeddingCount} existing embedding row(s) and {ExistingSegmentCount} existing segment row(s) for video {VideoId}.",
             existingEmbeddings.Count,
             existingSegments.Count,
-            sceneId);
+            videoId);
 
         if (existingEmbeddings.Count > 0)
         {
-            db.Embeddings.RemoveRange(existingEmbeddings);
+            embeddingRepo.RemoveRange(existingEmbeddings);
         }
 
         if (existingSegments.Count > 0)
         {
-            db.Segments.RemoveRange(existingSegments);
+            segmentRepo.RemoveRange(existingSegments);
         }
 
         var insertedEmbeddings = 0;
         foreach (var embedding in batch.Embeddings)
         {
-            db.Embeddings.Add(new Embedding
+            embeddingRepo.Add(new Embedding
             {
-                HostType = EmbeddingHostType.Scene,
-                HostId = sceneId,
+                HostType = EmbeddingHostType.Video,
+                HostId = videoId,
                 Kind = embedding.Kind,
                 KindFamily = Clean(embedding.KindFamily),
                 Modality = EmbeddingModality.Audio,
@@ -109,10 +116,10 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
         var insertedSegments = 0;
         foreach (var segment in batch.Segments)
         {
-            db.Segments.Add(new Segment
+            segmentRepo.Add(new Segment
             {
-                HostType = SegmentHostType.Scene,
-                HostId = sceneId,
+                HostType = SegmentHostType.Video,
+                HostId = videoId,
                 StartSec = segment.StartSeconds,
                 EndSec = segment.EndSeconds,
                 Kind = Clean(segment.Kind),
@@ -130,30 +137,30 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
             insertedSegments++;
         }
 
-        await db.SaveChangesAsync(ct);
+        await embeddingRepo.SaveChangesAsync(ct);
 
         var notes = new List<string>();
         if (insertedEmbeddings > 0)
         {
-            notes.Add($"Persisted {insertedEmbeddings} AI-generated audio embedding(s) onto the scene.");
+            notes.Add($"Persisted {insertedEmbeddings} AI-generated audio embedding(s) onto the video.");
         }
 
         if (insertedSegments > 0)
         {
-            notes.Add($"Persisted {insertedSegments} AI-generated audio classification segment(s) onto the scene timeline.");
+            notes.Add($"Persisted {insertedSegments} AI-generated audio classification segment(s) onto the video timeline.");
         }
 
         if (notes.Count == 0)
         {
             notes.Add(existingEmbeddings.Count + existingSegments.Count > 0
-                ? "AI.Audio cleared previously persisted rows for this scene because the latest run did not emit any current audio artifacts."
-                : "AI.Audio found no new rows to persist for this scene.");
+                ? "AI.Audio cleared previously persisted rows for this video because the latest run did not emit any current audio artifacts."
+                : "AI.Audio found no new rows to persist for this video.");
         }
 
         _logger.LogInformation(
-            "AI.Audio persistence finished for run {RunId} scene {SceneId}. Inserted embeddings={InsertedEmbeddingCount}, inserted segments={InsertedSegmentCount}. Notes: {Notes}",
+            "AI.Audio persistence finished for run {RunId} video {VideoId}. Inserted embeddings={InsertedEmbeddingCount}, inserted segments={InsertedSegmentCount}. Notes: {Notes}",
             request.Context.RunId,
-            sceneId,
+            videoId,
             insertedEmbeddings,
             insertedSegments,
             string.Join(" | ", notes));
@@ -193,7 +200,7 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
     private static string NormalizeHostEntityType(string hostEntityType)
         => hostEntityType.Trim().ToLowerInvariant() switch
         {
-            "scenes" => "scene",
+            "video" or "videos" => "video",
             "images" => "image",
             var normalized => normalized,
         };

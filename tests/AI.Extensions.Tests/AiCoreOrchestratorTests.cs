@@ -304,7 +304,7 @@ public sealed class AiCoreOrchestratorTests
             new AiRunVideoRequest
             {
                 Path = "E:/media/example.mp4",
-                EntityType = "scene",
+                EntityType = "video",
                 EntityId = 42,
                 ClaimIds = ["tagging.video.frame"],
                 FrameInterval = 2.0,
@@ -316,7 +316,7 @@ public sealed class AiCoreOrchestratorTests
 
         Assert.Equal(response.RunId, run.RunKey);
         Assert.Equal("ext:ai.core", run.SourceKey);
-        Assert.Equal(AiRunTargetType.Scene, run.TargetType);
+        Assert.Equal(AiRunTargetType.Video, run.TargetType);
         Assert.Equal(42, run.TargetId);
         Assert.Equal(AiRunStatus.Completed, run.Status);
         Assert.Equal(2.0, run.FrameIntervalSec);
@@ -333,7 +333,7 @@ public sealed class AiCoreOrchestratorTests
 
         await journal.RecordStartAsync(new AiRunJournalStart(
             "cancelled-run",
-            "scene",
+            "video",
             42,
             "AI.Core",
             "load_or_fail",
@@ -368,7 +368,7 @@ public sealed class AiCoreOrchestratorTests
             new AiRunVideoRequest
             {
                 Path = "E:/media/example.mp4",
-                EntityType = "scene",
+                EntityType = "video",
                 EntityId = 42,
                 ClaimIds = ["tagging.video.frame"],
                 DispatchResults = true,
@@ -376,7 +376,7 @@ public sealed class AiCoreOrchestratorTests
 
         db.TagApplications.Add(new TagApplication
         {
-            HostType = AffinityHostType.Scene,
+            HostType = AffinityHostType.Video,
             HostId = 42,
             TagId = 7,
             SourceKey = "ext:ai.tagging",
@@ -391,7 +391,7 @@ public sealed class AiCoreOrchestratorTests
             new AiRunVideoRequest
             {
                 Path = "E:/media/example.mp4",
-                EntityType = "scene",
+                EntityType = "video",
                 EntityId = 42,
                 ClaimIds = ["tagging.video.frame"],
                 DispatchResults = true,
@@ -416,7 +416,7 @@ public sealed class AiCoreOrchestratorTests
             new AiRunVideoRequest
             {
                 Path = "E:/media/example.mp4",
-                EntityType = "scene",
+                EntityType = "video",
                 EntityId = 42,
                 ClaimIds = ["tagging.video.frame"],
                 DispatchResults = false,
@@ -427,7 +427,7 @@ public sealed class AiCoreOrchestratorTests
             new AiRunVideoRequest
             {
                 Path = "E:/media/example.mp4",
-                EntityType = "scene",
+                EntityType = "video",
                 EntityId = 42,
                 ClaimIds = ["tagging.video.frame"],
                 DispatchResults = false,
@@ -448,7 +448,7 @@ public sealed class AiCoreOrchestratorTests
         db.FaceAppearances.Add(new FaceAppearance
         {
             FaceId = 100,
-            HostType = FaceAppearanceHostType.Scene,
+            HostType = FaceAppearanceHostType.Video,
             HostId = 42,
             SourceKey = "ext:ai.faces",
             Payload = JsonDocument.Parse("""{"modelKey":"face_detector_torchexport"}"""),
@@ -476,7 +476,7 @@ public sealed class AiCoreOrchestratorTests
             new AiRunVideoRequest
             {
                 Path = "E:/media/example.mp4",
-                EntityType = "scene",
+                EntityType = "video",
                 EntityId = 42,
                 ClaimIds = ["faces.video.detection", "faces.video.embedding"],
                 DispatchResults = true,
@@ -509,7 +509,7 @@ public sealed class AiCoreOrchestratorTests
             new AiRunVideoRequest
             {
                 Path = "E:/media/example.mp4",
-                EntityType = "scene",
+                EntityType = "video",
                 EntityId = 42,
                 ClaimIds = ["faces.video.detection", "faces.video.embedding"],
                 DispatchResults = false,
@@ -520,7 +520,7 @@ public sealed class AiCoreOrchestratorTests
             new AiRunVideoRequest
             {
                 Path = "E:/media/example.mp4",
-                EntityType = "scene",
+                EntityType = "video",
                 EntityId = 42,
                 ClaimIds = ["faces.video.detection", "faces.video.embedding"],
                 DispatchResults = false,
@@ -548,7 +548,7 @@ public sealed class AiCoreOrchestratorTests
             new AiRunVideoRequest
             {
                 Path = "E:/media/example.mp4",
-                EntityType = "scene",
+                EntityType = "video",
                 EntityId = 42,
                 ClaimIds = ["tagging.video.frame"],
                 DispatchResults = true,
@@ -556,7 +556,7 @@ public sealed class AiCoreOrchestratorTests
 
         db.TagApplications.Add(new TagApplication
         {
-            HostType = AffinityHostType.Scene,
+            HostType = AffinityHostType.Video,
             HostId = 42,
             TagId = 8,
             SourceKey = "ext:ai.tagging",
@@ -571,7 +571,7 @@ public sealed class AiCoreOrchestratorTests
             new AiRunVideoRequest
             {
                 Path = "E:/media/example.mp4",
-                EntityType = "scene",
+                EntityType = "video",
                 EntityId = 42,
                 ClaimIds = ["tagging.video.frame"],
                 ForceClaimIds = ["tagging.video.frame"],
@@ -618,7 +618,7 @@ public sealed class AiCoreOrchestratorTests
             new AiRunVideoRequest
             {
                 Path = "E:/media/example.mp4",
-                EntityType = "scene",
+                EntityType = "video",
                 EntityId = 42,
                 ClaimIds = ["tagging.video.frame"],
                 DispatchResults = true,
@@ -627,7 +627,7 @@ public sealed class AiCoreOrchestratorTests
         db.TagApplications.AddRange(
             new TagApplication
             {
-                HostType = AffinityHostType.Scene,
+                HostType = AffinityHostType.Video,
                 HostId = 42,
                 TagId = 9,
                 SourceKey = "ext:ai.tagging",
@@ -637,7 +637,7 @@ public sealed class AiCoreOrchestratorTests
             },
             new TagApplication
             {
-                HostType = AffinityHostType.Scene,
+                HostType = AffinityHostType.Video,
                 HostId = 42,
                 TagId = 9,
                 SourceKey = "ext:ai.tagging",
@@ -661,7 +661,7 @@ public sealed class AiCoreOrchestratorTests
             new AiRunVideoRequest
             {
                 Path = "E:/media/example.mp4",
-                EntityType = "scene",
+                EntityType = "video",
                 EntityId = 42,
                 ClaimIds = ["tagging.video.frame"],
                 DispatchResults = true,

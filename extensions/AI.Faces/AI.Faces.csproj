@@ -33,15 +33,4 @@
   <ItemGroup Condition="'$(UseLocalCoveCore)' != 'true'">
     <PackageReference Include="Cove.Core" Version="$(CoveCoreVersion)" />
   </ItemGroup>
-
-  <ItemGroup Condition="'$(UseLocalCoveData)' == 'true' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Data\Cove.Data.csproj')">
-    <ProjectReference Include="..\..\..\cove\src\Cove.Data\Cove.Data.csproj">
-      <Private>false</Private>
-      <ExcludeAssets>runtime</ExcludeAssets>
-    </ProjectReference>
-  </ItemGroup>
-
-  <ItemGroup Condition="'$(UseLocalCoveData)' != 'true'">
-    <PackageReference Include="Cove.Data" Version="$(CoveDataVersion)" />
-  </ItemGroup>
 </Project>

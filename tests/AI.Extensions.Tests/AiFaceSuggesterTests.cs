@@ -40,7 +40,7 @@ public sealed class AiFaceSuggesterTests
                 CreateFaceEmbedding(4, [0.71f, 0.69f]));
             db.Detections.AddRange(
                 CreateFaceDetection(2, DetectionHostType.Image, 101, 0.96f),
-                CreateFaceDetection(3, DetectionHostType.Scene, 202, 0.93f, observedAtSec: 14.0),
+                CreateFaceDetection(3, DetectionHostType.Video, 202, 0.93f, observedAtSec: 14.0),
                 CreateFaceDetection(4, DetectionHostType.Image, 303, 0.88f));
 
             await db.SaveChangesAsync();
@@ -133,7 +133,7 @@ public sealed class AiFaceSuggesterTests
     }
 
     [Fact]
-    public async Task SuggestAsync_PrefersExclusiveScenePerformerWhenFaceHostsAllPointToSamePerformer()
+    public async Task SuggestAsync_PrefersExclusiveVideoPerformerWhenFaceHostsAllPointToSamePerformer()
     {
         await using var provider = CreateProvider();
 
@@ -143,8 +143,8 @@ public sealed class AiFaceSuggesterTests
             db.Performers.AddRange(
                 new Performer { Id = 11, Name = "Mia Melon" },
                 new Performer { Id = 22, Name = "Other Performer" });
-            db.Scenes.Add(new Scene { Id = 3077, Title = "Scene 3077" });
-            db.Set<ScenePerformer>().Add(new ScenePerformer { SceneId = 3077, PerformerId = 11 });
+            db.Videos.Add(new Video { Id = 3077, Title = "Video 3077" });
+            db.Set<VideoPerformer>().Add(new VideoPerformer { VideoId = 3077, PerformerId = 11 });
             db.Faces.AddRange(
                 new Face { Id = 1, Label = "Target Face", PrimarySourceKey = "face-0001" },
                 new Face { Id = 2, Label = "Weak Other Match", PerformerId = 22, PrimarySourceKey = "face-0002" });
@@ -152,8 +152,8 @@ public sealed class AiFaceSuggesterTests
                 CreateFaceEmbedding(1, [1f, 0f]),
                 CreateFaceEmbedding(2, [0.15f, 0.85f]));
             db.Detections.AddRange(
-                CreateFaceDetection(1, DetectionHostType.Scene, 3077, 0.97f, observedAtSec: 5.0),
-                CreateFaceDetection(2, DetectionHostType.Scene, 4040, 0.62f, observedAtSec: 12.0));
+                CreateFaceDetection(1, DetectionHostType.Video, 3077, 0.97f, observedAtSec: 5.0),
+                CreateFaceDetection(2, DetectionHostType.Video, 4040, 0.62f, observedAtSec: 12.0));
 
             await db.SaveChangesAsync();
         }
@@ -180,17 +180,17 @@ public sealed class AiFaceSuggesterTests
         await using (var scope = provider.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-            db.Performers.Add(new Performer { Id = 77, Name = "Scene Performer" });
-            db.Scenes.AddRange(
-                new Scene { Id = 7001, Title = "Tagged Scene A" },
-                new Scene { Id = 7002, Title = "Tagged Scene B" });
-            db.Set<ScenePerformer>().AddRange(
-                new ScenePerformer { SceneId = 7001, PerformerId = 77 },
-                new ScenePerformer { SceneId = 7002, PerformerId = 77 });
+            db.Performers.Add(new Performer { Id = 77, Name = "Video Performer" });
+            db.Videos.AddRange(
+                new Video { Id = 7001, Title = "Tagged Video A" },
+                new Video { Id = 7002, Title = "Tagged Video B" });
+            db.Set<VideoPerformer>().AddRange(
+                new VideoPerformer { VideoId = 7001, PerformerId = 77 },
+                new VideoPerformer { VideoId = 7002, PerformerId = 77 });
             db.Faces.Add(new Face { Id = 5, Label = "No Embedding Face", PrimarySourceKey = "face-0005" });
             db.Detections.AddRange(
-                CreateFaceDetection(5, DetectionHostType.Scene, 7001, 0.91f, observedAtSec: 12.0),
-                CreateFaceDetection(5, DetectionHostType.Scene, 7002, 0.88f, observedAtSec: 48.0));
+                CreateFaceDetection(5, DetectionHostType.Video, 7001, 0.91f, observedAtSec: 12.0),
+                CreateFaceDetection(5, DetectionHostType.Video, 7002, 0.88f, observedAtSec: 48.0));
 
             await db.SaveChangesAsync();
         }
@@ -202,7 +202,7 @@ public sealed class AiFaceSuggesterTests
 
             var suggestion = Assert.Single(suggestions);
             Assert.Equal(77, suggestion.PerformerId);
-            Assert.Equal("Scene Performer", suggestion.PerformerName);
+            Assert.Equal("Video Performer", suggestion.PerformerName);
             Assert.Contains("Host evidence only", suggestion.Why, StringComparison.Ordinal);
             Assert.Contains("2 tagged hosts", suggestion.Why, StringComparison.Ordinal);
         }
@@ -216,11 +216,11 @@ public sealed class AiFaceSuggesterTests
         await using (var scope = provider.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-            db.Performers.Add(new Performer { Id = 78, Name = "Only Scene Performer" });
-            db.Scenes.Add(new Scene { Id = 7101, Title = "Single Tagged Scene" });
-            db.Set<ScenePerformer>().Add(new ScenePerformer { SceneId = 7101, PerformerId = 78 });
+            db.Performers.Add(new Performer { Id = 78, Name = "Only Video Performer" });
+            db.Videos.Add(new Video { Id = 7101, Title = "Single Tagged Video" });
+            db.Set<VideoPerformer>().Add(new VideoPerformer { VideoId = 7101, PerformerId = 78 });
             db.Faces.Add(new Face { Id = 6, Label = "Single Host Face", PrimarySourceKey = "face-0006" });
-            db.Detections.Add(CreateFaceDetection(6, DetectionHostType.Scene, 7101, 0.91f, observedAtSec: 12.0));
+            db.Detections.Add(CreateFaceDetection(6, DetectionHostType.Video, 7101, 0.91f, observedAtSec: 12.0));
 
             await db.SaveChangesAsync();
         }

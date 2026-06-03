@@ -60,8 +60,8 @@ public sealed class AiAudioExtension : FullExtensionBase
     {
         var group = endpoints.MapGroup("/api/ext/ai-audio").WithTags("AI.Audio");
 
-        group.MapGet("/scenes/{sceneId:int}/similar-scenes", async (int sceneId, int? page, int? perPage, AiAudioSimilarityService searchService, CancellationToken ct) =>
-            Results.Ok(await searchService.SimilarScenesForSceneAsync(sceneId, page ?? 1, perPage ?? 12, ct)));
+        group.MapGet("/videos/{videoId:int}/similar-videos", async (int videoId, int? page, int? perPage, AiAudioSimilarityService searchService, CancellationToken ct) =>
+            Results.Ok(await searchService.SimilarVideosForVideoAsync(videoId, page ?? 1, perPage ?? 12, ct)));
     }
 }
 

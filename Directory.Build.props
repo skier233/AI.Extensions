@@ -7,13 +7,10 @@
     <CoveMinVersion Condition="'$(CoveMinVersion)' == ''">0.0.30</CoveMinVersion>
     <CoveSdkVersion Condition="'$(CoveSdkVersion)' == ''">$(CoveMinVersion)</CoveSdkVersion>
     <CoveCoreVersion Condition="'$(CoveCoreVersion)' == ''">$(CoveMinVersion)</CoveCoreVersion>
-    <CoveDataVersion Condition="'$(CoveDataVersion)' == ''">$(CoveMinVersion)</CoveDataVersion>
     <UseLocalCoveSource Condition="'$(UseLocalCoveSource)' == '' and Exists('$(MSBuildThisFileDirectory)..\cove\src\Cove.Sdk\Cove.Sdk.csproj')">true</UseLocalCoveSource>
     <UseLocalCoveSource Condition="'$(UseLocalCoveSource)' == ''">false</UseLocalCoveSource>
     <UseLocalCoveCore Condition="'$(UseLocalCoveCore)' == '' and Exists('$(MSBuildThisFileDirectory)..\cove\src\Cove.Core\Cove.Core.csproj')">true</UseLocalCoveCore>
     <UseLocalCoveCore Condition="'$(UseLocalCoveCore)' == ''">false</UseLocalCoveCore>
-    <UseLocalCoveData Condition="'$(UseLocalCoveData)' == '' and Exists('$(MSBuildThisFileDirectory)..\cove\src\Cove.Data\Cove.Data.csproj')">true</UseLocalCoveData>
-    <UseLocalCoveData Condition="'$(UseLocalCoveData)' == ''">false</UseLocalCoveData>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(MSBuildProjectName)' != 'AI.Extensions.Abstractions'">

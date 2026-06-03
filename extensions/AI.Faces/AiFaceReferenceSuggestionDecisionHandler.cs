@@ -1,19 +1,16 @@
 using Cove.Core.Auth;
 using Cove.Core.Entities;
 using Cove.Core.Interfaces;
-using Cove.Data;
-using Cove.Data.Services;
 using Microsoft.AspNetCore.Http;
-using Microsoft.EntityFrameworkCore;
 
 namespace AI.Faces;
 
 internal sealed class AiFaceReferenceSuggestionDecisionHandler(
-    CoveContext db,
+    IFaceRepository faceRepository,
     AiFaceReferencePackStore packStore,
     AiFaceReferencePerformerResolver performerResolver,
     AiFaceReferenceSuggestionDecisionStore decisionStore,
-    FacePerformerPropagationService facePerformerPropagationService,
+    IFacePerformerPropagationService facePerformerPropagationService,
     ICurrentPrincipalAccessor principalAccessor) : IFaceSuggestionDecisionHandler
 {
     public async Task<FaceSuggestionDecisionOutcome> TryHandleAsync(FaceSuggestionDecisionRequest request, CancellationToken cancellationToken = default)
@@ -31,7 +28,7 @@ internal sealed class AiFaceReferenceSuggestionDecisionHandler(
 
         if (request.Decision == FaceSuggestionDecisionValues.Reject)
         {
-            var faceExists = await db.Faces.AsNoTracking().AnyAsync(face => face.Id == request.FaceId, cancellationToken);
+            var faceExists = await faceRepository.FaceExistsAsync(request.FaceId, cancellationToken);
             if (!faceExists)
                 return FaceSuggestionDecisionOutcome.Failure("Face was not found.", StatusCodes.Status404NotFound);
 
@@ -42,7 +39,7 @@ internal sealed class AiFaceReferenceSuggestionDecisionHandler(
         if (request.Decision != FaceSuggestionDecisionValues.Accept)
             return FaceSuggestionDecisionOutcome.NotHandled;
 
-        var face = await db.Faces.FirstOrDefaultAsync(item => item.Id == request.FaceId, cancellationToken);
+        var face = await faceRepository.GetFaceAsync(request.FaceId, tracking: true, cancellationToken);
         if (face is null)
             return FaceSuggestionDecisionOutcome.Failure("Face was not found.", StatusCodes.Status404NotFound);
 
@@ -54,7 +51,7 @@ internal sealed class AiFaceReferenceSuggestionDecisionHandler(
         await decisionStore.ClearAsync(request.FaceId, identity.ExternalId, cancellationToken);
         await facePerformerPropagationService.ApplyLinkChangeAsync(request.FaceId, face.PerformerId, performer.Id, cancellationToken);
         face.PerformerId = performer.Id;
-        await db.SaveChangesAsync(cancellationToken);
+        await faceRepository.SaveChangesAsync(cancellationToken);
 
         return FaceSuggestionDecisionOutcome.Success;
     }

@@ -1,16 +1,14 @@
 using System.Text.Json;
 
 using Cove.Core.Interfaces;
-using Cove.Data;
-
-using Microsoft.EntityFrameworkCore;
+using Cove.Plugins;
 
 using Pgvector;
 
 namespace AI.Core;
 
 internal sealed class AiCoreSemanticTextEncoder(
-    CoveContext db,
+    IExtensionStoreFactory storeFactory,
     INsfwAiServerClient aiServerClient) : ITextEncoder
 {
     private const string ExtensionId = "cove.ai.core";
@@ -21,7 +19,7 @@ internal sealed class AiCoreSemanticTextEncoder(
         WriteIndented = true,
     };
 
-    private readonly CoveContext _db = db;
+    private readonly IExtensionStoreFactory _storeFactory = storeFactory;
     private readonly INsfwAiServerClient _aiServerClient = aiServerClient;
 
     public string KindFamily => "semantic.v1";
@@ -59,11 +57,8 @@ internal sealed class AiCoreSemanticTextEncoder(
 
     private async Task<AiCoreConnectionSettings> LoadSettingsAsync(CancellationToken cancellationToken)
     {
-        var payload = await _db.ExtensionData
-            .AsNoTracking()
-            .Where(entry => entry.ExtensionId == ExtensionId && entry.Key == SettingsStoreKey)
-            .Select(entry => entry.Value)
-            .FirstOrDefaultAsync(cancellationToken);
+        var store = _storeFactory.CreateStore(ExtensionId);
+        var payload = await store.GetAsync(SettingsStoreKey, cancellationToken);
 
         if (string.IsNullOrWhiteSpace(payload))
         {

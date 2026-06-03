@@ -29,7 +29,7 @@ public sealed class AiPersistenceServiceTests
     {
         await using var provider = CreateProvider();
         var service = new AiFacesPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
-        var request = CreateRequest(AiMediaKinds.Video, "scene-asset-1", "scene", 42, "run-faces");
+        var request = CreateRequest(AiMediaKinds.Video, "video-asset-1", "video", 42, "run-faces");
         var batch = new AiPreparedArtifactBatch();
 
         batch.Faces.Add(new AiPreparedFaceIdentity(
@@ -38,10 +38,10 @@ public sealed class AiPersistenceServiceTests
             Label: "Face 1",
             IsProvisional: false,
             QualityScore: 0.91,
-            CoverAssetId: "scene-asset-1",
+            CoverAssetId: "video-asset-1",
             CoverBoundingBox: new AiBoundingBox(0.1, 0.2, 0.3, 0.4)));
         batch.Detections.Add(new AiPreparedDetection(
-            "scene-asset-1",
+            "video-asset-1",
             "ext:ai.faces",
             Class: "face",
             ObservedAtSeconds: 10.0,
@@ -52,7 +52,7 @@ public sealed class AiPersistenceServiceTests
             RefKey: "face-1",
             GroupKey: "track-1"));
         batch.Embeddings.Add(new AiPreparedEmbedding(
-            "scene-asset-1",
+            "video-asset-1",
             "ext:ai.faces",
             "face.embed.v1",
             "face.v1",
@@ -66,7 +66,7 @@ public sealed class AiPersistenceServiceTests
             EndSeconds: 12.0,
             ModelKey: "arcface_512"));
         batch.Segments.Add(new AiPreparedSegment(
-            "scene-asset-1",
+            "video-asset-1",
             "ext:ai.faces",
             Kind: "face",
             StartSeconds: 10.0,
@@ -87,10 +87,10 @@ public sealed class AiPersistenceServiceTests
 
         Assert.Equal("face-1", face.PrimarySourceKey);
         Assert.Equal(1, face.DetectionCount);
-        Assert.Equal(1, face.SceneCount);
+        Assert.Equal(1, face.VideoCount);
         Assert.Equal(0, face.ImageCount);
 
-        Assert.Equal(DetectionHostType.Scene, detection.HostType);
+        Assert.Equal(DetectionHostType.Video, detection.HostType);
         Assert.Equal(42, detection.HostId);
         Assert.Equal((long)face.Id, detection.RefId);
         Assert.Equal(1, detection.FrameWidth);
@@ -103,7 +103,7 @@ public sealed class AiPersistenceServiceTests
         Assert.Equal(EmbeddingModality.Face, embedding.Modality);
         Assert.Equal("face.v1", embedding.KindFamily);
 
-        Assert.Equal(SegmentHostType.Scene, segment.HostType);
+        Assert.Equal(SegmentHostType.Video, segment.HostType);
         Assert.Equal(42, segment.HostId);
         Assert.Equal((long)face.Id, segment.RefId);
         Assert.Equal("face", segment.Kind);
@@ -117,7 +117,7 @@ public sealed class AiPersistenceServiceTests
     {
         await using var provider = CreateProvider();
         var service = new AiFacesPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
-        var request = CreateRequest(AiMediaKinds.Video, "scene-asset-provisional", "scene", 43, "run-provisional");
+        var request = CreateRequest(AiMediaKinds.Video, "video-asset-provisional", "video", 43, "run-provisional");
         var batch = new AiPreparedArtifactBatch();
 
         batch.Faces.Add(new AiPreparedFaceIdentity(
@@ -131,7 +131,7 @@ public sealed class AiPersistenceServiceTests
                 ["lifecycle"] = "provisional",
             }));
         batch.Detections.Add(new AiPreparedDetection(
-            "scene-asset-provisional",
+            "video-asset-provisional",
             "ext:ai.faces",
             Class: "face",
             ObservedAtSeconds: 10.0,
@@ -151,15 +151,15 @@ public sealed class AiPersistenceServiceTests
     }
 
     [Fact]
-    public async Task PersistVisual_WritesSceneEmbeddings()
+    public async Task PersistVisual_WritesVideoEmbeddings()
     {
         await using var provider = CreateProvider();
         var service = new AiVisualPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
-        var request = CreateRequest(AiMediaKinds.Video, "scene-visual", "scene", 7, "run-visual");
+        var request = CreateRequest(AiMediaKinds.Video, "video-visual", "video", 7, "run-visual");
         var batch = new AiPreparedArtifactBatch();
 
         batch.Embeddings.Add(new AiPreparedEmbedding(
-            "scene-visual",
+            "video-visual",
             "ext:ai.visual",
             "visual.feature.v1",
             "feature.v1",
@@ -170,7 +170,7 @@ public sealed class AiPersistenceServiceTests
             SectionIndex: 0,
             ModelKey: "visual"));
         batch.Embeddings.Add(new AiPreparedEmbedding(
-            "scene-visual",
+            "video-visual",
             "ext:ai.visual",
             "visual.feature.v1",
             "feature.v1",
@@ -192,7 +192,7 @@ public sealed class AiPersistenceServiceTests
         Assert.Equal(2, embeddings.Count);
         Assert.All(embeddings, embedding =>
         {
-            Assert.Equal(EmbeddingHostType.Scene, embedding.HostType);
+            Assert.Equal(EmbeddingHostType.Video, embedding.HostType);
             Assert.Equal(7, embedding.HostId);
             Assert.Equal(EmbeddingModality.Visual, embedding.Modality);
             Assert.Equal("ext:ai.visual", embedding.SourceKey);
@@ -204,17 +204,17 @@ public sealed class AiPersistenceServiceTests
     }
 
     [Fact]
-    public async Task PersistAudio_WritesSceneEmbeddingsAndTimelineSegments()
+    public async Task PersistAudio_WritesVideoEmbeddingsAndTimelineSegments()
     {
         await using var provider = CreateProvider();
         var service = new AiAudioPersistenceService(
             provider.GetRequiredService<IServiceScopeFactory>(),
             NullLogger<AiAudioPersistenceService>.Instance);
-        var request = CreateRequest(AiMediaKinds.Audio, "scene-audio", "scene", 9, "run-audio");
+        var request = CreateRequest(AiMediaKinds.Audio, "video-audio", "video", 9, "run-audio");
         var batch = new AiPreparedArtifactBatch();
 
         batch.Embeddings.Add(new AiPreparedEmbedding(
-            "scene-audio",
+            "video-audio",
             "ext:ai.audio",
             "audio.embed.v1",
             "audio.v1",
@@ -227,7 +227,7 @@ public sealed class AiPersistenceServiceTests
             EndSeconds: 7.0,
             ModelKey: "audioclass"));
         batch.Segments.Add(new AiPreparedSegment(
-            "scene-audio",
+            "video-audio",
             "ext:ai.audio",
             Kind: "audio-classification",
             StartSeconds: 4.0,
@@ -243,13 +243,13 @@ public sealed class AiPersistenceServiceTests
         var embedding = await db.Embeddings.SingleAsync();
         var segment = await db.Segments.SingleAsync();
 
-        Assert.Equal(EmbeddingHostType.Scene, embedding.HostType);
+        Assert.Equal(EmbeddingHostType.Video, embedding.HostType);
         Assert.Equal(9, embedding.HostId);
         Assert.Equal(EmbeddingModality.Audio, embedding.Modality);
         Assert.Equal("audio.v1", embedding.KindFamily);
         Assert.Equal("ext:ai.audio", embedding.SourceKey);
 
-        Assert.Equal(SegmentHostType.Scene, segment.HostType);
+        Assert.Equal(SegmentHostType.Video, segment.HostType);
         Assert.Equal(9, segment.HostId);
         Assert.Equal("audio-classification", segment.Kind);
         Assert.Equal("speech", segment.Title);
@@ -359,7 +359,7 @@ public sealed class AiPersistenceServiceTests
     }
 
     [Fact]
-    public async Task PersistTagging_WritesSceneTagLinksIntoProvenanceWithoutDirectTags()
+    public async Task PersistTagging_WritesVideoTagLinksIntoProvenanceWithoutDirectTags()
     {
         await using var provider = CreateProvider(services =>
         {
@@ -369,16 +369,16 @@ public sealed class AiPersistenceServiceTests
         await using (var scope = provider.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-            db.Scenes.Add(new Scene { Id = 13, Title = "Tagged scene link" });
+            db.Videos.Add(new Video { Id = 13, Title = "Tagged video link" });
             await db.SaveChangesAsync();
         }
 
         var service = new AiTaggingPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
-        var request = CreateRequest(AiMediaKinds.Video, "scene-tag-link", "scene", 13, "run-tagging-link", durationSeconds: 20d);
+        var request = CreateRequest(AiMediaKinds.Video, "video-tag-link", "video", 13, "run-tagging-link", durationSeconds: 20d);
         var batch = new AiPreparedArtifactBatch();
 
         batch.TagLinks.Add(new AiPreparedTagLink(
-            "scene-tag-link",
+            "video-tag-link",
             "ext:ai.tagging",
             "Outdoors",
             0.72,
@@ -392,8 +392,8 @@ public sealed class AiPersistenceServiceTests
         var tag = await verifyDb.Tags.SingleAsync();
         var provenance = await verifyDb.TagApplications.SingleAsync();
 
-        Assert.Empty(await verifyDb.Set<SceneTag>().ToListAsync());
-        Assert.Equal(AffinityHostType.Scene, provenance.HostType);
+        Assert.Empty(await verifyDb.Set<VideoTag>().ToListAsync());
+        Assert.Equal(AffinityHostType.Video, provenance.HostType);
         Assert.Equal(13, provenance.HostId);
         Assert.Equal(tag.Id, provenance.TagId);
         Assert.Equal("ext:ai.tagging", provenance.SourceKey);
@@ -406,7 +406,7 @@ public sealed class AiPersistenceServiceTests
     }
 
     [Fact]
-    public async Task PersistTagging_WritesSceneTagDurationsIntoProvenance()
+    public async Task PersistTagging_WritesVideoTagDurationsIntoProvenance()
     {
         await using var provider = CreateProvider(services =>
         {
@@ -416,16 +416,16 @@ public sealed class AiPersistenceServiceTests
         await using (var scope = provider.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-            db.Scenes.Add(new Scene { Id = 12, Title = "Tagged clip" });
+            db.Videos.Add(new Video { Id = 12, Title = "Tagged clip" });
             await db.SaveChangesAsync();
         }
 
         var service = new AiTaggingPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
-        var request = CreateRequest(AiMediaKinds.Video, "scene-tagging", "scene", 12, "run-tagging-scene", durationSeconds: 20d);
+        var request = CreateRequest(AiMediaKinds.Video, "video-tagging", "video", 12, "run-tagging-video", durationSeconds: 20d);
         var batch = new AiPreparedArtifactBatch();
 
         batch.Segments.Add(new AiPreparedSegment(
-            "scene-tagging",
+            "video-tagging",
             "ext:ai.tagging",
             Kind: "tag",
             StartSeconds: 1.0,
@@ -438,7 +438,7 @@ public sealed class AiPersistenceServiceTests
                 ["modelKey"] = "tagger-v1",
             }));
         batch.Segments.Add(new AiPreparedSegment(
-            "scene-tagging",
+            "video-tagging",
             "ext:ai.tagging",
             Kind: "tag",
             StartSeconds: 5.0,
@@ -458,12 +458,12 @@ public sealed class AiPersistenceServiceTests
         var tag = await verifyDb.Tags.SingleAsync();
         var provenance = await verifyDb.TagApplications.SingleAsync();
 
-        Assert.Empty(await verifyDb.Set<SceneTag>().ToListAsync());
-        Assert.Equal(AffinityHostType.Scene, provenance.HostType);
+        Assert.Empty(await verifyDb.Set<VideoTag>().ToListAsync());
+        Assert.Equal(AffinityHostType.Video, provenance.HostType);
         Assert.Equal(12, provenance.HostId);
         Assert.Equal(tag.Id, provenance.TagId);
         Assert.Equal("ext:ai.tagging", provenance.SourceKey);
-        Assert.Equal("run-tagging-scene", provenance.SourceRunId);
+        Assert.Equal("run-tagging-video", provenance.SourceRunId);
         Assert.Equal("tagger-v1", provenance.ModelKey);
         Assert.Equal(0.91f, provenance.Confidence);
         Assert.NotNull(provenance.TotalDurationSec);
@@ -475,7 +475,7 @@ public sealed class AiPersistenceServiceTests
     }
 
     [Fact]
-    public async Task PersistTagging_AppliesConfiguredSceneSegmentTagNameOverrides()
+    public async Task PersistTagging_AppliesConfiguredVideoSegmentTagNameOverrides()
     {
         var storeFactory = new TestExtensionStoreFactory();
         await AiTaggingSettingsStore.SaveAsync(
@@ -497,16 +497,16 @@ public sealed class AiPersistenceServiceTests
         await using (var scope = provider.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
-            db.Scenes.Add(new Scene { Id = 15, Title = "Tagged clip" });
+            db.Videos.Add(new Video { Id = 15, Title = "Tagged clip" });
             await db.SaveChangesAsync();
         }
 
         var service = new AiTaggingPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
-        var request = CreateRequest(AiMediaKinds.Video, "scene-tagging", "scene", 15, "run-tagging-scene-override", durationSeconds: 20d);
+        var request = CreateRequest(AiMediaKinds.Video, "video-tagging", "video", 15, "run-tagging-video-override", durationSeconds: 20d);
         var batch = new AiPreparedArtifactBatch();
 
         batch.Segments.Add(new AiPreparedSegment(
-            "scene-tagging",
+            "video-tagging",
             "ext:ai.tagging",
             Kind: "tag",
             StartSeconds: 1.0,

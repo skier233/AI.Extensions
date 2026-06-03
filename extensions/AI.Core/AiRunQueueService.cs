@@ -2,10 +2,9 @@ using System.IO;
 
 using AI.Extensions.Abstractions;
 
-using Cove.Data;
+using Cove.Core.Entities;
 using Cove.Core.Interfaces;
 
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -23,9 +22,10 @@ public interface IAiRunQueueService
     Task ExecuteAsync(AiCoreConnectionSettings settings, AiQueueRunRequest request, IJobProgress progress, CancellationToken ct = default);
 }
 
-public sealed class AiRunTargetResolver(CoveContext dbContext) : IAiRunTargetResolver
+public sealed class AiRunTargetResolver(IVideoRepository videoRepository, IImageRepository imageRepository) : IAiRunTargetResolver
 {
-    private readonly CoveContext _dbContext = dbContext;
+    private readonly IVideoRepository _videoRepository = videoRepository;
+    private readonly IImageRepository _imageRepository = imageRepository;
 
     public async Task<IReadOnlyList<AiResolvedRunTarget>> ResolveAsync(AiQueueRunRequest request, CancellationToken ct = default)
     {
@@ -52,7 +52,7 @@ public sealed class AiRunTargetResolver(CoveContext dbContext) : IAiRunTargetRes
 
         var entityTargets = normalized.EntityType switch
         {
-            "scene" => await ResolveSceneTargetsAsync(normalized, ct),
+            "video" => await ResolveVideoTargetsAsync(normalized, ct),
             "image" => await ResolveImageTargetsAsync(normalized, ct),
             _ => throw new ArgumentException($"Unsupported entity type '{normalized.EntityType}'.", nameof(request)),
         };
@@ -68,23 +68,21 @@ public sealed class AiRunTargetResolver(CoveContext dbContext) : IAiRunTargetRes
         return results;
     }
 
-    private async Task<IReadOnlyList<AiResolvedRunTarget>> ResolveSceneTargetsAsync(AiQueueRunRequest request, CancellationToken ct)
+    private async Task<IReadOnlyList<AiResolvedRunTarget>> ResolveVideoTargetsAsync(AiQueueRunRequest request, CancellationToken ct)
     {
-        var scenes = await _dbContext.Scenes
-            .AsNoTracking()
-            .Include(static scene => scene.Files)
-            .Where(scene => request.EntityIds.Contains(scene.Id))
-            .ToDictionaryAsync(static scene => scene.Id, ct);
+        var (videos, _) = await _videoRepository.FindAsync(
+            new VideoFilter { Ids = request.EntityIds.ToList() }, null, ct);
+        var videoById = videos.ToDictionary(static v => v.Id);
 
         var results = new List<AiResolvedRunTarget>();
         foreach (var entityId in request.EntityIds)
         {
-            if (!scenes.TryGetValue(entityId, out var scene))
+            if (!videoById.TryGetValue(entityId, out var video))
             {
                 continue;
             }
 
-            var file = scene.Files
+            var file = video.Files
                 .Where(static file => !string.IsNullOrWhiteSpace(file.Path))
                 .OrderByDescending(static file => file.Duration)
                 .ThenBy(static file => file.Path, StringComparer.OrdinalIgnoreCase)
@@ -96,16 +94,16 @@ public sealed class AiRunTargetResolver(CoveContext dbContext) : IAiRunTargetRes
             }
 
             var normalizedPath = AiPathMapper.NormalizePath(file.Path);
-            var label = !string.IsNullOrWhiteSpace(scene.Title)
-                ? scene.Title!
-                : Path.GetFileName(normalizedPath) is { Length: > 0 } basename ? basename : $"Scene {scene.Id}";
+            var label = !string.IsNullOrWhiteSpace(video.Title)
+                ? video.Title!
+                : Path.GetFileName(normalizedPath) is { Length: > 0 } basename ? basename : $"Video {video.Id}";
 
             results.Add(new AiResolvedRunTarget(
-                UnitId: $"scene:{scene.Id}",
+                UnitId: $"video:{video.Id}",
                 Label: label,
                 Path: normalizedPath,
-                EntityId: scene.Id,
-                EntityType: "scene"));
+                EntityId: video.Id,
+                EntityType: "video"));
         }
 
         return results;
@@ -113,16 +111,14 @@ public sealed class AiRunTargetResolver(CoveContext dbContext) : IAiRunTargetRes
 
     private async Task<IReadOnlyList<AiResolvedRunTarget>> ResolveImageTargetsAsync(AiQueueRunRequest request, CancellationToken ct)
     {
-        var images = await _dbContext.Images
-            .AsNoTracking()
-            .Include(static image => image.Files)
-            .Where(image => request.EntityIds.Contains(image.Id))
-            .ToDictionaryAsync(static image => image.Id, ct);
+        var (images, _) = await _imageRepository.FindAsync(
+            new ImageFilter { Ids = request.EntityIds.ToList() }, null, ct);
+        var imageById = images.ToDictionary(static i => i.Id);
 
         var results = new List<AiResolvedRunTarget>();
         foreach (var entityId in request.EntityIds)
         {
-            if (!images.TryGetValue(entityId, out var image))
+            if (!imageById.TryGetValue(entityId, out var image))
             {
                 continue;
             }
@@ -329,8 +325,8 @@ public sealed class AiRunQueueService(
     {
         var noun = request.EntityType switch
         {
-            "scene" when request.MediaKind == AiMediaKinds.Audio => "selected scene audio track(s)",
-            "scene" => "selected scene(s)",
+            "video" when request.MediaKind == AiMediaKinds.Audio => "selected video audio track(s)",
+            "video" => "selected video(s)",
             "image" => "selected image(s)",
             _ => request.MediaKind switch
             {

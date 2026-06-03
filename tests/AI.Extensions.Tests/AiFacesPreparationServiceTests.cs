@@ -64,7 +64,7 @@ public sealed class AiFacesPreparationServiceTests
         var result = new AiAnalyzeResult
         {
             MediaKind = AiMediaKinds.Video,
-            AssetId = "scene-cover-rank",
+            AssetId = "video-cover-rank",
             FrameIntervalSeconds = 1,
             Frames =
             [
@@ -123,7 +123,7 @@ public sealed class AiFacesPreparationServiceTests
             ],
         };
 
-        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "scene-cover-rank"));
+        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "video-cover-rank"));
 
         var face = Assert.Single(batch.Faces);
         Assert.Equal(new AiBoundingBox(0.18, 0.18, 0.42, 0.42), face.CoverBoundingBox);
@@ -578,7 +578,7 @@ public sealed class AiFacesPreparationServiceTests
         var result = new AiAnalyzeResult
         {
             MediaKind = AiMediaKinds.Video,
-            AssetId = "scene-quality-rank",
+            AssetId = "video-quality-rank",
             FrameIntervalSeconds = 1,
             Frames =
             [
@@ -657,7 +657,7 @@ public sealed class AiFacesPreparationServiceTests
             ],
         };
 
-        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "scene-quality-rank"));
+        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "video-quality-rank"));
 
         var face = Assert.Single(batch.Faces);
         Assert.Equal(new AiBoundingBox(0.20, 0.20, 0.34, 0.34), face.CoverBoundingBox);
@@ -681,7 +681,7 @@ public sealed class AiFacesPreparationServiceTests
         var result = new AiAnalyzeResult
         {
             MediaKind = AiMediaKinds.Video,
-            AssetId = "scene-keyframes",
+            AssetId = "video-keyframes",
             FrameIntervalSeconds = 1,
             Frames =
             [
@@ -692,7 +692,7 @@ public sealed class AiFacesPreparationServiceTests
             ],
         };
 
-        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "scene-keyframes"));
+        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "video-keyframes"));
 
         Assert.Single(batch.Faces);
         Assert.Equal(2, batch.Detections.Count);
@@ -722,14 +722,14 @@ public sealed class AiFacesPreparationServiceTests
         var result = new AiAnalyzeResult
         {
             MediaKind = AiMediaKinds.Video,
-            AssetId = "scene-keyframe-gap",
+            AssetId = "video-keyframe-gap",
             FrameIntervalSeconds = 1,
             Frames = Enumerable.Range(1, 10)
                 .Select(frame => CreateVideoFrame(frame, frame, new AiBoundingBox(0.20, 0.20, 0.36, 0.36)))
                 .ToArray(),
         };
 
-        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "scene-keyframe-gap"));
+        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "video-keyframe-gap"));
 
         Assert.Single(batch.Faces);
         Assert.Equal([1d, 4d, 7d, 10d], batch.Detections.Select(static detection => detection.ObservedAtSeconds).ToArray());
@@ -753,7 +753,7 @@ public sealed class AiFacesPreparationServiceTests
         var result = new AiAnalyzeResult
         {
             MediaKind = AiMediaKinds.Video,
-            AssetId = "scene-split-segments",
+            AssetId = "video-split-segments",
             FrameIntervalSeconds = 2,
             Frames =
             [
@@ -764,7 +764,7 @@ public sealed class AiFacesPreparationServiceTests
             ],
         };
 
-        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "scene-split-segments"));
+        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "video-split-segments"));
 
         Assert.Single(batch.Faces);
         Assert.Equal(2, batch.Segments.Count);
@@ -966,7 +966,7 @@ public sealed class AiFacesPreparationServiceTests
                 using var document = JsonDocument.Parse(
                         """
                         {
-                            "asset_id": "scene-23",
+                            "asset_id": "video-23",
                             "frame_interval_seconds": 60,
                             "frames": [
                                 {
@@ -1061,7 +1061,7 @@ public sealed class AiFacesPreparationServiceTests
                         new AiCapabilityClaim("faces.video.embedding", "Video Face Identity Embeddings", AiMediaKinds.Video, "embedding", "region", "regions", FromDetection: "face_detector_torchexport"),
                 ];
 
-                var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "scene-23"));
+                var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "video-23"));
 
                 Assert.Single(batch.Faces);
                 Assert.Single(batch.Embeddings);

@@ -14,11 +14,11 @@
     {
       "id": "cove.ai.visual",
       "title": "AI Visual",
-      "description": "Visual embeddings, detections, and similarity search for scenes and images.",
+      "description": "Visual embeddings, detections, and similarity search for videos and images.",
       "parentTopicId": "cove.ai",
       "pages": [
-        "scenes",
-        "scene",
+        "videos",
+        "video",
         "images",
         "image",
         "settings"
@@ -35,7 +35,7 @@
           "id": "visual-search",
           "title": "Find visually related media",
           "caption": "AI Visual contributes embeddings and region-analysis claims used by visual similarity and recommendation workflows.",
-          "bodyMarkdown": "Run visual claims on scenes or images, open similar media from detail pages, and use generated detections as context while reviewing results.",
+          "bodyMarkdown": "Run visual claims on videos or images, open similar media from detail pages, and use generated detections as context while reviewing results.",
           "imageSrc": "https://raw.githubusercontent.com/yourcove/AI.Extensions/main/extensions/AI.Visual/docs/manual/visual-search.svg",
           "imageAlt": "AI Visual similarity search screen",
           "mockKind": "images"
