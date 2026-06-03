@@ -43,7 +43,7 @@
       ]
     }
   ],
-  "minCoveVersion": "0.0.30",
+  "minCoveVersion": "0.0.32",
   "entryDll": "AI.Faces.dll",
   "sharedAssemblies": [
     "AI.Extensions.Abstractions"

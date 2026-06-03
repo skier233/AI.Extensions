@@ -50,7 +50,7 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
         "ai",
     ];
 
-    public override string MinCoveVersion => "0.0.10";
+    public override string MinCoveVersion => "0.0.32";
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
     {

@@ -39,7 +39,7 @@
       ]
     }
   ],
-  "minCoveVersion": "0.0.30",
+  "minCoveVersion": "0.0.32",
   "entryDll": "AI.Audio.dll",
   "sharedAssemblies": [
     "AI.Extensions.Abstractions"
