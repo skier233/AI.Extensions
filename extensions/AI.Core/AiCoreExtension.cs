@@ -34,7 +34,7 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
 
     public override string Name => "AI Core";
 
-    public override string Version => "0.1.0";
+    public override string Version => "0.0.1";
 
     public override string Description => "AI orchestration, model lifecycle management, and nsfw_ai_server v4 integration for Cove.";
 

@@ -52,6 +52,50 @@ async function api(path, options = {}) {
   return data;
 }
 
+function errorMessage(error) {
+  return error && error.message ? error.message : "Request failed.";
+}
+
+async function loadRuntimeSnapshot({ includeSettings = false } = {}) {
+  const entries = [
+    includeSettings ? ["settings", api("/settings")] : null,
+    ["health", api("/health")],
+    ["capabilities", api("/capabilities")],
+    ["catalog", api("/models/catalog")],
+  ].filter(Boolean);
+
+  const results = await Promise.allSettled(entries.map(([, request]) => request));
+  const snapshot = {
+    settings: null,
+    health: null,
+    capabilities: [],
+    catalog: { models: [] },
+    errors: [],
+  };
+
+  entries.forEach(([key], index) => {
+    const result = results[index];
+    if (result.status === "fulfilled") {
+      if (key === "settings") snapshot.settings = result.value;
+      if (key === "health") snapshot.health = result.value;
+      if (key === "capabilities") snapshot.capabilities = result.value?.extensions || [];
+      if (key === "catalog") snapshot.catalog = result.value || { models: [] };
+      return;
+    }
+
+    snapshot.errors.push(`${key}: ${errorMessage(result.reason)}`);
+    if (key === "health") {
+      snapshot.health = { status: "unreachable", detail: errorMessage(result.reason) };
+    }
+  });
+
+  if (includeSettings && !snapshot.settings) {
+    throw new Error(snapshot.errors[0] || "Failed to load AI Core settings.");
+  }
+
+  return snapshot;
+}
+
 function splitList(raw) {
   return (raw || "")
     .split(/\r?\n|,/)
@@ -2193,30 +2237,24 @@ function AiCoreSettingsPanel() {
   const [busyModel, setBusyModel] = useState("");
 
   async function refreshPanel() {
-    const [nextSettings, nextHealth, capabilityEnvelope] = await Promise.all([api("/settings"), api("/health"), api("/capabilities")]);
-    let nextCatalog = { models: [] };
-    try {
-      nextCatalog = await api("/models/catalog");
-    } catch {
-      nextCatalog = { models: [] };
+    const snapshot = await loadRuntimeSnapshot({ includeSettings: true });
+    setSettings(copySettings(snapshot.settings));
+    setHealth(snapshot.health);
+    setCapabilities(snapshot.capabilities);
+    setCatalog(snapshot.catalog);
+    if (snapshot.errors.length > 0) {
+      setMessage(snapshot.errors.join("; "));
     }
-    setSettings(copySettings(nextSettings));
-    setHealth(nextHealth);
-    setCapabilities(capabilityEnvelope?.extensions || []);
-    setCatalog(nextCatalog || { models: [] });
   }
 
   async function refreshRuntime() {
-    const [nextHealth, capabilityEnvelope] = await Promise.all([api("/health"), api("/capabilities")]);
-    let nextCatalog = { models: [] };
-    try {
-      nextCatalog = await api("/models/catalog");
-    } catch {
-      nextCatalog = { models: [] };
+    const snapshot = await loadRuntimeSnapshot();
+    setHealth(snapshot.health);
+    setCapabilities(snapshot.capabilities);
+    setCatalog(snapshot.catalog);
+    if (snapshot.errors.length > 0) {
+      setMessage(snapshot.errors.join("; "));
     }
-    setHealth(nextHealth);
-    setCapabilities(capabilityEnvelope?.extensions || []);
-    setCatalog(nextCatalog || { models: [] });
   }
 
   useEffect(() => {
@@ -2348,34 +2386,24 @@ function AiCorePage() {
   const [busyModel, setBusyModel] = useState("");
 
   async function refresh() {
-    const [nextSettings, nextHealth, capabilityEnvelope] = await Promise.all([
-      api("/settings"),
-      api("/health"),
-      api("/capabilities"),
-    ]);
-    let modelEnvelope = { models: [] };
-    try {
-      modelEnvelope = await api("/models/catalog");
-    } catch {
-      modelEnvelope = { models: [] };
+    const snapshot = await loadRuntimeSnapshot({ includeSettings: true });
+    setSettings(copySettings(snapshot.settings));
+    setHealth(snapshot.health);
+    setCapabilities(snapshot.capabilities);
+    setCatalog(snapshot.catalog);
+    if (snapshot.errors.length > 0) {
+      setSettingsMessage(snapshot.errors.join("; "));
     }
-    setSettings(copySettings(nextSettings));
-    setHealth(nextHealth);
-    setCapabilities(capabilityEnvelope?.extensions || []);
-    setCatalog(modelEnvelope || { models: [] });
   }
 
   async function refreshRuntime() {
-    const [nextHealth, capabilityEnvelope] = await Promise.all([api("/health"), api("/capabilities")]);
-    let modelEnvelope = { models: [] };
-    try {
-      modelEnvelope = await api("/models/catalog");
-    } catch {
-      modelEnvelope = { models: [] };
+    const snapshot = await loadRuntimeSnapshot();
+    setHealth(snapshot.health);
+    setCapabilities(snapshot.capabilities);
+    setCatalog(snapshot.catalog);
+    if (snapshot.errors.length > 0) {
+      setSettingsMessage(snapshot.errors.join("; "));
     }
-    setHealth(nextHealth);
-    setCapabilities(capabilityEnvelope?.extensions || []);
-    setCatalog(modelEnvelope || { models: [] });
   }
 
   useEffect(() => {

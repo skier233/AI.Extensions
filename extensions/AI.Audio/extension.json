@@ -1,7 +1,7 @@
 {
   "id": "cove.community.ai.audio",
   "name": "AI Audio",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Audio embedding and classification capability contributions for AI runs.",
   "author": "Cove Team",
   "url": "https://github.com/yourcove/AI.Extensions",
@@ -45,6 +45,6 @@
     "AI.Extensions.Abstractions"
   ],
   "dependencies": {
-    "cove.community.ai.core": ">=0.1.0"
+    "cove.community.ai.core": ">=0.0.1"
   }
 }

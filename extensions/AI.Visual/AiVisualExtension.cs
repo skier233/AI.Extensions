@@ -20,7 +20,7 @@ public sealed class AiVisualExtension : FullExtensionBase
 
     public override string Name => "AI Visual";
 
-    public override string Version => "0.1.0";
+    public override string Version => "0.0.1";
 
     public override string Description => "Contributes general visual detection claims for image and video AI similarity and recommendation systems.";
 
@@ -40,7 +40,7 @@ public sealed class AiVisualExtension : FullExtensionBase
 
     public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
     {
-        ["cove.community.ai.core"] = ">=0.1.0",
+        ["cove.community.ai.core"] = ">=0.0.1",
     };
 
     public override UIManifest GetUIManifest()
