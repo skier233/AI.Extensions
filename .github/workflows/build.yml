@@ -102,6 +102,21 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      - name: Setup Node
+        if: steps.check.outputs.match == 'true' && !matrix.extension.manifestOnly && hashFiles(format('{0}/ui/**', matrix.extension.path)) != ''
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install UI dependencies
+        if: steps.check.outputs.match == 'true' && !matrix.extension.manifestOnly && hashFiles(format('{0}/ui/**', matrix.extension.path)) != ''
+        run: npm ci
+
+      - name: Build extension UI
+        if: steps.check.outputs.match == 'true' && !matrix.extension.manifestOnly && hashFiles(format('{0}/ui/**', matrix.extension.path)) != ''
+        run: node scripts/build-extension-ui.mjs ${{ matrix.extension.name }}
+
       - name: Restore
         if: steps.check.outputs.match == 'true' && !matrix.extension.manifestOnly
         run: dotnet restore ${{ matrix.extension.path }}
@@ -126,6 +141,27 @@ jobs:
         if: steps.check.outputs.match == 'true'
         run: |
           node -e "const fs=require('fs'); const file='artifacts/${{ matrix.extension.name }}/extension.json'; const json=JSON.parse(fs.readFileSync(file,'utf8')); json.version='${{ steps.check.outputs.version }}'; fs.writeFileSync(file, JSON.stringify(json, null, 2) + '\n');"
+
+      - name: Validate packaged UI assets
+        if: steps.check.outputs.match == 'true'
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const root = 'artifacts/${{ matrix.extension.name }}';
+          const manifest = JSON.parse(fs.readFileSync(path.join(root, 'extension.json'), 'utf8'));
+          const required = [manifest.jsBundle, manifest.cssBundle].filter(Boolean);
+
+          for (const relative of required) {
+            const fullPath = path.join(root, relative);
+            if (!fs.existsSync(fullPath)) {
+              console.error(`ERROR: Packaged extension '${manifest.id}' declares '${relative}' but '${fullPath}' does not exist.`);
+              process.exit(1);
+            }
+          }
+          NODE
 
       - name: Package
         if: steps.check.outputs.match == 'true' && github.event_name != 'pull_request'
