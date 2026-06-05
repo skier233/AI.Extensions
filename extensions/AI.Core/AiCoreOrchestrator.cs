@@ -479,7 +479,7 @@ public sealed class AiCoreOrchestrator(
             parsedResult.FrameIntervalSeconds,
             new Dictionary<string, string>
             {
-                ["source"] = "cove.ai.core",
+                ["source"] = "cove.community.ai.core",
             });
 
         var results = new List<AiDispatchResult>();
@@ -492,7 +492,7 @@ public sealed class AiCoreOrchestrator(
                 parsedResult,
                 new Dictionary<string, string>
                 {
-                    ["source"] = "cove.ai.core",
+                    ["source"] = "cove.community.ai.core",
                     ["extensionId"] = first.Descriptor.ExtensionId,
                 });
 
@@ -1012,7 +1012,7 @@ public sealed class AiCoreOrchestrator(
     }
 
     private static bool IsTaggingExtensionId(string extensionId)
-        => string.Equals(extensionId, "cove.ai.tagging", StringComparison.OrdinalIgnoreCase)
+        => string.Equals(extensionId, "cove.community.ai.tagging", StringComparison.OrdinalIgnoreCase)
             || string.Equals(extensionId, "ext:ai.tagging", StringComparison.OrdinalIgnoreCase);
 
     private static string CreateBindingKey(string capabilityId, string slotId, string? scope, string? category)

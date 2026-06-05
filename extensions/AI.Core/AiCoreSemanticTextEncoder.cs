@@ -11,7 +11,7 @@ internal sealed class AiCoreSemanticTextEncoder(
     IExtensionStoreFactory storeFactory,
     INsfwAiServerClient aiServerClient) : ITextEncoder
 {
-    private const string ExtensionId = "cove.ai.core";
+    private const string ExtensionId = "cove.community.ai.core";
     private const string SettingsStoreKey = "settings";
 
     private static readonly JsonSerializerOptions StateJson = new(JsonSerializerDefaults.Web)

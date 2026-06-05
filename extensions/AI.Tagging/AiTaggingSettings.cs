@@ -43,7 +43,7 @@ internal sealed record AiTagNameOverride
 
 internal static class AiTaggingSettingsStore
 {
-    public const string ExtensionId = "cove.ai.tagging";
+    public const string ExtensionId = "cove.community.ai.tagging";
 
     public const string SettingsStoreKey = "settings";
 

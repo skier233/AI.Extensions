@@ -5,7 +5,7 @@ namespace AI.Full;
 
 public sealed class AiFullExtension : CoveExtensionBase
 {
-    public override string Id => "cove.ai.full";
+    public override string Id => "cove.community.ai.full";
 
     public override string Name => "AI Full";
 
@@ -29,10 +29,10 @@ public sealed class AiFullExtension : CoveExtensionBase
 
     public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
     {
-        ["cove.ai.core"] = ">=0.1.0",
-        ["cove.ai.tagging"] = ">=0.1.0",
-        ["cove.ai.faces"] = ">=0.1.0",
-        ["cove.ai.visual"] = ">=0.1.0",
-        ["cove.ai.audio"] = ">=0.1.0",
+        ["cove.community.ai.core"] = ">=0.1.0",
+        ["cove.community.ai.tagging"] = ">=0.1.0",
+        ["cove.community.ai.faces"] = ">=0.1.0",
+        ["cove.community.ai.visual"] = ">=0.1.0",
+        ["cove.community.ai.audio"] = ">=0.1.0",
     };
 }

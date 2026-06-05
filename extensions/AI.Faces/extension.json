@@ -1,5 +1,5 @@
 {
-  "id": "cove.ai.faces",
+  "id": "cove.community.ai.faces",
   "name": "AI Faces",
   "version": "0.1.0",
   "description": "Face-oriented AI capability contributions for image and video analysis.",
@@ -12,7 +12,7 @@
   ],
   "tutorialTopics": [
     {
-      "id": "cove.ai.faces",
+      "id": "cove.community.ai.faces",
       "title": "AI Faces",
       "description": "Face detection, embeddings, clustering, and reference-pack matching.",
       "parentTopicId": "cove.ai",
@@ -51,6 +51,6 @@
   "jsBundle": "dist/bundle.js",
   "cssBundle": "dist/bundle.css",
   "dependencies": {
-    "cove.ai.core": ">=0.1.0"
+    "cove.community.ai.core": ">=0.1.0"
   }
 }

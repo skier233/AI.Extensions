@@ -761,7 +761,7 @@ public sealed class AiCoreOrchestratorTests
 
     private static IAiCapabilityContributor CreateFacesContributor()
         => new StubContributor(new AiCapabilityDescriptor(
-            "cove.ai.faces",
+            "cove.community.ai.faces",
             "AI Faces",
             [
                 new AiCapabilityClaim(
@@ -785,7 +785,7 @@ public sealed class AiCoreOrchestratorTests
 
     private static IAiCapabilityContributor CreateAudioContributor()
         => new StubContributor(new AiCapabilityDescriptor(
-            "cove.ai.audio",
+            "cove.community.ai.audio",
             "AI Audio",
             [
                 new AiCapabilityClaim(
@@ -823,7 +823,7 @@ public sealed class AiCoreOrchestratorTests
 
     private static IAiCapabilityContributor CreateVisualContributor()
         => new StubContributor(new AiCapabilityDescriptor(
-            "cove.ai.visual",
+            "cove.community.ai.visual",
             "AI Visual",
             [
                 new AiCapabilityClaim(

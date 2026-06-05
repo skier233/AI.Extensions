@@ -16,7 +16,7 @@ namespace AI.Visual;
 
 public sealed class AiVisualExtension : FullExtensionBase
 {
-    public override string Id => "cove.ai.visual";
+    public override string Id => "cove.community.ai.visual";
 
     public override string Name => "AI Visual";
 
@@ -40,7 +40,7 @@ public sealed class AiVisualExtension : FullExtensionBase
 
     public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
     {
-        ["cove.ai.core"] = ">=0.1.0",
+        ["cove.community.ai.core"] = ">=0.1.0",
     };
 
     public override UIManifest GetUIManifest()
@@ -192,7 +192,7 @@ internal sealed class AiVisualContributor(
     private readonly AiVisualPersistenceService _persistenceService = persistenceService;
 
     private static readonly AiCapabilityDescriptor Descriptor = new(
-        "cove.ai.visual",
+        "cove.community.ai.visual",
         "AI Visual",
         [
             new AiCapabilityClaim(

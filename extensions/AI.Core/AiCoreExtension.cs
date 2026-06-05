@@ -18,10 +18,10 @@ namespace AI.Core;
 public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
 {
     private const string SettingsStoreKey = "settings";
-    public const string RunPermission = "cove.ai.core.runs.run";
-    public const string ManageModelsPermission = "cove.ai.core.models.manage";
-    public const string ManagePipelinesPermission = "cove.ai.core.pipelines.manage";
-    public const string WriteSettingsPermission = "cove.ai.core.settings.write";
+    public const string RunPermission = "cove.community.ai.core.runs.run";
+    public const string ManageModelsPermission = "cove.community.ai.core.models.manage";
+    public const string ManagePipelinesPermission = "cove.community.ai.core.pipelines.manage";
+    public const string WriteSettingsPermission = "cove.community.ai.core.settings.write";
 
     private static readonly JsonSerializerOptions StateJson = new(JsonSerializerDefaults.Web)
     {
@@ -30,7 +30,7 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
 
     private IServiceProvider? _services;
 
-    public override string Id => "cove.ai.core";
+    public override string Id => "cove.community.ai.core";
 
     public override string Name => "AI Core";
 

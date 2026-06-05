@@ -1,5 +1,5 @@
 {
-  "id": "cove.ai.visual",
+  "id": "cove.community.ai.visual",
   "name": "AI Visual",
   "version": "0.1.0",
   "description": "Visual detection and region-analysis capability contributions for image and video AI runs.",
@@ -12,7 +12,7 @@
   ],
   "tutorialTopics": [
     {
-      "id": "cove.ai.visual",
+      "id": "cove.community.ai.visual",
       "title": "AI Visual",
       "description": "Visual embeddings, detections, and similarity search for videos and images.",
       "parentTopicId": "cove.ai",
@@ -49,6 +49,6 @@
     "AI.Extensions.Abstractions"
   ],
   "dependencies": {
-    "cove.ai.core": ">=0.1.0"
+    "cove.community.ai.core": ">=0.1.0"
   }
 }

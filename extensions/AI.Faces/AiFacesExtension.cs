@@ -18,12 +18,12 @@ namespace AI.Faces;
 
 public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
 {
-    public const string WriteSettingsPermission = "cove.ai.faces.settings.write";
-    public const string UploadReferencePermission = "cove.ai.faces.reference.upload";
-    public const string DeleteReferencePermission = "cove.ai.faces.reference.delete";
-    public const string ApplyReferencePermission = "cove.ai.faces.reference.apply";
+    public const string WriteSettingsPermission = "cove.community.ai.faces.settings.write";
+    public const string UploadReferencePermission = "cove.community.ai.faces.reference.upload";
+    public const string DeleteReferencePermission = "cove.community.ai.faces.reference.delete";
+    public const string ApplyReferencePermission = "cove.community.ai.faces.reference.apply";
 
-    public override string Id => "cove.ai.faces";
+    public override string Id => "cove.community.ai.faces";
 
     public override string Name => "AI Faces";
 
@@ -47,7 +47,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
 
     public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
     {
-        ["cove.ai.core"] = ">=0.1.0",
+        ["cove.community.ai.core"] = ">=0.1.0",
     };
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
@@ -222,7 +222,7 @@ internal sealed class AiFacesContributor(
     private readonly AiFacesPersistenceService _persistenceService = persistenceService;
 
     private static readonly AiCapabilityDescriptor Descriptor = new(
-        "cove.ai.faces",
+        "cove.community.ai.faces",
         "AI Faces",
         [
             new AiCapabilityClaim(

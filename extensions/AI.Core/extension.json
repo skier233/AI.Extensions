@@ -1,5 +1,5 @@
 {
-  "id": "cove.ai.core",
+  "id": "cove.community.ai.core",
   "name": "AI Core",
   "version": "0.1.0",
   "description": "AI orchestration, model management, and nsfw_ai_server connectivity for Cove.",
@@ -43,7 +43,7 @@
       ]
     },
     {
-      "id": "cove.ai.core",
+      "id": "cove.community.ai.core",
       "title": "AI Core",
       "description": "AI model setup, run queues, and video or image analysis workflows.",
       "parentTopicId": "cove.ai",
@@ -57,10 +57,10 @@
       ],
       "contexts": [
         "extension-handler:openRunAiDialog",
-        "extension-action:cove.ai.core:ai-core-run-video-toolbar",
-        "extension-action:cove.ai.core:ai-core-run-image-toolbar",
-        "extension-action:cove.ai.core:ai-core-run-videos-bulk",
-        "extension-action:cove.ai.core:ai-core-run-images-bulk"
+        "extension-action:cove.community.ai.core:ai-core-run-video-toolbar",
+        "extension-action:cove.community.ai.core:ai-core-run-image-toolbar",
+        "extension-action:cove.community.ai.core:ai-core-run-videos-bulk",
+        "extension-action:cove.community.ai.core:ai-core-run-images-bulk"
       ],
       "order": 81,
       "slides": [

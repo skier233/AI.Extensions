@@ -13,7 +13,7 @@ namespace AI.Audio;
 
 public sealed class AiAudioExtension : FullExtensionBase
 {
-    public override string Id => "cove.ai.audio";
+    public override string Id => "cove.community.ai.audio";
 
     public override string Name => "AI Audio";
 
@@ -37,7 +37,7 @@ public sealed class AiAudioExtension : FullExtensionBase
 
     public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
     {
-        ["cove.ai.core"] = ">=0.1.0",
+        ["cove.community.ai.core"] = ">=0.1.0",
     };
 
     public override UIManifest GetUIManifest()
@@ -75,7 +75,7 @@ internal sealed class AiAudioContributor(
     private readonly ILogger<AiAudioContributor> _logger = logger;
 
     private static readonly AiCapabilityDescriptor Descriptor = new(
-        "cove.ai.audio",
+        "cove.community.ai.audio",
         "AI Audio",
         [
             new AiCapabilityClaim(

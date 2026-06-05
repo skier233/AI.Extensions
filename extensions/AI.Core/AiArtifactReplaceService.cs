@@ -145,8 +145,8 @@ internal sealed class AiArtifactReplaceService(
             return normalized;
         }
 
-        return normalized.StartsWith("cove.ai.", StringComparison.OrdinalIgnoreCase)
-            ? $"ext:ai.{normalized["cove.ai.".Length..]}"
+        return normalized.StartsWith("cove.community.ai.", StringComparison.OrdinalIgnoreCase)
+            ? $"ext:ai.{normalized["cove.community.ai.".Length..]}"
             : normalized;
     }
 

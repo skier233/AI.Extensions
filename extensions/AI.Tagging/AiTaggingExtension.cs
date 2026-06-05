@@ -14,9 +14,9 @@ namespace AI.Tagging;
 
 public sealed class AiTaggingExtension : FullExtensionBase, IPermissionContributor
 {
-    public const string WriteSettingsPermission = "cove.ai.tagging.settings.write";
+    public const string WriteSettingsPermission = "cove.community.ai.tagging.settings.write";
 
-    public override string Id => "cove.ai.tagging";
+    public override string Id => "cove.community.ai.tagging";
 
     public override string Name => "AI Tagging";
 
@@ -40,7 +40,7 @@ public sealed class AiTaggingExtension : FullExtensionBase, IPermissionContribut
 
     public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
     {
-        ["cove.ai.core"] = ">=0.1.0",
+        ["cove.community.ai.core"] = ">=0.1.0",
     };
 
     public override UIManifest GetUIManifest()
@@ -115,7 +115,7 @@ internal sealed class AiTaggingContributor(
     private readonly AiTaggingPersistenceService _persistenceService = persistenceService;
 
     private static readonly AiCapabilityDescriptor Descriptor = new(
-        "cove.ai.tagging",
+        "cove.community.ai.tagging",
         "AI Tagging",
         [
             new AiCapabilityClaim(

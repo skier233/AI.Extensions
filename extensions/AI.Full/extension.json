@@ -1,5 +1,5 @@
 {
-  "id": "cove.ai.full",
+  "id": "cove.community.ai.full",
   "name": "AI Full",
   "version": "0.1.0",
   "kind": "bundle",
@@ -13,10 +13,10 @@
   ],
   "minCoveVersion": "0.0.32",
   "dependencies": {
-    "cove.ai.core": ">=0.1.0 <1.0.0",
-    "cove.ai.tagging": ">=0.1.0 <1.0.0",
-    "cove.ai.faces": ">=0.1.0 <1.0.0",
-    "cove.ai.visual": ">=0.1.0 <1.0.0",
-    "cove.ai.audio": ">=0.1.0 <1.0.0"
+    "cove.community.ai.core": ">=0.1.0 <1.0.0",
+    "cove.community.ai.tagging": ">=0.1.0 <1.0.0",
+    "cove.community.ai.faces": ">=0.1.0 <1.0.0",
+    "cove.community.ai.visual": ">=0.1.0 <1.0.0",
+    "cove.community.ai.audio": ">=0.1.0 <1.0.0"
   }
 }

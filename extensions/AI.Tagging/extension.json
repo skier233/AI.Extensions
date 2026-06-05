@@ -1,5 +1,5 @@
 {
-  "id": "cove.ai.tagging",
+  "id": "cove.community.ai.tagging",
   "name": "AI Tagging",
   "version": "0.1.0",
   "description": "Tagging capability contributions for image and video AI runs.",
@@ -12,7 +12,7 @@
   ],
   "tutorialTopics": [
     {
-      "id": "cove.ai.tagging",
+      "id": "cove.community.ai.tagging",
       "title": "AI Tagging",
       "description": "Generated tag claims and tag-name override settings.",
       "parentTopicId": "cove.ai",
@@ -51,6 +51,6 @@
   "jsBundle": "dist/bundle.js",
   "cssBundle": "dist/bundle.css",
   "dependencies": {
-    "cove.ai.core": ">=0.1.0"
+    "cove.community.ai.core": ">=0.1.0"
   }
 }

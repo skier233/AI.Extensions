@@ -1,5 +1,5 @@
 {
-  "id": "cove.ai.audio",
+  "id": "cove.community.ai.audio",
   "name": "AI Audio",
   "version": "0.1.0",
   "description": "Audio embedding and classification capability contributions for AI runs.",
@@ -12,7 +12,7 @@
   ],
   "tutorialTopics": [
     {
-      "id": "cove.ai.audio",
+      "id": "cove.community.ai.audio",
       "title": "AI Audio",
       "description": "Audio embeddings, classification, and video similarity workflows.",
       "parentTopicId": "cove.ai",
@@ -45,6 +45,6 @@
     "AI.Extensions.Abstractions"
   ],
   "dependencies": {
-    "cove.ai.core": ">=0.1.0"
+    "cove.community.ai.core": ">=0.1.0"
   }
 }
