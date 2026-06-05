@@ -79,7 +79,7 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
             .AddSettingsTab(
                 "extensions/ai",
                 "AI",
-                order: 40,
+                order: 100,
                 icon: "database",
                 description: "Core AI extension settings and model orchestration defaults.",
                 searchKeywords: ["ai", "model server", "nsfw", "path mappings", "models"],

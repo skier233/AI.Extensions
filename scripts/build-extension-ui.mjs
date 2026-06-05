@@ -226,14 +226,16 @@ async function buildJs() {
 async function buildCss() {
   await assertFileExists(sharedThemeFile, "Shared UI theme file");
 
-  const tmpCss = path.join(distDir, "_entry.css");
-  const relativeTheme = path.relative(distDir, sharedThemeFile).replace(/\\/g, "/");
-  const relativeUiDir = path.relative(distDir, uiDir).replace(/\\/g, "/");
+  const tmpDir = path.join(extensionDir, "obj", "ui-build");
+  await fs.mkdir(tmpDir, { recursive: true });
+  const tmpCss = path.join(tmpDir, "tailwind-entry.css");
+  const relativeTheme = path.relative(tmpDir, sharedThemeFile).replace(/\\/g, "/");
+  const relativeUiDir = path.relative(tmpDir, uiDir).replace(/\\/g, "/");
   const imports = [`@import "${relativeTheme}";`];
 
   try {
     await fs.access(cssEntryFile);
-    const relativeCssEntry = path.relative(distDir, cssEntryFile).replace(/\\/g, "/");
+    const relativeCssEntry = path.relative(tmpDir, cssEntryFile).replace(/\\/g, "/");
     imports.push(`@import "${relativeCssEntry}";`);
   } catch {
     // Tailwind utility-only extensions do not need an authored CSS file.

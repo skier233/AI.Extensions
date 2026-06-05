@@ -89,10 +89,6 @@ async function loadRuntimeSnapshot({ includeSettings = false } = {}) {
     }
   });
 
-  if (includeSettings && !snapshot.settings) {
-    throw new Error(snapshot.errors[0] || "Failed to load AI Core settings.");
-  }
-
   return snapshot;
 }
 
@@ -408,9 +404,40 @@ function collectAutoSlotModels(catalog, features, claim, options = {}) {
 
 function getModelBindingRows(capabilities, catalog, settings) {
   return (capabilities || []).flatMap((descriptor) => (descriptor.capabilities || []).flatMap((feature) => (
-    (feature.modelBindingSlots || [])
-      .filter((slot) => !slot.categoryScoped)
-      .map((slot) => {
+    (feature.modelBindingSlots || []).flatMap((slot) => {
+        if (slot.categoryScoped) {
+          const categories = (catalog?.models || [])
+            .filter((model) => modelMatchesSlot(model, slot) && isActiveCatalogModel(model))
+            .flatMap((model) => getTaggingCategoriesForModel(model))
+            .filter((cat, i, arr) => arr.indexOf(cat) === i);
+          if (categories.length === 0) return [];
+          return categories.map((category) => {
+            const selected = findModelBinding(settings.capabilityModelBindings, feature.capabilityId, slot.slotId, null, category);
+            const models = getSlotModelCandidates(catalog, slot)
+              .filter((model) => {
+                if (model.unavailable) return true;
+                const catModel = findCatalogModel(catalog, model.configName);
+                const catCats = getTaggingCategoriesForModel(catModel);
+                return catModel && catCats.includes(category);
+              });
+            const selectedModelAvailable = !selected?.model || models.some((model) => model.configName.toLowerCase() === selected.model.toLowerCase());
+            const defaultModel = models[0]?.configName || "";
+            return {
+              key: createModelBindingKey(feature.capabilityId, slot.slotId) + "/" + category,
+              extensionLabel: descriptor.displayName,
+              capabilityId: feature.capabilityId,
+              capabilityLabel: `${feature.displayName}: ${category}`,
+              slotId: slot.slotId,
+              slotLabel: slot.displayName,
+              description: slot.description || feature.description,
+              selectedModel: selectedModelAvailable ? selected?.model || "" : "",
+              savedModelUnavailable: !!selected?.model && !selectedModelAvailable,
+              defaultModel,
+              models,
+              category,
+            };
+          });
+        }
         const selected = findModelBinding(settings.capabilityModelBindings, feature.capabilityId, slot.slotId);
         const models = getSlotModelCandidates(catalog, slot);
         const selectedModelAvailable = !selected?.model || models.some((model) => model.configName.toLowerCase() === selected.model.toLowerCase());
@@ -1063,7 +1090,7 @@ function SettingsEditor({ settings, health, catalog, capabilities = [], busy, me
   }
 
   function patchModelBinding(row, model) {
-    patch({ capabilityModelBindings: upsertModelBinding(settings.capabilityModelBindings, row.capabilityId, row.slotId, null, null, model) });
+    patch({ capabilityModelBindings: upsertModelBinding(settings.capabilityModelBindings, row.capabilityId, row.slotId, null, row.category || null, model) });
   }
 
   function patchPipeline(index, next) {

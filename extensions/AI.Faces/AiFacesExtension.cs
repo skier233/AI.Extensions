@@ -88,7 +88,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
             .AddSettingsTab(
                 "extensions/ai/faces",
                 "AI Faces",
-                order: 60,
+                order: 120,
                 icon: "database",
                 parentTabKey: "extensions/ai",
                 description: "Face recognition extension settings.",

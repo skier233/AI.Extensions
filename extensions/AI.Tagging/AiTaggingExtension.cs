@@ -48,7 +48,7 @@ public sealed class AiTaggingExtension : FullExtensionBase, IPermissionContribut
             .AddSettingsTab(
                 "extensions/ai/tagging",
                 "AI Tagging",
-                order: 50,
+                order: 110,
                 icon: "tags",
                 parentTabKey: "extensions/ai",
                 description: "AI tagging extension settings.",
