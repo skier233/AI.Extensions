@@ -60,6 +60,12 @@ public sealed class AiVisualExtension : FullExtensionBase
         services.AddSingleton<IAiCapabilityContributor, AiVisualContributor>();
     }
 
+    public override Task InitializeAsync(IServiceProvider services, CancellationToken ct = default)
+    {
+        PublishContributions<IAiCapabilityContributor>(services);
+        return Task.CompletedTask;
+    }
+
     public override void MapEndpoints(IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/api/ext/ai-visual").WithTags("AI.Visual");

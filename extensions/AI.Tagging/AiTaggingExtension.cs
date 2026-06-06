@@ -73,6 +73,12 @@ public sealed class AiTaggingExtension : FullExtensionBase, IPermissionContribut
         services.AddSingleton<IAiCapabilityContributor, AiTaggingContributor>();
     }
 
+    public override Task InitializeAsync(IServiceProvider services, CancellationToken ct = default)
+    {
+        PublishContributions<IAiCapabilityContributor>(services);
+        return Task.CompletedTask;
+    }
+
     public override void MapEndpoints(IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/api/ext/ai-tagging").WithTags("AI.Tagging");

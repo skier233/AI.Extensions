@@ -4,6 +4,13 @@ namespace AI.Extensions.Abstractions;
 
 public static class AiAnalyzeResultParser
 {
+    private static readonly int[] AudioClassWhitelistIndices = [8, 9, 14, 22, 24, 25, 38, 39, 44, 45, 46];
+    private static readonly int[] AudioClassSpeechIndices = [0, 1, 2, 3, 4, 5, 15];
+    private static readonly int[] AudioClassMusicIndices = [27, 28, 32, 33, 34, 137, 138, 140, 141, 142, 143, 144, 145, 146, 153, 154, 162, 163, 164, 165, 166, 167, 168, 184, 266, 270];
+    private static readonly int[] AudioClassMoanIndices = [25, 38, 39, 22, 24, 44, 45, 46, 14, 8, 9];
+    private static readonly int[] AudioClassBreathIndices = [41, 26, 43];
+    private const double AudioClassThreshold = 0.01;
+
     public static AiAnalyzeResult Parse(string mediaKind, JsonElement payload)
     {
         var content = GetPrimaryPayload(payload);
@@ -146,6 +153,10 @@ public static class AiAnalyzeResultParser
             var analysis = slice.TryGetProperty("analysis", out var analysisElement)
                 ? ParseAnalysisNode(analysisElement)
                 : new AiAnalysisNode();
+            if (sliceKind == "window")
+            {
+                analysis = AddAudioWindowClassification(slice, analysis);
+            }
             parsed.Add(new AiTemporalSlice(
                 sliceKind,
                 GetInt(slice, "index"),
@@ -277,27 +288,38 @@ public static class AiAnalyzeResultParser
 
                         var label = enumerator.Current.ValueKind == JsonValueKind.String
                             ? enumerator.Current.GetString() ?? string.Empty
-                            : enumerator.Current.ToString();
+                            : ExtractLabel(enumerator.Current);
                         double? confidence = null;
                         if (enumerator.MoveNext() && TryReadDouble(enumerator.Current, out var score))
                         {
                             confidence = score;
                         }
 
-                        predictions.Add(factory(modelProperty.Name, label, confidence));
+                        if (!string.IsNullOrWhiteSpace(label))
+                        {
+                            predictions.Add(factory(modelProperty.Name, label, confidence));
+                        }
                         break;
                     }
 
                     case JsonValueKind.Object:
                     {
-                        var label = GetString(item, "tag")
+                        var label = TryExtractAudioClassLabel(modelProperty.Name, item)
+                            ?? GetString(item, "tag")
                             ?? GetString(item, "label")
                             ?? GetString(item, "name")
-                            ?? item.ToString();
+                            ?? GetString(item, "class")
+                            ?? GetString(item, "class_name")
+                            ?? GetString(item, "top_class")
+                            ?? GetString(item, "top_label")
+                            ?? ExtractLabel(item);
                         var confidence = GetDouble(item, "confidence")
                             ?? GetDouble(item, "score")
                             ?? GetDouble(item, "probability");
-                        predictions.Add(factory(modelProperty.Name, label, confidence));
+                        if (!string.IsNullOrWhiteSpace(label))
+                        {
+                            predictions.Add(factory(modelProperty.Name, label, confidence));
+                        }
                         break;
                     }
                 }
@@ -305,6 +327,78 @@ public static class AiAnalyzeResultParser
         }
 
         return predictions;
+    }
+
+    private static string? TryExtractAudioClassLabel(string modelKey, JsonElement item)
+    {
+        if (!string.Equals(modelKey, "audio_classification_audioclass", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(GetString(item, "classifier"), "audioclass", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var probabilities = GetFloatArray(item, "probabilities");
+        if (probabilities.Count == 0)
+        {
+            return null;
+        }
+
+        var musicScore = MaxAudioClassScore(probabilities, AudioClassMusicIndices);
+        var whitelistScore = MaxAudioClassScore(probabilities, AudioClassWhitelistIndices);
+        var speechScore = MaxAudioClassScore(probabilities, AudioClassSpeechIndices);
+
+        if (musicScore > 0.05 && musicScore > Math.Max(whitelistScore, speechScore))
+        {
+            return null;
+        }
+
+        if (Math.Max(whitelistScore, speechScore) < AudioClassThreshold)
+        {
+            return null;
+        }
+
+        var moanScore = MaxAudioClassScore(probabilities, AudioClassMoanIndices);
+        var breathScore = MaxAudioClassScore(probabilities, AudioClassBreathIndices);
+        return moanScore >= speechScore && moanScore >= breathScore
+            ? "moan"
+            : breathScore >= speechScore
+                ? "breath"
+                : "speech";
+    }
+
+    private static double MaxAudioClassScore(IReadOnlyList<float> probabilities, IReadOnlyList<int> indices)
+    {
+        var max = 0d;
+        foreach (var index in indices)
+        {
+            if (index < probabilities.Count && probabilities[index] > max)
+            {
+                max = probabilities[index];
+            }
+        }
+
+        return max;
+    }
+
+    private static AiAnalysisNode AddAudioWindowClassification(JsonElement slice, AiAnalysisNode analysis)
+    {
+        var dominantType = GetString(slice, "dominant_type");
+        if (string.IsNullOrWhiteSpace(dominantType) || string.Equals(dominantType, "unknown", StringComparison.OrdinalIgnoreCase))
+        {
+            return analysis;
+        }
+
+        return new AiAnalysisNode
+        {
+            Tags = analysis.Tags,
+            Classifications = analysis.Classifications
+                .Concat([new AiClassificationPrediction("audio.summary", dominantType, null)])
+                .ToArray(),
+            Detections = analysis.Detections,
+            Embeddings = analysis.Embeddings,
+            RegionBranches = analysis.RegionBranches,
+            Other = analysis.Other,
+        };
     }
 
     private static IReadOnlyList<AiDetectionObservation> ParseDetections(JsonElement block)
@@ -527,6 +621,144 @@ public static class AiAnalyzeResultParser
         }
 
         return values;
+    }
+
+    private static string ExtractLabel(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return element.ToString();
+        }
+
+        // Try to find a top-class / top-label field first
+        if (element.TryGetProperty("top_class", out var topClass) && topClass.ValueKind == JsonValueKind.String)
+        {
+            return topClass.GetString() ?? string.Empty;
+        }
+        if (element.TryGetProperty("top_label", out var topLabel) && topLabel.ValueKind == JsonValueKind.String)
+        {
+            return topLabel.GetString() ?? string.Empty;
+        }
+
+        if (element.TryGetProperty("top5", out var top5))
+        {
+            var top5Label = ExtractTop5Label(top5);
+            if (!string.IsNullOrWhiteSpace(top5Label))
+                return top5Label;
+        }
+
+        // Try to find a probability / score distribution object and extract the top label
+        if (element.TryGetProperty("probabilities", out var probabilities) && probabilities.ValueKind == JsonValueKind.Object)
+        {
+            var extractedTop = ExtractTopLabelFromScores(probabilities);
+            if (!string.IsNullOrWhiteSpace(extractedTop))
+                return extractedTop;
+        }
+        if (element.TryGetProperty("scores", out var scores) && scores.ValueKind == JsonValueKind.Object)
+        {
+            var extractedTop = ExtractTopLabelFromScores(scores);
+            if (!string.IsNullOrWhiteSpace(extractedTop))
+                return extractedTop;
+        }
+
+        // Generic fallback: if any nested object looks like a score map, use its top label.
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.Value.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var nestedTop = ExtractTopLabelFromScores(property.Value);
+            if (!string.IsNullOrWhiteSpace(nestedTop))
+            {
+                return nestedTop;
+            }
+        }
+
+        // Look for any direct string property that is a label, not model metadata.
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.Value.ValueKind == JsonValueKind.String &&
+                !string.Equals(property.Name, "classifier", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(property.Name, "model", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(property.Name, "modelKey", StringComparison.OrdinalIgnoreCase))
+            {
+                return property.Value.GetString() ?? string.Empty;
+            }
+        }
+
+        // Look for a direct numeric property (property name is the label)
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.Value.ValueKind == JsonValueKind.Number &&
+                !string.Equals(property.Name, "num_classes", StringComparison.OrdinalIgnoreCase))
+            {
+                return property.Name;
+            }
+        }
+
+        // Last resort: return the first property name only when it does not look like raw model metadata.
+        var fallbackName = element.EnumerateObject().FirstOrDefault().Name ?? string.Empty;
+        return IsRawModelMetadataKey(fallbackName) ? string.Empty : fallbackName;
+    }
+
+    private static bool IsRawModelMetadataKey(string key)
+        => string.Equals(key, "probabilities", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(key, "scores", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(key, "top5", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(key, "num_classes", StringComparison.OrdinalIgnoreCase)
+           || string.Equals(key, "classifier", StringComparison.OrdinalIgnoreCase);
+
+    private static string ExtractTopLabelFromScores(JsonElement scores)
+    {
+        string topLabel = string.Empty;
+        double topScore = double.MinValue;
+        var sawNumeric = false;
+
+        foreach (var property in scores.EnumerateObject())
+        {
+            if (TryReadDouble(property.Value, out var score) && score > topScore)
+            {
+                sawNumeric = true;
+                topScore = score;
+                topLabel = property.Name;
+            }
+        }
+
+        return sawNumeric ? topLabel : string.Empty;
+    }
+
+    private static string ExtractTop5Label(JsonElement top5)
+    {
+        if (top5.ValueKind != JsonValueKind.Array)
+        {
+            return string.Empty;
+        }
+
+        using var enumerator = top5.EnumerateArray();
+        if (!enumerator.MoveNext())
+        {
+            return string.Empty;
+        }
+
+        var first = enumerator.Current;
+        if (first.ValueKind == JsonValueKind.Array)
+        {
+            using var pair = first.EnumerateArray();
+            if (!pair.MoveNext())
+            {
+                return string.Empty;
+            }
+
+            return pair.Current.ValueKind == JsonValueKind.String
+                ? pair.Current.GetString() ?? string.Empty
+                : string.Empty;
+        }
+
+        return first.ValueKind == JsonValueKind.String
+            ? first.GetString() ?? string.Empty
+            : first.ToString();
     }
 
     private static bool TryReadDouble(JsonElement element, out double value)

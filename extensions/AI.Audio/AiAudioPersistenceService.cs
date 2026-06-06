@@ -138,6 +138,7 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
         }
 
         await embeddingRepo.SaveChangesAsync(ct);
+        EvictVideoSegmentSpans(scope.ServiceProvider, videoId);
 
         var notes = new List<string>();
         if (insertedEmbeddings > 0)
@@ -207,4 +208,17 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
 
     private static string? Clean(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static void EvictVideoSegmentSpans(IServiceProvider services, int videoId)
+    {
+        var resolverType = Type.GetType("Cove.Data.Services.SegmentSpanResolver, Cove.Data", throwOnError: false);
+        if (resolverType is null)
+        {
+            return;
+        }
+
+        var resolver = services.GetService(resolverType);
+        var evictVideo = resolverType.GetMethod("EvictVideo", [typeof(int)]);
+        evictVideo?.Invoke(resolver, [videoId]);
+    }
 }

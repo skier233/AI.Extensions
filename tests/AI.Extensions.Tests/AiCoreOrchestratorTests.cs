@@ -3,6 +3,8 @@ using System.Text.Json;
 using AI.Core;
 using AI.Extensions.Abstractions;
 
+using Cove.Plugins;
+
 using Cove.Core.Entities;
 using Cove.Data;
 
@@ -676,10 +678,18 @@ public sealed class AiCoreOrchestratorTests
         Assert.Equal(1, await db.TagApplications.CountAsync(application => application.SourceRunId == first.RunId && application.ModelKey == "Body"));
     }
 
+    private static IExtensionServiceExchange CreateExchange(IReadOnlyList<IAiCapabilityContributor> contributors)
+    {
+        var exchange = new ExtensionServiceExchange();
+        foreach (var contributor in contributors)
+            exchange.Publish<IAiCapabilityContributor>(contributor.Describe().ExtensionId, contributor);
+        return exchange;
+    }
+
     private static AiCoreOrchestrator CreateOrchestrator(INsfwAiServerClient client, params IAiCapabilityContributor[] contributors)
         => new(
             client,
-            contributors,
+            CreateExchange(contributors),
             NoOpAiRunJournal.Instance,
             NoOpAiRunPlanner.Instance,
             NoOpAiArtifactReplaceService.Instance,
@@ -688,7 +698,7 @@ public sealed class AiCoreOrchestratorTests
     private static AiCoreOrchestrator CreatePlannerOrchestrator(IServiceProvider services, INsfwAiServerClient client, params IAiCapabilityContributor[] contributors)
         => new(
             client,
-            contributors,
+            CreateExchange(contributors),
             services.GetRequiredService<IAiRunJournal>(),
             services.GetRequiredService<IAiRunPlanner>(),
             services.GetRequiredService<IAiArtifactReplaceService>(),

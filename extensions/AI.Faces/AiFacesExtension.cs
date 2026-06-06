@@ -75,6 +75,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
 
     public override Task InitializeAsync(IServiceProvider services, CancellationToken ct = default)
     {
+        PublishContributions<IAiCapabilityContributor>(services);
         services.GetRequiredService<StoreBackedFaceIdentityStateStore>().Attach(Store);
         services.GetRequiredService<StoreBackedAiFacesSettingsStore>().Attach(Store);
         AiFacesSettingsRuntime.Attach(services.GetRequiredService<IAiFacesSettingsStore>());

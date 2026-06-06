@@ -93,13 +93,10 @@ internal sealed class AiAudioPreparationService
 
     private static void PrepareClassificationSegments(AiPreparedArtifactBatch batch, AiDispatchRequest request)
     {
-        var activeRuns = new Dictionary<AudioRunKey, ActiveAudioRun>();
-
         foreach (var window in request.Result.Windows.OrderBy(static window => window.StartSeconds ?? double.MinValue).ThenBy(static window => window.Index ?? int.MinValue))
         {
             var windowStart = window.StartSeconds ?? ((window.Index ?? 0) * DefaultWindowSpanSeconds);
             var windowEnd = window.EndSeconds ?? (windowStart + DefaultWindowSpanSeconds);
-            var visible = new HashSet<AudioRunKey>();
 
             foreach (var prediction in window.Analysis.Classifications)
             {
@@ -108,53 +105,27 @@ internal sealed class AiAudioPreparationService
                     continue;
                 }
 
-                var key = new AudioRunKey(prediction.ModelKey, prediction.Label);
-                visible.Add(key);
-
-                if (!activeRuns.TryGetValue(key, out var activeRun))
-                {
-                    activeRuns[key] = new ActiveAudioRun(windowStart, windowEnd, prediction.Confidence, 1);
-                    continue;
-                }
-
-                activeRuns[key] = activeRun with
-                {
-                    EndSeconds = windowEnd,
-                    PeakConfidence = MaxConfidence(activeRun.PeakConfidence, prediction.Confidence),
-                    ObservationCount = activeRun.ObservationCount + 1,
-                };
+                AddSegment(batch, request, prediction.ModelKey, prediction.Label, windowStart, windowEnd, prediction.Confidence);
             }
-
-            var keysToClose = activeRuns.Keys.Where(key => !visible.Contains(key)).ToArray();
-            foreach (var key in keysToClose)
-            {
-                AddSegment(batch, request, key, activeRuns[key]);
-                activeRuns.Remove(key);
-            }
-        }
-
-        foreach (var (key, run) in activeRuns)
-        {
-            AddSegment(batch, request, key, run);
         }
     }
 
-    private static void AddSegment(AiPreparedArtifactBatch batch, AiDispatchRequest request, AudioRunKey key, ActiveAudioRun run)
+    private static void AddSegment(AiPreparedArtifactBatch batch, AiDispatchRequest request, string modelKey, string label, double startSeconds, double endSeconds, double? confidence)
     {
         batch.Segments.Add(new AiPreparedSegment(
             request.Context.AssetId,
             SourceKey,
             Kind: "audio-classification",
-            StartSeconds: run.StartSeconds,
-            EndSeconds: run.EndSeconds,
-            TagName: key.Label,
-            Title: key.Label,
-            Confidence: run.PeakConfidence,
+            StartSeconds: startSeconds,
+            EndSeconds: endSeconds,
+            TagName: label,
+            Title: label,
+            Confidence: confidence,
             Metadata: new Dictionary<string, string>
             {
-                ["modelKey"] = key.ModelKey,
+                ["modelKey"] = modelKey,
                 ["runId"] = request.Context.RunId,
-                ["observationCount"] = run.ObservationCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["observationCount"] = "1",
             }));
     }
 
@@ -189,22 +160,4 @@ internal sealed class AiAudioPreparationService
         return (averaged, norm);
     }
 
-    private static double? MaxConfidence(double? left, double? right)
-    {
-        if (left is null)
-        {
-            return right;
-        }
-
-        if (right is null)
-        {
-            return left;
-        }
-
-        return Math.Max(left.Value, right.Value);
-    }
-
-    private readonly record struct AudioRunKey(string ModelKey, string Label);
-
-    private readonly record struct ActiveAudioRun(double StartSeconds, double EndSeconds, double? PeakConfidence, int ObservationCount);
 }

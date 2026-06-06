@@ -56,6 +56,12 @@ public sealed class AiAudioExtension : FullExtensionBase
         services.AddSingleton<IAiCapabilityContributor, AiAudioContributor>();
     }
 
+    public override Task InitializeAsync(IServiceProvider services, CancellationToken ct = default)
+    {
+        PublishContributions<IAiCapabilityContributor>(services);
+        return Task.CompletedTask;
+    }
+
     public override void MapEndpoints(IEndpointRouteBuilder endpoints)
     {
         var group = endpoints.MapGroup("/api/ext/ai-audio").WithTags("AI.Audio");

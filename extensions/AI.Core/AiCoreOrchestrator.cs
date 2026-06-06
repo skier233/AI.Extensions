@@ -2,6 +2,8 @@ using System.Text.Json;
 
 using AI.Extensions.Abstractions;
 
+using Cove.Plugins;
+
 using Microsoft.Extensions.Logging;
 
 namespace AI.Core;
@@ -19,7 +21,7 @@ public interface IAiCoreOrchestrator
 
 public sealed class AiCoreOrchestrator(
     INsfwAiServerClient aiServerClient,
-    IEnumerable<IAiCapabilityContributor> contributors,
+    IExtensionServiceExchange exchange,
     IAiRunJournal aiRunJournal,
     IAiRunPlanner aiRunPlanner,
     IAiArtifactReplaceService aiArtifactReplaceService,
@@ -30,13 +32,20 @@ public sealed class AiCoreOrchestrator(
     private readonly IAiRunPlanner _aiRunPlanner = aiRunPlanner;
     private readonly IAiArtifactReplaceService _aiArtifactReplaceService = aiArtifactReplaceService;
     private readonly ILogger<AiCoreOrchestrator> _logger = logger;
-    private readonly IReadOnlyList<ResolvedContributor> _contributors = contributors
-        .Select(static contributor => new ResolvedContributor(contributor, contributor.Describe()))
-        .OrderBy(static item => item.Descriptor.ExtensionId, StringComparer.OrdinalIgnoreCase)
-        .ToArray();
+    private readonly IExtensionServiceExchange _exchange = exchange;
+
+    // Capability contributors are resolved LIVE from the cross-extension exchange on each use, because
+    // feature extensions (AI Tagging, Faces, Visual, Audio) live in their own isolated containers and
+    // can be installed or removed at runtime. They publish their IAiCapabilityContributor to the
+    // exchange on initialize; the host withdraws it on disable/uninstall.
+    private IReadOnlyList<ResolvedContributor> ResolveContributors()
+        => _exchange.GetAll<IAiCapabilityContributor>()
+            .Select(static contributor => new ResolvedContributor(contributor, contributor.Describe()))
+            .OrderBy(static item => item.Descriptor.ExtensionId, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
     public IReadOnlyList<AiCapabilityDescriptor> GetCapabilities()
-        => _contributors.Select(static item => item.Descriptor).ToArray();
+        => ResolveContributors().Select(static item => item.Descriptor).ToArray();
 
     public async Task<AiRunResponse> RunImagesAsync(AiCoreConnectionSettings settings, AiRunImagesRequest request, CancellationToken ct = default)
     {
@@ -350,7 +359,8 @@ public sealed class AiCoreOrchestrator(
 
     private IReadOnlyList<ResolvedClaim> SelectClaims(string mediaKind, IReadOnlyList<string>? requestedClaimIds, IReadOnlyList<string>? requestedCapabilityIds)
     {
-        var contributorClaims = _contributors
+        var contributors = ResolveContributors();
+        var contributorClaims = contributors
             .SelectMany(static contributor => contributor.Descriptor.Claims.Select(claim => new ResolvedClaim(contributor.Contributor, contributor.Descriptor, claim)))
             .ToArray();
         var allClaims = contributorClaims
@@ -389,7 +399,7 @@ public sealed class AiCoreOrchestrator(
         if (requestedFeatures.Count > 0)
         {
             var knownFeatures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var contributor in _contributors)
+            foreach (var contributor in contributors)
             {
                 foreach (var feature in contributor.Descriptor.Capabilities)
                 {
