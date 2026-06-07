@@ -35,7 +35,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
 
     public override string Url => "https://github.com/yourcove/AI.Extensions";
 
-    public override string MinCoveVersion => "0.0.32";
+    public override string MinCoveVersion => "0.0.35";
 
     public override IReadOnlyList<string> Categories =>
     [

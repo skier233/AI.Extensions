@@ -43,7 +43,7 @@
       ]
     }
   ],
-  "minCoveVersion": "0.0.32",
+  "minCoveVersion": "0.0.35",
   "entryDll": "AI.Tagging.dll",
   "sharedAssemblies": [
     "AI.Extensions.Abstractions"
