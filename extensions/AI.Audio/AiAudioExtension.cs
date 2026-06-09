@@ -17,7 +17,7 @@ public sealed class AiAudioExtension : FullExtensionBase
 
     public override string Name => "AI Audio";
 
-    public override string Version => "0.0.1";
+    public override string Version => "0.0.2";
 
     public override string Description => "Contributes audio embedding and classification claims for AI workflows.";
 
@@ -37,7 +37,7 @@ public sealed class AiAudioExtension : FullExtensionBase
 
     public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
     {
-        ["cove.community.ai.core"] = ">=0.0.1",
+        ["cove.community.ai.core"] = ">=0.0.2",
     };
 
     public override UIManifest GetUIManifest()

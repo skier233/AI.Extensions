@@ -1,7 +1,7 @@
 {
   "id": "cove.community.ai.core",
   "name": "AI Core",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "AI orchestration, model management, and nsfw_ai_server connectivity for Cove.",
   "author": "Cove Team",
   "url": "https://github.com/yourcove/AI.Extensions",

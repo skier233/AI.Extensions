@@ -9,7 +9,7 @@ public sealed class AiFullExtension : CoveExtensionBase
 
     public override string Name => "AI Full";
 
-    public override string Version => "0.0.1";
+    public override string Version => "0.0.2";
 
     public override string Description => "Dependency bundle for the full Cove AI extension family.";
 
@@ -29,10 +29,10 @@ public sealed class AiFullExtension : CoveExtensionBase
 
     public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
     {
-        ["cove.community.ai.core"] = ">=0.0.1",
-        ["cove.community.ai.tagging"] = ">=0.0.1",
-        ["cove.community.ai.faces"] = ">=0.0.1",
-        ["cove.community.ai.visual"] = ">=0.0.1",
-        ["cove.community.ai.audio"] = ">=0.0.1",
+        ["cove.community.ai.core"] = ">=0.0.2",
+        ["cove.community.ai.tagging"] = ">=0.0.2",
+        ["cove.community.ai.faces"] = ">=0.0.2",
+        ["cove.community.ai.visual"] = ">=0.0.2",
+        ["cove.community.ai.audio"] = ">=0.0.2",
     };
 }
