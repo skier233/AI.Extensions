@@ -161,7 +161,7 @@ function parseFaceSetting(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function SettingField({ label, hint, value, step, onInput }) {
+function SettingField({ label, hint, value, step, onInput, onCommit }) {
   return h("label", { className: "space-y-2 rounded-xl border border-border bg-card p-4" }, [
     h("div", { key: "label", className: "text-sm font-medium text-foreground" }, label),
     h("p", { key: "hint", className: "text-sm text-secondary" }, hint),
@@ -174,29 +174,31 @@ function SettingField({ label, hint, value, step, onInput }) {
       value,
       inputMode: "decimal",
       onInput,
+      // Settings pages auto-save: commit when the field loses focus.
+      onBlur: onCommit,
       className: "w-full rounded-xl border border-border bg-input px-3 py-2 text-sm text-foreground outline-none transition focus:border-accent",
     }),
   ]);
 }
 
 function AiFacesSettingsPanel() {
-  const [status, setStatus] = useState(null);
+  const [packs, setPacks] = useState([]);
   const [statusLoaded, setStatusLoaded] = useState(false);
   const [statusError, setStatusError] = useState("");
   const [settings, setSettings] = useState(() => toFaceSettingsDraft());
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settingsError, setSettingsError] = useState("");
-  const [savingSettings, setSavingSettings] = useState(false);
+  const [settingsSaveState, setSettingsSaveState] = useState("idle");
   const [notice, setNotice] = useState("");
   const [job, setJob] = useState(null);
   const [uploading, setUploading] = useState(false);
-  const [clearing, setClearing] = useState(false);
+  const [clearingPackId, setClearingPackId] = useState(null);
 
   async function loadStatus() {
     setStatusError("");
     try {
-      const nextStatus = await api("/reference/status");
-      setStatus(nextStatus);
+      const nextPacks = await api("/reference/packs");
+      setPacks(Array.isArray(nextPacks) ? nextPacks : []);
     } catch (error) {
       setStatusError(error instanceof Error ? error.message : "Failed to load AI.Faces reference pack status.");
     } finally {
@@ -281,25 +283,25 @@ function AiFacesSettingsPanel() {
     }
   }
 
-  async function handleClear() {
-    if (!window.confirm("Remove the imported AI.Faces reference pack and clear its cached suggestion source?")) {
+  async function handleRemovePack(pack) {
+    const label = pack && pack.packId ? pack.packId : "this";
+    if (!window.confirm(`Remove the "${label}" reference pack and clear its cached suggestion source?`)) {
       return;
     }
 
-    setClearing(true);
+    setClearingPackId(pack.packId);
     setStatusError("");
     setNotice("");
 
     try {
-      await api("/reference", { method: "DELETE" });
+      await api(`/reference?packId=${encodeURIComponent(pack.packId)}`, { method: "DELETE" });
       setJob(null);
-      setStatus(null);
-      setNotice("Reference pack cleared.");
+      setNotice(`Reference pack "${label}" removed.`);
       await loadStatus();
     } catch (error) {
-      setStatusError(error instanceof Error ? error.message : "Failed to clear the imported reference pack.");
+      setStatusError(error instanceof Error ? error.message : "Failed to remove the reference pack.");
     } finally {
-      setClearing(false);
+      setClearingPackId(null);
     }
   }
 
@@ -310,10 +312,15 @@ function AiFacesSettingsPanel() {
     }));
   }
 
-  async function handleSaveSettings() {
-    setSavingSettings(true);
+  // Settings pages auto-save. Each field commits on blur; we PUT the full settings object built from
+  // the latest draft (numbers fall back to defaults when a field is left blank/invalid).
+  async function commitSettings() {
+    if (!settingsLoaded) {
+      return;
+    }
+
+    setSettingsSaveState("saving");
     setSettingsError("");
-    setNotice("");
 
     const payload = {
       minimumPoseQuality: parseFaceSetting(settings.minimumPoseQuality, DEFAULT_FACE_SETTINGS.minimumPoseQuality),
@@ -328,33 +335,36 @@ function AiFacesSettingsPanel() {
         body: JSON.stringify(payload),
       });
       setSettings(toFaceSettingsDraft(savedSettings || payload));
-      setNotice("AI.Faces clustering settings saved.");
+      setSettingsSaveState("saved");
     } catch (error) {
+      setSettingsSaveState("error");
       setSettingsError(error instanceof Error ? error.message : "Failed to save AI.Faces clustering settings.");
-    } finally {
-      setSavingSettings(false);
     }
   }
 
   const packSection = !statusLoaded
     ? h("div", { className: "rounded-xl border border-border bg-card p-4 text-sm text-secondary" }, "Loading reference pack status...")
-    : status
-      ? h("div", { className: "space-y-4" }, [
-          h("div", { key: "cards", className: "grid gap-3 md:grid-cols-2" }, [
-            metricCard("Pack", status.packId, `${(status.performerCount || 0).toLocaleString()} identities - ${status.embeddingDim} dims`),
-            metricCard("Source", status.sourceEndpoint || "Unknown source", `Imported ${formatDate(status.importedAt)}`),
-          ]),
-          h("div", { key: "actions", className: "flex flex-wrap gap-2" }, [
-            h(ActionButton, {
-              key: "clear",
-              label: "Clear imported reference pack",
-              busyLabel: "Clearing...",
-              pending: clearing,
-              onClick: handleClear,
-            }),
-          ]),
-        ])
-      : h("div", { className: "rounded-xl border border-dashed border-border px-4 py-6 text-sm text-secondary" }, "No .saie reference pack is currently imported.");
+    : packs.length > 0
+      ? h("div", { className: "space-y-3" },
+          packs.map((pack) => h("div", {
+            key: pack.packId,
+            className: "space-y-3 rounded-2xl border border-border bg-card p-4",
+          }, [
+            h("div", { key: "cards", className: "grid gap-3 md:grid-cols-2" }, [
+              metricCard("Pack", pack.packId, `${(pack.performerCount || 0).toLocaleString()} identities - ${pack.embeddingDim} dims`),
+              metricCard("Source", pack.sourceEndpoint || "Unknown source", `Imported ${formatDate(pack.importedAt)}`),
+            ]),
+            h("div", { key: "actions", className: "flex flex-wrap justify-end gap-2" }, [
+              h(ActionButton, {
+                key: "remove",
+                label: "Remove pack",
+                busyLabel: "Removing...",
+                pending: clearingPackId === pack.packId,
+                onClick: () => handleRemovePack(pack),
+              }),
+            ]),
+          ])))
+      : h("div", { className: "rounded-xl border border-dashed border-border px-4 py-6 text-sm text-secondary" }, "No .saie reference packs are currently imported. Upload packs from one or more sites to match faces against them.");
 
   const jobSection = job
     ? h("div", { className: "rounded-xl border border-border bg-card p-4 text-sm text-secondary" }, [
@@ -370,16 +380,12 @@ function AiFacesSettingsPanel() {
         h("div", { key: "intro", className: "flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between" }, [
           h("div", { key: "copy" }, [
             h("div", { key: "title", className: "text-sm font-semibold uppercase tracking-wide text-muted" }, "Face Clustering"),
-            h("p", { key: "body", className: "mt-1 text-sm text-secondary" }, "Tune how aggressively AI.Faces reuses an existing face cluster versus creating a new provisional face. Frontal, sharper samples also drive cover and centroid selection."),
+            h("p", { key: "body", className: "mt-1 text-sm text-secondary" }, "Tune how aggressively AI.Faces reuses an existing face cluster versus creating a new provisional face. Frontal, sharper samples also drive cover and centroid selection. Changes save automatically."),
           ]),
-          h(ActionButton, {
-            key: "save",
-            label: "Save clustering settings",
-            busyLabel: "Saving...",
-            pending: savingSettings,
-            onClick: handleSaveSettings,
-            tone: "accent",
-          }),
+          h("div", {
+            key: "savestate",
+            className: "text-xs font-medium text-muted",
+          }, settingsSaveState === "saving" ? "Saving..." : settingsSaveState === "saved" ? "Saved" : settingsSaveState === "error" ? "Save failed" : ""),
         ]),
         settingsError ? h(Notice, { key: "error", tone: "error" }, settingsError) : null,
         h("div", { key: "grid", className: "grid gap-3 md:grid-cols-2" },
@@ -390,6 +396,7 @@ function AiFacesSettingsPanel() {
             value: settings[field.key],
             step: field.step,
             onInput: (event) => handleSettingInput(field.key, event.target.value),
+            onCommit: commitSettings,
           }))),
       ]);
 

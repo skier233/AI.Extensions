@@ -915,6 +915,34 @@ function copySettings(settings) {
   };
 }
 
+function hasCompletePathMapping(mapping) {
+  return mapping
+    && String(mapping.fromPrefix || "").trim().length > 0
+    && String(mapping.toPrefix || "").trim().length > 0;
+}
+
+function prepareSettingsForSave(settings) {
+  return {
+    ...settings,
+    pathMappings: (settings.pathMappings || []).filter(hasCompletePathMapping),
+  };
+}
+
+function mergeSavedSettings(localSettings, savedSettings) {
+  const draftMappings = (localSettings.pathMappings || []).filter((mapping) => !hasCompletePathMapping(mapping));
+  if (draftMappings.length === 0) {
+    return savedSettings;
+  }
+
+  return {
+    ...savedSettings,
+    pathMappings: [
+      ...(savedSettings.pathMappings || []),
+      ...draftMappings,
+    ],
+  };
+}
+
 function getRunDialogStorageKey(selection) {
   const entityType = selection?.entityType || "paths";
   return `${RUN_DIALOG_STORAGE_PREFIX}:${entityType}`;
@@ -1026,6 +1054,7 @@ function formatSelectionDescription(selection) {
 
   function useAutosaveSettings(settings, enabled, onStart, onSaved, onError) {
     const serialized = JSON.stringify(settings);
+    const saveSerialized = JSON.stringify(prepareSettingsForSave(settings));
     const initializedRef = useRef(false);
     const lastSavedRef = useRef("");
 
@@ -1048,7 +1077,7 @@ function formatSelectionDescription(selection) {
         try {
           const saved = copySettings(await api("/settings", {
             method: "PUT",
-            body: serialized,
+            body: saveSerialized,
           }));
           lastSavedRef.current = JSON.stringify(saved);
           if (!cancelled) {
@@ -1065,24 +1094,48 @@ function formatSelectionDescription(selection) {
         cancelled = true;
         window.clearTimeout(handle);
       };
-    }, [serialized, enabled]);
+    }, [serialized, saveSerialized, enabled]);
   }
 
 function SettingsEditor({ settings, health, catalog, capabilities = [], busy, message, pipelineBusy = "", onChange, onSyncPipeline = null, onDeletePipeline = null }) {
-  const mappings = settings.pathMappings || [];
+  const [pathMappingDrafts, setPathMappingDrafts] = useState(settings.pathMappings || []);
+  const [editingPathMappings, setEditingPathMappings] = useState(false);
+  const settingsPathMappingsSerialized = JSON.stringify(settings.pathMappings || []);
+  const lastSettingsPathMappingsRef = useRef(settingsPathMappingsSerialized);
+  const mappings = pathMappingDrafts;
   const modelBindingRows = getModelBindingRows(capabilities, catalog, settings);
   const customPipelines = settings.customPipelines || [];
+
+  useEffect(() => {
+    if (settingsPathMappingsSerialized === lastSettingsPathMappingsRef.current) {
+      return;
+    }
+
+    lastSettingsPathMappingsRef.current = settingsPathMappingsSerialized;
+    if (!editingPathMappings) {
+      setPathMappingDrafts(settings.pathMappings || []);
+    }
+  }, [settingsPathMappingsSerialized, editingPathMappings]);
 
   function patch(next) {
     onChange({ ...settings, ...next });
   }
 
-  function patchMapping(index, field, value) {
+  function commitPathMappings(nextMappings = mappings) {
     patch({
-      pathMappings: mappings.map((mapping, mappingIndex) => (
-        mappingIndex === index ? { ...mapping, [field]: value } : mapping
-      )),
+      pathMappings: nextMappings
+        .filter(hasCompletePathMapping)
+        .map((mapping) => ({
+          fromPrefix: mapping.fromPrefix,
+          toPrefix: mapping.toPrefix,
+        })),
     });
+  }
+
+  function patchMapping(index, field, value) {
+    setPathMappingDrafts(mappings.map((mapping, mappingIndex) => (
+        mappingIndex === index ? { ...mapping, [field]: value } : mapping
+      )));
   }
 
   function patchTaggingPreference(scope, category, model) {
@@ -1201,18 +1254,25 @@ function SettingsEditor({ settings, health, catalog, capabilities = [], busy, me
         h("button", {
           className: "ai-core-button ai-core-button-secondary",
           type: "button",
-          onClick: () => patch({ pathMappings: [...mappings, { fromPrefix: "", toPrefix: "" }] }),
+          onClick: () => setPathMappingDrafts([...mappings, { fromPrefix: "", toPrefix: "" }]),
         }, "Add mapping"),
       ]),
       mappings.length === 0
         ? h("p", { className: "ai-core-empty" }, "No path mappings configured.")
-        : h("div", { className: "ai-core-stack" }, mappings.map((mapping, index) => h("div", { className: "ai-core-grid ai-core-grid-compact ai-core-mapping-row", key: `${mapping.fromPrefix}:${mapping.toPrefix}:${index}` }, [
+        : h("div", { className: "ai-core-stack" }, mappings.map((mapping, index) => h("div", { className: "ai-core-grid ai-core-grid-compact ai-core-mapping-row", key: `path-mapping-${index}` }, [
             h("label", { className: "ai-core-field", key: `from-${index}` }, [
               h("span", { className: "ai-core-label" }, "From prefix"),
               h("input", {
                 className: "ai-core-input ai-core-code",
                 type: "text",
                 value: mapping.fromPrefix,
+                onFocus: () => setEditingPathMappings(true),
+                onBlur: () => {
+                  setEditingPathMappings(false);
+                  if (hasCompletePathMapping(mappings[index])) {
+                    commitPathMappings();
+                  }
+                },
                 onChange: (event) => patchMapping(index, "fromPrefix", event.target.value),
                 placeholder: "C:/Library",
               }),
@@ -1223,6 +1283,13 @@ function SettingsEditor({ settings, health, catalog, capabilities = [], busy, me
                 className: "ai-core-input ai-core-code",
                 type: "text",
                 value: mapping.toPrefix,
+                onFocus: () => setEditingPathMappings(true),
+                onBlur: () => {
+                  setEditingPathMappings(false);
+                  if (hasCompletePathMapping(mappings[index])) {
+                    commitPathMappings();
+                  }
+                },
                 onChange: (event) => patchMapping(index, "toPrefix", event.target.value),
                 placeholder: "/mnt/library",
               }),
@@ -1232,7 +1299,11 @@ function SettingsEditor({ settings, health, catalog, capabilities = [], busy, me
               h("button", {
                 className: "ai-core-button ai-core-button-secondary",
                 type: "button",
-                onClick: () => patch({ pathMappings: mappings.filter((_, mappingIndex) => mappingIndex !== index) }),
+                onClick: () => {
+                  const nextMappings = mappings.filter((_, mappingIndex) => mappingIndex !== index);
+                  setPathMappingDrafts(nextMappings);
+                  commitPathMappings(nextMappings);
+                },
               }, "Remove"),
             ]),
           ]))),
@@ -2313,7 +2384,7 @@ function AiCoreSettingsPanel() {
     },
     (saved) => {
       setSaving(false);
-      setSettings(saved);
+      setSettings((current) => mergeSavedSettings(current, saved));
       setMessage("Settings saved.");
       refreshRuntime();
     },
@@ -2462,7 +2533,7 @@ function AiCorePage() {
     },
     (saved) => {
       setSettingsBusy(false);
-      setSettings(saved);
+      setSettings((current) => mergeSavedSettings(current, saved));
       setSettingsMessage("Settings saved.");
       refreshRuntime();
     },

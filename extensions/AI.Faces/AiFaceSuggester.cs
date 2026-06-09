@@ -19,6 +19,10 @@ internal sealed class AiFaceSuggester(
     private const int CandidateK = 40;
     private const int ReferenceCandidateK = 12;
     private const int EvidencePerSuggestion = 3;
+    // When two or more distinct reference identities each clear this confidence for the same face we
+    // treat them as conflicting and damp them so neither auto-links; the user decides.
+    private const float ReferenceConflictConfidence = 55f;
+    private const float ReferenceConflictDampening = 0.85f;
 
     public Task<IReadOnlyList<FaceSuggestionDto>> SuggestForAsync(int faceId, int maxResults, CancellationToken cancellationToken = default)
         => SuggestForAsync(faceId, maxResults, new FaceSuggestionOptions(), cancellationToken);
@@ -66,7 +70,7 @@ internal sealed class AiFaceSuggester(
             ? await BuildReferenceSuggestionsByFaceAsync(sourceEmbeddingsByFaceId, maxResults, cancellationToken)
             : new Dictionary<int, IReadOnlyList<FaceSuggestionDto>>();
 
-        var suggestionsByFaceIdResult = new Dictionary<int, IReadOnlyList<FaceSuggestionDto>>();
+        var suggestionsByFaceId = new Dictionary<int, IReadOnlyList<FaceSuggestionDto>>();
         foreach (var faceId in eligibleFaceIds)
         {
             var rawMatches = new List<RawFaceMatch>();
@@ -95,89 +99,127 @@ internal sealed class AiFaceSuggester(
 
             var localSuggestions = rawMatches.Count == 0 ? [] : await BuildLocalSuggestionsAsync(rawMatches, cancellationToken);
             referenceSuggestionsByFaceId.TryGetValue(faceId, out var referenceSuggestions);
-            var suggestions = MergeAndRankSuggestions(localSuggestions, referenceSuggestions ?? []);
-            var rankedSuggestions = await ApplyVideoEvidenceBoostAsync(faceId, suggestions, maxResults, cancellationToken);
-            if (rankedSuggestions.Count > 0)
-                suggestionsByFaceIdResult[faceId] = rankedSuggestions;
+            suggestionsByFaceId[faceId] = MergeAndRankSuggestions(localSuggestions, referenceSuggestions ?? []);
         }
 
-        return suggestionsByFaceIdResult;
+        return await ApplyHostEvidenceBoostForBatchAsync(eligibleFaceIds, suggestionsByFaceId, maxResults, cancellationToken);
     }
 
-    private async Task<IReadOnlyList<FaceSuggestionDto>> ApplyVideoEvidenceBoostAsync(
-        int faceId,
-        IReadOnlyList<FaceSuggestionDto> suggestions,
+    private async Task<IReadOnlyDictionary<int, IReadOnlyList<FaceSuggestionDto>>> ApplyHostEvidenceBoostForBatchAsync(
+        IReadOnlyCollection<int> faceIds,
+        IReadOnlyDictionary<int, IReadOnlyList<FaceSuggestionDto>> suggestionsByFaceId,
         int maxResults,
         CancellationToken cancellationToken)
     {
+        var distinctFaceIds = faceIds.Where(static id => id > 0).Distinct().ToArray();
+        if (distinctFaceIds.Length == 0)
+            return new Dictionary<int, IReadOnlyList<FaceSuggestionDto>>();
+
         var videoAppearances = await faceRepository.FindAppearancesAsync(new FaceAppearanceFilter
         {
-            FaceIds = [faceId],
+            FaceIds = distinctFaceIds,
             HostType = FaceAppearanceHostType.Video,
         }, cancellationToken);
-        var videoIds = videoAppearances.Select(static a => a.HostId).Distinct().ToList();
+        var videoIdsByFaceId = videoAppearances
+            .GroupBy(static a => a.FaceId)
+            .ToDictionary(static g => g.Key, static g => g.Select(static a => a.HostId).Distinct().ToList());
 
-        if (videoIds.Count == 0)
+        var facesMissingVideoAppearances = distinctFaceIds.Where(faceId => !videoIdsByFaceId.ContainsKey(faceId)).ToArray();
+        if (facesMissingVideoAppearances.Length > 0)
         {
             var videoDetections = await detectionRepository.FindAsync(new DetectionFilter
             {
                 RefKind = "face",
-                RefIds = [(long)faceId],
+                RefIds = facesMissingVideoAppearances.Select(static id => (long)id).ToArray(),
                 HostType = DetectionHostType.Video,
             }, cancellationToken);
-            videoIds = videoDetections.Select(static d => d.HostId).Distinct().ToList();
+            foreach (var group in videoDetections.GroupBy(static d => (int)d.RefId!.Value))
+                videoIdsByFaceId[group.Key] = group.Select(static d => d.HostId).Distinct().ToList();
         }
 
         var imageAppearances = await faceRepository.FindAppearancesAsync(new FaceAppearanceFilter
         {
-            FaceIds = [faceId],
+            FaceIds = distinctFaceIds,
             HostType = FaceAppearanceHostType.Image,
         }, cancellationToken);
-        var imageIds = imageAppearances.Select(static a => a.HostId).Distinct().ToList();
+        var imageIdsByFaceId = imageAppearances
+            .GroupBy(static a => a.FaceId)
+            .ToDictionary(static g => g.Key, static g => g.Select(static a => a.HostId).Distinct().ToList());
 
-        if (imageIds.Count == 0)
+        var facesMissingImageAppearances = distinctFaceIds.Where(faceId => !imageIdsByFaceId.ContainsKey(faceId)).ToArray();
+        if (facesMissingImageAppearances.Length > 0)
         {
             var imageDetections = await detectionRepository.FindAsync(new DetectionFilter
             {
                 RefKind = "face",
-                RefIds = [(long)faceId],
+                RefIds = facesMissingImageAppearances.Select(static id => (long)id).ToArray(),
                 HostType = DetectionHostType.Image,
             }, cancellationToken);
-            imageIds = imageDetections.Select(static d => d.HostId).Distinct().ToList();
+            foreach (var group in imageDetections.GroupBy(static d => (int)d.RefId!.Value))
+                imageIdsByFaceId[group.Key] = group.Select(static d => d.HostId).Distinct().ToList();
         }
 
-        var hostKeys = videoIds.Select(static id => $"video:{id}")
-            .Concat(imageIds.Select(static id => $"image:{id}"))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        var allVideoIds = videoIdsByFaceId.Values.SelectMany(static ids => ids).Distinct().ToArray();
+        var allImageIds = imageIdsByFaceId.Values.SelectMany(static ids => ids).Distinct().ToArray();
 
-        if (hostKeys.Length == 0)
-            return suggestions.Take(maxResults).ToList();
-
-        var videoPerformers = videoIds.Count > 0
-            ? await videoRepository.GetVideoPerformersAsync(videoIds, cancellationToken)
+        var videoPerformers = allVideoIds.Length > 0
+            ? await videoRepository.GetVideoPerformersAsync(allVideoIds, cancellationToken)
             : [];
-        var imagePerformers = imageIds.Count > 0
-            ? await imageRepository.GetImagePerformersAsync(imageIds, cancellationToken)
+        var imagePerformers = allImageIds.Length > 0
+            ? await imageRepository.GetImagePerformersAsync(allImageIds, cancellationToken)
             : [];
 
-        var hostPerformers = videoPerformers
+        var videoPerformerEvidenceByHostId = videoPerformers
             .Where(static vp => vp.Performer != null)
             .Select(vp => new HostPerformerEvidence(
                 vp.PerformerId, vp.Performer!.Name, vp.Performer.UpdatedAt,
                 !string.IsNullOrWhiteSpace(vp.Performer.ImageBlobId),
                 vp.Performer.RemoteIds.Count == 0,
                 $"video:{vp.VideoId}"))
-            .Concat(imagePerformers
-                .Where(static ip => ip.Performer != null)
-                .Select(ip => new HostPerformerEvidence(
-                    ip.PerformerId, ip.Performer!.Name, ip.Performer.UpdatedAt,
-                    !string.IsNullOrWhiteSpace(ip.Performer.ImageBlobId),
-                    ip.Performer.RemoteIds.Count == 0,
-                    $"image:{ip.ImageId}")))
-            .ToArray();
+            .GroupBy(static evidence => int.Parse(evidence.HostKey["video:".Length..]))
+            .ToDictionary(static g => g.Key, static g => g.ToArray());
+        var imagePerformerEvidenceByHostId = imagePerformers
+            .Where(static ip => ip.Performer != null)
+            .Select(ip => new HostPerformerEvidence(
+                ip.PerformerId, ip.Performer!.Name, ip.Performer.UpdatedAt,
+                !string.IsNullOrWhiteSpace(ip.Performer.ImageBlobId),
+                ip.Performer.RemoteIds.Count == 0,
+                $"image:{ip.ImageId}"))
+            .GroupBy(static evidence => int.Parse(evidence.HostKey["image:".Length..]))
+            .ToDictionary(static g => g.Key, static g => g.ToArray());
 
-        if (hostPerformers.Length == 0)
+        var boostedByFaceId = new Dictionary<int, IReadOnlyList<FaceSuggestionDto>>();
+        foreach (var faceId in distinctFaceIds)
+        {
+            var videoIds = videoIdsByFaceId.GetValueOrDefault(faceId) ?? [];
+            var imageIds = imageIdsByFaceId.GetValueOrDefault(faceId) ?? [];
+            var hostKeys = videoIds.Select(static id => $"video:{id}")
+                .Concat(imageIds.Select(static id => $"image:{id}"))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var hostPerformers = videoIds
+                .SelectMany(id => videoPerformerEvidenceByHostId.GetValueOrDefault(id) ?? [])
+                .Concat(imageIds.SelectMany(id => imagePerformerEvidenceByHostId.GetValueOrDefault(id) ?? []))
+                .ToArray();
+            suggestionsByFaceId.TryGetValue(faceId, out var suggestions);
+            var boosted = ApplyHostEvidenceBoost(suggestions ?? [], hostPerformers, hostKeys, maxResults);
+            if (boosted.Count > 0)
+                boostedByFaceId[faceId] = boosted;
+        }
+
+        return boostedByFaceId;
+    }
+
+    private static IReadOnlyList<FaceSuggestionDto> ApplyHostEvidenceBoost(
+        IReadOnlyList<FaceSuggestionDto> suggestions,
+        IReadOnlyList<HostPerformerEvidence> hostPerformers,
+        IReadOnlyCollection<string> hostKeys,
+        int maxResults)
+    {
+        if (hostKeys.Count == 0)
+            return suggestions.Take(maxResults).ToList();
+
+        if (hostPerformers.Count == 0)
             return suggestions.Take(maxResults).ToList();
 
         var performerHostKeys = hostPerformers.GroupBy(item => item.PerformerId)
@@ -196,11 +238,11 @@ internal sealed class AiFaceSuggester(
         var performerCountByHostKey = hostPerformers
             .GroupBy(item => item.HostKey, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.Select(item => item.PerformerId).Distinct().Count(), StringComparer.OrdinalIgnoreCase);
-        var exclusivePerformerId = performerHostKeys.Count == 1 && performerHostKeys.Values.Single().Length == hostKeys.Length
+        var exclusivePerformerId = performerHostKeys.Count == 1 && performerHostKeys.Values.Single().Length == hostKeys.Count
             ? performerHostKeys.Keys.Single() : (int?)null;
 
         var boostedSuggestions = suggestions
-            .Select(suggestion => ApplyVideoEvidenceBoost(suggestion, performerHostKeys, normalizedNameHostKeys, solePerformerHostKeys, hostKeys.Length, exclusivePerformerId))
+            .Select(suggestion => ApplyVideoEvidenceBoost(suggestion, performerHostKeys, normalizedNameHostKeys, solePerformerHostKeys, hostKeys.Count, exclusivePerformerId))
             .ToList();
 
         var existingLocalPerformerIds = boostedSuggestions
@@ -217,7 +259,7 @@ internal sealed class AiFaceSuggester(
             boostedSuggestions.Add(BuildHostEvidenceSuggestion(
                 performer,
                 performerHostKeys[performerId].Length,
-                hostKeys.Length,
+                hostKeys.Count,
                 performerHostKeys[performerId].Count(solePerformerHostKeys.Contains),
                 performerHostKeys[performerId].Select(hk => performerCountByHostKey.GetValueOrDefault(hk, 1)).DefaultIfEmpty(1).Average(),
                 exclusivePerformerId == performerId));
@@ -288,39 +330,137 @@ internal sealed class AiFaceSuggester(
         int maxResults,
         CancellationToken cancellationToken)
     {
-        var pack = await referencePackStore.GetActivePackAsync(cancellationToken);
-        if (pack is null || pack.Identities.Count == 0)
+        var packs = await referencePackStore.GetActivePacksAsync(cancellationToken);
+        if (packs.Count == 0)
             return new Dictionary<int, IReadOnlyList<FaceSuggestionDto>>();
 
         var rejectedByFaceId = await referenceSuggestionDecisionStore.GetRejectedAsync(sourceEmbeddingsByFaceId.Keys.ToArray(), cancellationToken);
-        var matchesByFaceId = new Dictionary<int, List<RawReferenceMatch>>();
+
+        // Flatten the work into independent (face, pack, source vector) scans. Each scan is a brute-force
+        // KNN over the whole pack and is by far the dominant cost on this path (one full pass over a large
+        // reference pack per source embedding), so scoring them is what we parallelize below. Every scan
+        // only reads immutable pack data and writes its own result slot, so no synchronization is needed.
+        var scoreQueries = new List<ReferenceScoreQuery>();
         foreach (var (faceId, sourceEmbeddings) in sourceEmbeddingsByFaceId)
         {
-            rejectedByFaceId.TryGetValue(faceId, out var rejectedIdentityIds);
-            foreach (var sourceVector in sourceEmbeddings.Select(static e => e.Vector.ToArray()).Where(v => v.Length == pack.Manifest.EmbeddingDim))
+            var sourceVectors = sourceEmbeddings.Select(static e => e.Vector.ToArray()).ToArray();
+            for (var packIndex = 0; packIndex < packs.Count; packIndex++)
             {
-                var matches = FindNearestReferenceMatches(sourceVector, pack, ReferenceCandidateK)
-                    .Where(match => rejectedIdentityIds is null || !rejectedIdentityIds.Contains(match.Identity.ExternalId));
+                var pack = packs[packIndex];
+                if (pack.Identities.Count == 0)
+                    continue;
 
-                if (!matchesByFaceId.TryGetValue(faceId, out var faceMatches)) { faceMatches = []; matchesByFaceId[faceId] = faceMatches; }
-                faceMatches.AddRange(matches);
+                foreach (var sourceVector in sourceVectors.Where(v => v.Length == pack.Manifest.EmbeddingDim))
+                    scoreQueries.Add(new ReferenceScoreQuery(faceId, packIndex, pack, sourceVector));
             }
+        }
+
+        // Score each face's source embeddings against every active pack, tagging matches with the pack
+        // (by its stable index) they came from. The scans run across all cores; results are reassembled
+        // in the original (face, pack, source-vector) order so output ordering stays deterministic.
+        var perQueryMatches = new List<RawReferenceMatch>[scoreQueries.Count];
+        Parallel.For(
+            0,
+            scoreQueries.Count,
+            new ParallelOptions { CancellationToken = cancellationToken },
+            i =>
+            {
+                var query = scoreQueries[i];
+                rejectedByFaceId.TryGetValue(query.FaceId, out var rejectedIdentityIds);
+                perQueryMatches[i] = FindNearestReferenceMatches(query.SourceVector, query.Pack, ReferenceCandidateK)
+                    .Where(match => rejectedIdentityIds is null || !rejectedIdentityIds.Contains(match.Identity.ExternalId))
+                    .Select(match => match with { PackIndex = query.PackIndex, Pack = query.Pack })
+                    .ToList();
+            });
+
+        var matchesByFaceId = new Dictionary<int, List<RawReferenceMatch>>();
+        for (var i = 0; i < scoreQueries.Count; i++)
+        {
+            if (perQueryMatches[i].Count == 0)
+                continue;
+
+            var faceId = scoreQueries[i].FaceId;
+            if (!matchesByFaceId.TryGetValue(faceId, out var faceMatches)) { faceMatches = []; matchesByFaceId[faceId] = faceMatches; }
+            faceMatches.AddRange(perQueryMatches[i]);
         }
 
         if (matchesByFaceId.Count == 0)
             return new Dictionary<int, IReadOnlyList<FaceSuggestionDto>>();
 
-        var candidateIdentities = matchesByFaceId.Values.SelectMany(static m => m).Select(static m => m.Identity)
-            .DistinctBy(static i => i.ExternalId, StringComparer.OrdinalIgnoreCase).ToArray();
-        var performerMatches = await referencePerformerResolver.ResolveAsync(candidateIdentities, pack.Manifest.SourceEndpoint, cancellationToken);
+        // Resolve reference identities to local performers per pack, because each pack targets its own
+        // site/endpoint and the same external id means different people on different sites.
+        var performerMatchesByPack = new Dictionary<int, IReadOnlyDictionary<string, AiFaceReferencePerformerMatch>>();
+        var allMatches = matchesByFaceId.Values.SelectMany(static m => m).ToArray();
+        for (var packIndex = 0; packIndex < packs.Count; packIndex++)
+        {
+            var index = packIndex;
+            var identities = allMatches.Where(m => m.PackIndex == index)
+                .Select(static m => m.Identity)
+                .DistinctBy(static i => i.ExternalId, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            performerMatchesByPack[index] = identities.Length == 0
+                ? new Dictionary<string, AiFaceReferencePerformerMatch>(StringComparer.OrdinalIgnoreCase)
+                : await referencePerformerResolver.ResolveAsync(identities, packs[index].Manifest.SourceEndpoint, cancellationToken);
+        }
 
         return matchesByFaceId.ToDictionary(
             static pair => pair.Key,
-            pair => (IReadOnlyList<FaceSuggestionDto>)pair.Value
-                .GroupBy(static m => m.Identity.ExternalId, StringComparer.OrdinalIgnoreCase)
-                .Select(g => BuildReferenceSuggestion(g, performerMatches.GetValueOrDefault(g.Key), pack.Manifest))
-                .OrderByDescending(static s => s.Confidence).ThenBy(static s => s.PerformerName)
-                .Take(maxResults).ToList());
+            pair => BuildReferenceSuggestionsForFace(pair.Value, performerMatchesByPack, maxResults));
+    }
+
+    private static IReadOnlyList<FaceSuggestionDto> BuildReferenceSuggestionsForFace(
+        IReadOnlyList<RawReferenceMatch> faceMatches,
+        IReadOnlyDictionary<int, IReadOnlyDictionary<string, AiFaceReferencePerformerMatch>> performerMatchesByPack,
+        int maxResults)
+    {
+        // Group matches that point at the same performer. A resolved local performer groups by its id;
+        // an unresolved identity groups by site endpoint + external id so the same site identity seen in
+        // two packs merges (strong corroborating evidence) while genuinely different people stay apart.
+        var groups = faceMatches
+            .Select(match =>
+            {
+                AiFaceReferencePerformerMatch? performer = null;
+                if (performerMatchesByPack.TryGetValue(match.PackIndex, out var perfMatches))
+                    perfMatches.TryGetValue(match.Identity.ExternalId, out performer);
+                var key = performer is not null
+                    ? $"perf:{performer.PerformerId}"
+                    : $"ref:{NormalizeName(match.Pack?.Manifest.SourceEndpoint)}|{match.Identity.ExternalId.ToUpperInvariant()}";
+                return (Key: key, Match: match, Performer: performer);
+            })
+            .GroupBy(static item => item.Key, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var suggestions = groups
+            .Select(group => BuildReferenceSuggestion(
+                group.Select(static item => item.Match).ToArray(),
+                group.Select(static item => item.Performer).FirstOrDefault(static p => p is not null),
+                group.Select(static item => item.Match.PackIndex).Distinct().Count()))
+            .ToList();
+
+        // Conflict: more than one distinct strong reference identity competes for this face. Damp each
+        // so none auto-links, and surface them all for the user to choose between.
+        if (suggestions.Count(static s => s.Confidence >= ReferenceConflictConfidence) > 1)
+        {
+            // One stable id shared by every competing match for this face, so the UI can group them
+            // into a single "possible duplicate" choice instead of showing them as rival suggestions.
+            // The conflict itself is surfaced through ConflictGroupId (the UI groups the competing matches
+            // and offers the use-one / merge choice), so the evidence text stays clean — no instructional
+            // "or merge them" blurb that would just duplicate that UI.
+            var conflictGroupId = Guid.NewGuid().ToString("N");
+            suggestions = suggestions
+                .Select(s => s.Confidence >= ReferenceConflictConfidence
+                    ? s with
+                    {
+                        Confidence = MathF.Round(s.Confidence * ReferenceConflictDampening, 1),
+                        ConflictGroupId = conflictGroupId,
+                    }
+                    : s)
+                .ToList();
+        }
+
+        return suggestions
+            .OrderByDescending(static s => s.Confidence).ThenBy(static s => s.PerformerName)
+            .Take(maxResults).ToList();
     }
 
     private static List<FaceSuggestionDto> MergeAndRankSuggestions(IEnumerable<FaceSuggestionDto> local, IEnumerable<FaceSuggestionDto> reference)
@@ -347,14 +487,14 @@ internal sealed class AiFaceSuggester(
         if (fullCoverage) boost += 4f;
         if (totalHostCount > 1 && exclusivePerformerId.HasValue && localPerformerId == exclusivePerformerId.Value) boost += 3f;
 
-        var hostSummary = matchedHostKeys.Length == 1 ? "already appears on 1 matching host" : $"already appears on {matchedHostKeys.Length} matching hosts";
-        var fullCoverageSummary = fullCoverage ? "; tagged on every host containing this face" : string.Empty;
-        var soleSummary = soleHostKeys.Length > 0 ? (soleHostKeys.Length == 1 ? "; sole performer on 1 of those hosts" : $"; sole performer on {soleHostKeys.Length} of those hosts") : string.Empty;
+        var hostSummary = matchedHostKeys.Length == 1 ? "already tagged on 1 video or image with this face" : $"already tagged on {matchedHostKeys.Length} videos or images with this face";
+        var fullCoverageSummary = fullCoverage ? "; tagged on every video and image with this face" : string.Empty;
+        var soleSummary = soleHostKeys.Length > 0 ? (soleHostKeys.Length == 1 ? "; the only performer on 1 of them" : $"; the only performer on {soleHostKeys.Length} of them") : string.Empty;
 
         return suggestion with
         {
             Confidence = MathF.Min(100f, suggestion.Confidence + boost),
-            Why = $"{suggestion.Why} Host evidence: {hostSummary}{fullCoverageSummary}{soleSummary}.",
+            Why = $"{suggestion.Why}; also {hostSummary}{fullCoverageSummary}{soleSummary}",
         };
     }
 
@@ -367,11 +507,11 @@ internal sealed class AiFaceSuggester(
         var soleConsistencyBonus = totalHostCount > 1 ? soleRatio * 6f : 0f;
         var confidence = ComputeHostEvidenceBaseConfidence(averagePerformerCountOnMatchedHosts) + repeatedHostBonus + coverageBonus + soleConsistencyBonus + (exclusive && totalHostCount > 1 ? 4f : 0f);
         confidence = MathF.Round(MathF.Min(72f, confidence), 1);
-        var hostSummary = matchedHostCount == 1 ? "1 tagged host" : $"{matchedHostCount} tagged hosts";
-        var coverageSummary = totalHostCount > matchedHostCount ? $" out of {totalHostCount} hosts containing this face" : totalHostCount == 1 ? string.Empty : " containing this face";
-        var why = $"Host evidence only: this performer is assigned on {hostSummary}{coverageSummary}.";
-        if (soleHostCount > 0) why += soleHostCount == 1 ? " It is also the sole performer on one matching host." : $" It is also the sole performer on {soleHostCount} matching hosts.";
-        if (exclusive) why += " Every tagged host containing this face points to this performer.";
+        var hostSummary = matchedHostCount == 1 ? "1 video or image" : $"{matchedHostCount} videos or images";
+        var coverageSummary = totalHostCount > matchedHostCount ? $" of the {totalHostCount} that contain this face" : totalHostCount == 1 ? string.Empty : " that contain this face";
+        var why = $"Already tagged on {hostSummary}{coverageSummary} where this face appears";
+        if (soleHostCount > 0) why += soleHostCount == 1 ? "; the only performer on 1 of them" : $"; the only performer on {soleHostCount} of them";
+        if (exclusive) why += "; every video and image with this face points to this performer";
 
         return new FaceSuggestionDto(performer.PerformerId, performer.PerformerName,
             BuildPerformerCoverUrl(performer.PerformerId, performer.PerformerUpdatedAt, performer.PerformerHasImage),
@@ -410,20 +550,29 @@ internal sealed class AiFaceSuggester(
             LocalPerformerIsLocalOnly: groupedMatches[0].PerformerIsLocalOnly);
     }
 
-    private static FaceSuggestionDto BuildReferenceSuggestion(IGrouping<string, RawReferenceMatch> matches, AiFaceReferencePerformerMatch? performerMatch, SaieManifest manifest)
+    private static FaceSuggestionDto BuildReferenceSuggestion(IReadOnlyList<RawReferenceMatch> matches, AiFaceReferencePerformerMatch? performerMatch, int supportingPackCount)
     {
         var ordered = matches.OrderByDescending(static m => m.Similarity).ToArray();
-        var identity = ordered[0].Identity;
+        var top = ordered[0];
+        var identity = top.Identity;
+        var manifest = top.Pack!.Manifest;
         var topSimilarity = ordered[0].Similarity;
         var meanSimilarity = ordered.Take(Math.Min(3, ordered.Length)).Average(static m => m.Similarity);
         var confidence = ComputeReferenceConfidence(topSimilarity, meanSimilarity, ordered.Length);
-        var supportSummary = ordered.Length == 1 ? "1 source embedding" : $"{ordered.Length} source embeddings";
-        var sourceLabel = string.IsNullOrWhiteSpace(manifest.PackId) ? "reference pack" : manifest.PackId;
+        // Independent packs from different sites agreeing on the same performer is the strongest signal
+        // available, so boost when more than one pack corroborates.
+        if (supportingPackCount > 1)
+            confidence = MathF.Min(100f, confidence + MathF.Min(12f, (supportingPackCount - 1) * 8f));
+        confidence = MathF.Round(confidence, 1);
+
+        var photoSummary = ordered.Length == 1 ? "1 reference photo" : $"{ordered.Length} reference photos";
+        var sourceDisplay = BuildSourceDisplay(manifest.SourceEndpoint);
+        var packSummary = supportingPackCount > 1 ? $"; confirmed by {supportingPackCount} reference sources" : string.Empty;
         var why = performerMatch is null
-            ? $"{sourceLabel} match; best {Math.Round(topSimilarity * 100)}%, mean {Math.Round(meanSimilarity * 100)}% across {supportSummary}."
-            : $"{sourceLabel} matched an existing performer; best {Math.Round(topSimilarity * 100)}%, mean {Math.Round(meanSimilarity * 100)}% across {supportSummary}.";
+            ? $"Found in {sourceDisplay}; {Math.Round(topSimilarity * 100)}% best and {Math.Round(meanSimilarity * 100)}% average visual similarity across {photoSummary}{packSummary}"
+            : $"Matches an existing performer from {sourceDisplay}; {Math.Round(topSimilarity * 100)}% best and {Math.Round(meanSimilarity * 100)}% average visual similarity across {photoSummary}{packSummary}";
         return new FaceSuggestionDto(
-            performerMatch?.PerformerId ?? AiFaceReferenceSuggestionIds.FromOrdinal(identity.Ordinal),
+            performerMatch?.PerformerId ?? AiFaceReferenceSuggestionIds.FromIdentity(top.PackIndex, identity.Ordinal),
             performerMatch?.PerformerName ?? identity.DisplayName,
             performerMatch is null ? identity.ImageUrl : BuildPerformerCoverUrl(performerMatch.PerformerId, performerMatch.PerformerUpdatedAt, performerMatch.LocalPerformerHasImage) ?? identity.ImageUrl,
             confidence, why, [],
@@ -448,9 +597,20 @@ internal sealed class AiFaceSuggester(
 
     private static string BuildWhy(int uniqueFaceCount, int observationCount, float topSimilarity, double meanSimilarity)
     {
-        var faceSummary = uniqueFaceCount == 1 ? "1 linked face cluster" : $"{uniqueFaceCount} linked face clusters";
-        var observationSummary = observationCount == 1 ? "1 supporting match" : $"{observationCount} supporting matches";
-        return $"{faceSummary} agree across {observationSummary}; best {Math.Round(topSimilarity * 100)}%, mean {Math.Round(meanSimilarity * 100)}%.";
+        var faceSummary = uniqueFaceCount == 1 ? "1 of this performer's saved faces" : $"{uniqueFaceCount} of this performer's saved faces";
+        var observationSummary = observationCount == 1 ? "1 comparison" : $"{observationCount} comparisons";
+        return $"Looks like {faceSummary}; {Math.Round(topSimilarity * 100)}% best and {Math.Round(meanSimilarity * 100)}% average visual similarity across {observationSummary}";
+    }
+
+    // A short, human-readable form of the reference source's URL for evidence text — e.g.
+    // "https://stashdb.org" rather than the opaque internal pack id. Strips the GraphQL suffix so the
+    // displayed value is the site a user would recognise.
+    private static string BuildSourceDisplay(string? sourceEndpoint)
+    {
+        if (string.IsNullOrWhiteSpace(sourceEndpoint)) return "a reference database";
+        var url = sourceEndpoint.Trim().TrimEnd('/');
+        if (url.EndsWith("/graphql", StringComparison.OrdinalIgnoreCase)) url = url[..^"/graphql".Length];
+        return url;
     }
 
     private static string? BuildReferenceProfileUrl(string? sourceEndpoint, string externalId)
@@ -476,12 +636,12 @@ internal sealed class AiFaceSuggester(
     private static IEnumerable<RawReferenceMatch> FindNearestReferenceMatches(float[] sourceVector, SaieReferencePack pack, int candidateCount)
     {
         if (candidateCount <= 0) return [];
-        var sourceNorm = ComputeNorm(sourceVector);
+        var sourceNorm = SaieReferencePack.Norm(sourceVector);
         if (sourceNorm <= 0f) return [];
         var best = new List<RawReferenceMatch>(candidateCount);
         for (var ordinal = 0; ordinal < pack.Identities.Count; ordinal++)
         {
-            var similarity = ComputeCosineSimilarity(sourceVector, sourceNorm, pack.GetCentroid(ordinal), pack.GetCentroidNorm(ordinal));
+            var similarity = pack.CosineSimilarityTo(ordinal, sourceVector, sourceNorm);
             if (similarity <= 0f) continue;
             var match = new RawReferenceMatch(pack.Identities[ordinal], similarity);
             if (best.Count < candidateCount) { best.Add(match); best.Sort(static (l, r) => l.Similarity.CompareTo(r.Similarity)); continue; }
@@ -492,25 +652,12 @@ internal sealed class AiFaceSuggester(
         return best.OrderByDescending(static m => m.Similarity).ToArray();
     }
 
-    private static float ComputeCosineSimilarity(float[] left, float leftNorm, ReadOnlySpan<float> right, float rightNorm)
-    {
-        if (left.Length != right.Length || leftNorm <= 0f || rightNorm <= 0f) return 0f;
-        var dot = 0f;
-        for (var i = 0; i < left.Length; i++) dot += left[i] * right[i];
-        return ClampSimilarity(dot / (leftNorm * rightNorm));
-    }
-
-    private static float ComputeNorm(float[] vector)
-    {
-        var sum = 0f;
-        for (var i = 0; i < vector.Length; i++) sum += vector[i] * vector[i];
-        return MathF.Sqrt(sum);
-    }
-
     private static string GetSuggestionKey(FaceSuggestionDto suggestion) => $"performer:{suggestion.PerformerId}";
 
+    private sealed record ReferenceScoreQuery(int FaceId, int PackIndex, SaieReferencePack Pack, float[] SourceVector);
+
     private sealed record RawFaceMatch(int FaceId, float Similarity);
-    private sealed record RawReferenceMatch(SaieReferenceIdentity Identity, float Similarity);
+    private sealed record RawReferenceMatch(SaieReferenceIdentity Identity, float Similarity, int PackIndex = 0, SaieReferencePack? Pack = null);
     private sealed record CandidateFaceMatch(int FaceId, int PerformerId, string PerformerName, DateTime? PerformerUpdatedAt, bool PerformerHasImage, bool PerformerIsLocalOnly, DateTime? FaceUpdatedAt, bool FaceHasCoverImage, float Similarity, Detection? Detection);
     private sealed record HostPerformerEvidence(int PerformerId, string PerformerName, DateTime? PerformerUpdatedAt, bool PerformerHasImage, bool PerformerIsLocalOnly, string HostKey);
 }

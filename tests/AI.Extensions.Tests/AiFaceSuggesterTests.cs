@@ -3,6 +3,7 @@ using AI.Faces;
 using Cove.Core.Entities;
 using Cove.Core.Interfaces;
 using Cove.Data;
+using Cove.Data.Repositories;
 using Cove.Data.Services;
 
 using Microsoft.EntityFrameworkCore;
@@ -246,6 +247,12 @@ public sealed class AiFaceSuggesterTests
         Directory.CreateDirectory(referenceRoot);
 
         services.AddDbContext<CoveContext>(options => options.UseInMemoryDatabase(databaseName, databaseRoot));
+        services.AddScoped<IFaceRepository, FaceRepository>();
+        services.AddScoped<IEmbeddingRepository, EmbeddingRepository>();
+        services.AddScoped<IDetectionRepository, DetectionRepository>();
+        services.AddScoped<IVideoRepository, VideoRepository>();
+        services.AddScoped<IImageRepository, ImageRepository>();
+        services.AddScoped<IPerformerRepository, PerformerRepository>();
         services.AddSingleton<SaieArchiveReader>();
         services.AddSingleton(services =>
         {

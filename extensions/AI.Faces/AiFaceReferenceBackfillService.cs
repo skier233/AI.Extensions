@@ -42,8 +42,25 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
         ApplyReferenceDisplayLabels(snapshot);
         await stateStore.SaveAsync(snapshot, ct);
 
+        var relinkedTargetFaceIds = new List<int>();
         var (mergedPersistedFaces, relabeledPersistedFaces) = await ApplyPersistedFaceUpdatesAsync(
-            faceRepo, embeddingRepo, detectionRepo, segmentRepo, snapshot, report.MergedFaceKeyMap, ct);
+            faceRepo, embeddingRepo, detectionRepo, segmentRepo, snapshot, report.MergedFaceKeyMap, relinkedTargetFaceIds, ct);
+
+        // A merge that transferred a performer onto the target face must propagate that performer to the
+        // target's hosts (videos/images) — including the merged-in face's former hosts, now re-pointed
+        // to the target — otherwise the auto-linked performer never reaches those entities.
+        if (relinkedTargetFaceIds.Count > 0)
+        {
+            var propagation = scope.ServiceProvider.GetService<IFacePerformerPropagationService>();
+            if (propagation is not null)
+            {
+                var affectedHosts = await faceRepo.FindAppearancesAsync(
+                    new FaceAppearanceFilter { FaceIds = relinkedTargetFaceIds.Distinct().ToArray() }, ct);
+                foreach (var hostGroup in affectedHosts.GroupBy(appearance => (appearance.HostType, appearance.HostId)))
+                    await propagation.ReconcileHostAsync(hostGroup.Key.HostType, hostGroup.Key.HostId, ct);
+                await faceRepo.SaveChangesAsync(ct);
+            }
+        }
 
         return new AiFaceReferenceBackfillResult(
             report.MergedIdentityCount,
@@ -60,6 +77,7 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
         ISegmentRepository segmentRepo,
         FaceIdentitySnapshot snapshot,
         IReadOnlyDictionary<string, string> mergedFaceKeyMap,
+        ICollection<int> relinkedTargetFaceIds,
         CancellationToken ct)
     {
         var faceKeys = snapshot.Identities
@@ -166,7 +184,10 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
             var target = operation.Target!;
 
             if (duplicate.PerformerId.HasValue && !target.PerformerId.HasValue)
+            {
                 target.PerformerId = duplicate.PerformerId;
+                relinkedTargetFaceIds.Add(target.Id);
+            }
 
             if (ShouldRefreshTargetLabel(target, duplicate))
                 target.Label = duplicate.Label;

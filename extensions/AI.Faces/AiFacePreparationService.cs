@@ -77,7 +77,13 @@ internal sealed class AiFacePreparationService
             return batch;
         }
 
-        var referencePack = _referencePackStore is null ? null : await _referencePackStore.GetActivePackAsync(ct);
+        // Seeding/clustering currently reconciles against a single pack; with several packs active we
+        // seed from the first (deterministically ordered by pack id). Cross-pack suggestion matching is
+        // handled later by the suggester, which scores against every active pack.
+        var referencePacks = _referencePackStore is null
+            ? (IReadOnlyList<SaieReferencePack>)Array.Empty<SaieReferencePack>()
+            : await _referencePackStore.GetActivePacksAsync(ct);
+        var referencePack = referencePacks.Count > 0 ? referencePacks[0] : null;
         var initialReconciliation = _identityReconciler.Reconcile(snapshot, referencePack, settings);
 
         var emittedFaces = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

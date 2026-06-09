@@ -94,7 +94,7 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         var persistedDetections = PersistDetections(detectionRepo, hostEntityId, detectionHostType, batch, facesByKey, request);
         var persistedSegments = hostEntityType == "video" ? PersistSegments(segmentRepo, hostEntityId, batch, facesByKey, request) : 0;
         var persistedEmbeddings = PersistEmbeddings(embeddingRepo, batch, facesByKey, request);
-        var persistedFaceCovers = await PersistFaceCoversAsync(scope.ServiceProvider, customFieldRepo, faceRepo, hostEntityType, batch, facesByKey, ct);
+        var persistedFaceCovers = await PersistFaceCoversAsync(scope.ServiceProvider, customFieldRepo, faceRepo, hostEntityType, request, batch, facesByKey, ct);
 
         await faceRepo.SaveChangesAsync(ct);
 
@@ -104,7 +104,28 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
             await faceRepo.SaveChangesAsync(ct);
         }
 
+        // Apply the performer of any already-linked face that now appears on this host, and remove the
+        // performer contributed by faces that no longer appear here after a re-run. The steps above
+        // (re)write this host's face appearances but otherwise never touch host performer assignments,
+        // so without this a video/image that matches an existing linked face never gets the performer.
         var notes = new List<string>();
+        var propagation = scope.ServiceProvider.GetService<IFacePerformerPropagationService>();
+        if (propagation is not null)
+        {
+            // Best-effort: performer propagation must never break face persistence. The face
+            // appearances/detections above are already committed, so a failure here only means the
+            // host's performer assignments weren't updated this run.
+            try
+            {
+                await propagation.ReconcileHostAsync(appearanceHostType, hostEntityId, ct);
+                await faceRepo.SaveChangesAsync(ct);
+            }
+            catch (Exception ex)
+            {
+                notes.Add($"AI.Faces applied face artifacts but performer propagation failed for this {hostEntityType}: {ex.Message}");
+            }
+        }
+
         if (batch.Faces.Count > 0) notes.Add($"Resolved {batch.Faces.Count} AI face identity candidate(s) into Cove face cluster(s).");
         if (persistedAppearances > 0) notes.Add($"Persisted {persistedAppearances} AI-generated face appearance(s) onto the {hostEntityType}.");
         if (persistedDetections > 0) notes.Add($"Persisted {persistedDetections} retained AI-generated face spatial sample(s) onto the {hostEntityType}.");
@@ -270,7 +291,7 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         return inserted;
     }
 
-    private static async Task<int> PersistFaceCoversAsync(IServiceProvider services, ICustomFieldRepository customFieldRepo, IFaceRepository faceRepo, string hostEntityType, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, CancellationToken ct)
+    private static async Task<int> PersistFaceCoversAsync(IServiceProvider services, ICustomFieldRepository customFieldRepo, IFaceRepository faceRepo, string hostEntityType, AiDispatchRequest request, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, CancellationToken ct)
     {
         var blobService = services.GetService<IBlobService>();
         if (blobService is null || batch.Faces.Count == 0) return 0;
@@ -287,7 +308,8 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
             if (!ShouldGenerateCover(face, incomingCoverQuality, currentCoverQuality is null ? null : (double?)currentCoverQuality)) continue;
 
             var coverDetection = ResolveCoverDetection(batch, preparedFace);
-            await using var coverStream = await AiFaceCoverGenerator.CreateAsync(hostEntityType, preparedFace, coverDetection, configuration, ct);
+            var coverFace = ResolveCoverFace(hostEntityType, request, preparedFace);
+            await using var coverStream = await AiFaceCoverGenerator.CreateAsync(hostEntityType, coverFace, coverDetection, configuration, ct);
             if (coverStream is null) continue;
 
             var previousBlobId = face.CoverBlobId;
@@ -338,7 +360,6 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
             .GroupBy(static a => a.FaceId)
             .ToDictionary(static g => g.Key, static g => new
             {
-                AppearanceCount = g.Count(),
                 FrameSampleCount = g.Sum(static a => a.SampleCount),
                 VideoCount = g.Where(static a => a.HostType == FaceAppearanceHostType.Video).Select(static a => a.HostId).Distinct().Count(),
                 ImageCount = g.Where(static a => a.HostType == FaceAppearanceHostType.Image).Select(static a => a.HostId).Distinct().Count(),
@@ -359,7 +380,11 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
             }
 
             face.DetectionCount = detectionStats?.DetectionCount ?? 0;
-            face.AppearanceCount = appearanceStats.AppearanceCount;
+            // Appearance count is the number of distinct hosts (videos/images) the face appears in —
+            // matching the "Appears In" list, the Videos/Images stats, and the no-appearance branch
+            // above. A face can have several appearance rows per host (one per track), so the raw row
+            // count would overstate it.
+            face.AppearanceCount = appearanceStats.VideoCount + appearanceStats.ImageCount;
             face.FrameSampleCount = appearanceStats.FrameSampleCount;
             face.VideoCount = appearanceStats.VideoCount;
             face.ImageCount = appearanceStats.ImageCount;
@@ -375,6 +400,20 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
             if (exact is not null) return exact;
         }
         return candidates.OrderByDescending(static d => d.Score).FirstOrDefault();
+    }
+
+    private static AiPreparedFaceIdentity ResolveCoverFace(string hostEntityType, AiDispatchRequest request, AiPreparedFaceIdentity preparedFace)
+    {
+        if (hostEntityType != "image"
+            || string.IsNullOrWhiteSpace(preparedFace.CoverAssetId)
+            || File.Exists(preparedFace.CoverAssetId)
+            || string.IsNullOrWhiteSpace(request.Context.Subject)
+            || !File.Exists(request.Context.Subject))
+        {
+            return preparedFace;
+        }
+
+        return preparedFace with { CoverAssetId = request.Context.Subject };
     }
 
     private static bool BoundingBoxesMatch(AiBoundingBox left, AiBoundingBox right)

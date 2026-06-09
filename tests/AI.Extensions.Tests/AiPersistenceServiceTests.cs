@@ -8,6 +8,7 @@ using Cove.Core.DTOs;
 using Cove.Core.Entities;
 using Cove.Core.Interfaces;
 using Cove.Data;
+using Cove.Data.Repositories;
 using Cove.Plugins;
 
 using Microsoft.EntityFrameworkCore;
@@ -584,6 +585,55 @@ public sealed class AiPersistenceServiceTests
     }
 
     [Fact]
+    public async Task PersistFaces_GeneratesImageCoverFromContextSubjectWhenAssetIdIsMapped()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"ai-faces-cover-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var imagePath = Path.Combine(tempRoot, "cover-source.jpg");
+            using (var image = new Image<Rgba32>(640, 480, new Rgba32(220, 220, 220)))
+            {
+                await image.SaveAsJpegAsync(imagePath);
+            }
+
+            await using var provider = CreateProvider(services =>
+            {
+                services.AddSingleton<IBlobService, TestBlobService>();
+                services.AddSingleton(new CoveConfiguration());
+            });
+
+            var service = new AiFacesPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
+            var request = CreateRequest(AiMediaKinds.Image, "/mapped/cover-source.jpg", "image", 17, "run-face-cover", subject: imagePath);
+            var batch = new AiPreparedArtifactBatch();
+
+            batch.Faces.Add(new AiPreparedFaceIdentity(
+                "face-cover-1",
+                "ext:ai.faces",
+                Label: "Cover Face",
+                IsProvisional: false,
+                QualityScore: 0.97,
+                CoverAssetId: "/mapped/cover-source.jpg",
+                CoverBoundingBox: new AiBoundingBox(0.25, 0.15, 0.75, 0.85)));
+
+            await service.PersistAsync(request, batch);
+
+            await using var scope = provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            var blobService = (TestBlobService)scope.ServiceProvider.GetRequiredService<IBlobService>();
+            var face = await db.Faces.SingleAsync();
+
+            Assert.False(string.IsNullOrWhiteSpace(face.CoverBlobId));
+            Assert.True(blobService.StoredBlobs.ContainsKey(face.CoverBlobId!));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task PersistFaces_ReplacesFaceCoverWhenNewSampleIsBetter()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"ai-faces-cover-{Guid.NewGuid():N}");
@@ -703,14 +753,23 @@ public sealed class AiPersistenceServiceTests
         var databaseName = $"ai-persistence-{Guid.NewGuid():N}";
         var databaseRoot = new InMemoryDatabaseRoot();
         services.AddDbContext<CoveContext>(options => options.UseInMemoryDatabase(databaseName, databaseRoot));
+        services.AddScoped<IFaceRepository, FaceRepository>();
+        services.AddScoped<IVideoRepository, VideoRepository>();
+        services.AddScoped<IImageRepository, ImageRepository>();
+        services.AddScoped<IDetectionRepository, DetectionRepository>();
+        services.AddScoped<ISegmentRepository, SegmentRepository>();
+        services.AddScoped<IEmbeddingRepository, EmbeddingRepository>();
+        services.AddScoped<ICustomFieldRepository, CustomFieldRepository>();
+        services.AddScoped<ITagRepository, TagRepository>();
+        services.AddScoped<ITagApplicationRepository, TagApplicationRepository>();
         configure?.Invoke(services);
         return services.BuildServiceProvider();
     }
 
-    private static AiDispatchRequest CreateRequest(string mediaKind, string assetId, string hostEntityType, int hostEntityId, string runId, double? durationSeconds = null)
+    private static AiDispatchRequest CreateRequest(string mediaKind, string assetId, string hostEntityType, int hostEntityId, string runId, double? durationSeconds = null, string? subject = null)
     {
         return new AiDispatchRequest(
-            new AiRunContext(runId, mediaKind, assetId, assetId, hostEntityType, hostEntityId, durationSeconds),
+            new AiRunContext(runId, mediaKind, assetId, subject ?? assetId, hostEntityType, hostEntityId, durationSeconds),
             [],
             new AiAnalyzeResult
             {

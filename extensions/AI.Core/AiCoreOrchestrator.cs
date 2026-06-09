@@ -107,7 +107,7 @@ public sealed class AiCoreOrchestrator(
                 settings,
                 request.DispatchResults,
                 AiMediaKinds.Image,
-                $"{request.Paths.Count} image(s)",
+                request.Paths.Count == 1 ? request.Paths[0] : $"{request.Paths.Count} image(s)",
                 runId,
                 request.EntityType,
                 request.EntityId,

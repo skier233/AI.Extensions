@@ -17,6 +17,26 @@ public sealed class AiPathMapperTests
     }
 
     [Fact]
+    public void MapPath_MatchesSourcePrefixEnteredWithWindowsBackslashes()
+    {
+        var mapped = AiPathMapper.MapPath(
+            [new AiPathMapping { FromPrefix = "C:\\media", ToPrefix = "/mnt/media" }],
+            "C:\\media\\videos\\example.mp4");
+
+        Assert.Equal("/mnt/media/videos/example.mp4", mapped);
+    }
+
+    [Fact]
+    public void MapPath_DoesNotMatchPartialPathSegment()
+    {
+        var mapped = AiPathMapper.MapPath(
+            [new AiPathMapping { FromPrefix = "C:/media", ToPrefix = "/mnt/media" }],
+            "C:/media-extra/example.mp4");
+
+        Assert.Equal("C:/media-extra/example.mp4", mapped);
+    }
+
+    [Fact]
     public void MapPath_NormalizesMalformedWindowsDrivePathWithoutMappings()
     {
         var mapped = AiPathMapper.MapPath([], "E:test/Content/Videos/example.mp4");

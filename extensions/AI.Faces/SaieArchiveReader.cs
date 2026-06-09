@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO.Compression;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -54,6 +55,54 @@ internal sealed class SaieReferencePack(
             throw new ArgumentOutOfRangeException(nameof(ordinal));
 
         return CentroidNorms[ordinal];
+    }
+
+    // Cosine similarity between a (pre-normed) source vector and the centroid at <ordinal>, clamped to
+    // [0, 1]. Centroids are stored contiguously so this dots directly against the backing buffer with a
+    // SIMD-accelerated kernel — the per-identity scan over a large reference pack is the suggester's hot
+    // loop, so this stays allocation-free and branch-light.
+    public float CosineSimilarityTo(int ordinal, ReadOnlySpan<float> source, float sourceNorm)
+    {
+        var dimension = Manifest.EmbeddingDim;
+        if (source.Length != dimension || sourceNorm <= 0f)
+            return 0f;
+
+        var centroidNorm = CentroidNorms[ordinal];
+        if (centroidNorm <= 0f)
+            return 0f;
+
+        var centroid = Centroids.AsSpan(ordinal * dimension, dimension);
+        var similarity = Dot(source, centroid) / (sourceNorm * centroidNorm);
+        return similarity < 0f ? 0f : similarity > 1f ? 1f : similarity;
+    }
+
+    // L2 norm via the same SIMD dot kernel.
+    public static float Norm(ReadOnlySpan<float> vector) => MathF.Sqrt(Dot(vector, vector));
+
+    // Hardware-accelerated dot product. Falls back to scalar for any tail that doesn't fill a full
+    // SIMD lane and on platforms without vectorization (Vector<float>.Count == 1).
+    public static float Dot(ReadOnlySpan<float> left, ReadOnlySpan<float> right)
+    {
+        var length = Math.Min(left.Length, right.Length);
+        var width = Vector<float>.Count;
+        var dot = 0f;
+        var index = 0;
+
+        if (width > 1 && length >= width)
+        {
+            var accumulator = Vector<float>.Zero;
+            for (; index <= length - width; index += width)
+            {
+                accumulator += new Vector<float>(left.Slice(index, width)) * new Vector<float>(right.Slice(index, width));
+            }
+
+            dot = Vector.Sum(accumulator);
+        }
+
+        for (; index < length; index++)
+            dot += left[index] * right[index];
+
+        return dot;
     }
 
     private static float[] ComputeCentroidNorms(int dimension, IReadOnlyList<float> centroids)

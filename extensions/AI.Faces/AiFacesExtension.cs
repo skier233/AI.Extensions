@@ -35,7 +35,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
 
     public override string Url => "https://github.com/yourcove/AI.Extensions";
 
-    public override string MinCoveVersion => "0.0.35";
+    public override string MinCoveVersion => "0.1.0";
 
     public override IReadOnlyList<string> Categories =>
     [
@@ -52,14 +52,19 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
     {
-        var referenceRoot = Path.Combine(context.DataDirectory, Id, "reference");
+        // Persist reference packs outside the extension's own (id-named) install directory. That
+        // directory is replaced wholesale on an extension update, which previously deleted imported
+        // .saie packs; the ".ai-faces-data" sibling under the shared extensions data root survives
+        // updates. The legacy location is passed so existing single-pack installs migrate forward.
+        var legacyReferenceRoot = Path.Combine(context.DataDirectory, Id, "reference");
+        var referenceRoot = Path.Combine(context.DataDirectory, ".ai-faces-data", "reference");
 
         services.AddSingleton<StoreBackedFaceIdentityStateStore>();
         services.AddSingleton<IFaceIdentityStateStore>(static services => services.GetRequiredService<StoreBackedFaceIdentityStateStore>());
         services.AddSingleton<StoreBackedAiFacesSettingsStore>();
         services.AddSingleton<IAiFacesSettingsStore>(static services => services.GetRequiredService<StoreBackedAiFacesSettingsStore>());
         services.AddSingleton<SaieArchiveReader>();
-        services.AddSingleton(services => new AiFaceReferencePackStore(referenceRoot, services.GetRequiredService<SaieArchiveReader>()));
+        services.AddSingleton(services => new AiFaceReferencePackStore(referenceRoot, services.GetRequiredService<SaieArchiveReader>(), legacyReferenceRoot));
         services.AddSingleton<AiFaceReferenceSuggestionDecisionStore>();
         services.AddSingleton<IFaceLifecycleParticipant, AiFacesDeleteParticipant>();
         services.AddSingleton<AiAssetFaceClusterer>();
@@ -69,13 +74,25 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
         services.AddSingleton<AiFacesPersistenceService>();
         services.AddSingleton<IAiCapabilityContributor, AiFacesContributor>();
         services.AddScoped<AiFaceReferencePerformerResolver>();
-        services.AddScoped<IFaceSuggestionDecisionHandler, AiFaceReferenceSuggestionDecisionHandler>();
-        services.AddScoped<IFaceSuggester, AiFaceSuggester>();
+        // Register the real scoped implementations as concrete types, then expose them across the
+        // extension-isolation boundary as singleton bridges that the host consumes via the service
+        // exchange (see ExtensionFaceContributions and InitializeAsync's PublishContributions calls).
+        services.AddScoped<AiFaceReferenceSuggestionDecisionHandler>();
+        services.AddSingleton<IFaceSuggestionDecisionHandler, ExtensionFaceSuggestionDecisionHandler>();
+        services.AddScoped<AiFaceSuggester>();
+        services.AddSingleton<IFaceSuggester, ExtensionFaceSuggester>();
     }
 
     public override Task InitializeAsync(IServiceProvider services, CancellationToken ct = default)
     {
         PublishContributions<IAiCapabilityContributor>(services);
+        // These contracts are consumed by Cove host services (FacesController, AiDataPurgeService),
+        // which since the extensions-runtime redesign can only see sibling/extension services through
+        // the cross-extension exchange. Without publishing them the host falls back to the empty
+        // suggester and no face ever lists a suggestion.
+        PublishContributions<IFaceSuggester>(services);
+        PublishContributions<IFaceSuggestionDecisionHandler>(services);
+        PublishContributions<IFaceLifecycleParticipant>(services);
         services.GetRequiredService<StoreBackedFaceIdentityStateStore>().Attach(Store);
         services.GetRequiredService<StoreBackedAiFacesSettingsStore>().Attach(Store);
         AiFacesSettingsRuntime.Attach(services.GetRequiredService<IAiFacesSettingsStore>());
@@ -137,22 +154,29 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
             }
         });
 
+        // Back-compat: returns the first active pack as a single status object, matching the original
+        // single-pack contract the settings panel consumes.
         group.MapGet("/reference/status", async (AiFaceReferencePackStore packStore, CancellationToken ct) =>
-        {
-            var status = await packStore.GetStatusAsync(ct);
-            return Results.Ok(status);
-        });
+            Results.Ok(await packStore.GetStatusAsync(ct)));
 
-        group.MapDelete("/reference", async (AiFaceReferencePackStore packStore, ICurrentPrincipalAccessor principalAccessor, CancellationToken ct) =>
+        // Full multi-pack listing (one entry per imported site pack).
+        group.MapGet("/reference/packs", async (AiFaceReferencePackStore packStore, CancellationToken ct) =>
+            Results.Ok(await packStore.GetStatusesAsync(ct)));
+
+        group.MapDelete("/reference", async (string? packId, AiFaceReferencePackStore packStore, IFaceTopSuggestionMaintenance suggestionMaintenance, ICurrentPrincipalAccessor principalAccessor, CancellationToken ct) =>
         {
             if (RequirePermission(principalAccessor, DeleteReferencePermission) is { } denied)
                 return denied;
 
-            await packStore.ClearAsync(ct);
+            // packId omitted -> clear every pack; otherwise remove just that site's pack.
+            await packStore.ClearAsync(packId, ct);
+            // Removing a pack changes every unlinked face's reference matches, so invalidate the
+            // materialized top-suggestion projection; the host recomputes it off the request path.
+            await suggestionMaintenance.InvalidateAllUnlinkedAsync(ct);
             return Results.NoContent();
         });
 
-        group.MapPost("/reference/import", async (HttpRequest request, IJobService jobService, AiFaceReferencePackStore packStore, AiFaceReferenceBackfillService backfillService, ICurrentPrincipalAccessor principalAccessor, CancellationToken ct) =>
+        group.MapPost("/reference/import", async (HttpRequest request, IJobService jobService, AiFaceReferencePackStore packStore, AiFaceReferenceBackfillService backfillService, IServiceScopeFactory scopeFactory, ICurrentPrincipalAccessor principalAccessor, CancellationToken ct) =>
             {
                 if (RequirePermission(principalAccessor, UploadReferencePermission) is { } denied)
                     return denied;
@@ -177,8 +201,9 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
                     $"Importing AI.Faces reference pack {originalFileName}",
                     async (progress, jobCt) =>
                     {
-                        await packStore.ImportStagedAsync(stagedPath, originalFileName, progress, jobCt);
-                        var pack = await packStore.GetActivePackAsync(jobCt);
+                        var status = await packStore.ImportStagedAsync(stagedPath, originalFileName, progress, jobCt);
+                        var packs = await packStore.GetActivePacksAsync(jobCt);
+                        var pack = packs.FirstOrDefault(candidate => string.Equals(candidate.Manifest.PackId, status.PackId, StringComparison.OrdinalIgnoreCase));
                         if (pack is null)
                         {
                             return;
@@ -186,6 +211,14 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
 
                         progress.Report(0.98, "Reconciling existing face identities...");
                         await backfillService.BackfillAsync(pack, jobCt);
+
+                        // A new/updated pack changes every unlinked face's reference matches. Invalidate
+                        // the materialized top-suggestion projection so the host recomputes it off the
+                        // request path. Resolve from a fresh scope since the job outlives the request.
+                        using var maintenanceScope = scopeFactory.CreateScope();
+                        var suggestionMaintenance = maintenanceScope.ServiceProvider.GetService<IFaceTopSuggestionMaintenance>();
+                        if (suggestionMaintenance is not null)
+                            await suggestionMaintenance.InvalidateAllUnlinkedAsync(jobCt);
                     },
                     exclusive: false);
 

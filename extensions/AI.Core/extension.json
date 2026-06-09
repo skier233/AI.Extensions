@@ -81,7 +81,7 @@
       ]
     }
   ],
-  "minCoveVersion": "0.0.35",
+  "minCoveVersion": "0.1.0",
   "entryDll": "AI.Core.dll",
   "sharedAssemblies": [
     "AI.Extensions.Abstractions"

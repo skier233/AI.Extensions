@@ -71,7 +71,9 @@ public sealed class AiRunTargetResolver(IVideoRepository videoRepository, IImage
     private async Task<IReadOnlyList<AiResolvedRunTarget>> ResolveVideoTargetsAsync(AiQueueRunRequest request, CancellationToken ct)
     {
         var (videos, _) = await _videoRepository.FindAsync(
-            new VideoFilter { Ids = request.EntityIds.ToList() }, null, ct);
+            new VideoFilter { Ids = request.EntityIds.ToList() },
+            new FindFilter { PerPage = request.EntityIds.Count },
+            ct);
         var videoById = videos.ToDictionary(static v => v.Id);
 
         var results = new List<AiResolvedRunTarget>();
@@ -112,7 +114,9 @@ public sealed class AiRunTargetResolver(IVideoRepository videoRepository, IImage
     private async Task<IReadOnlyList<AiResolvedRunTarget>> ResolveImageTargetsAsync(AiQueueRunRequest request, CancellationToken ct)
     {
         var (images, _) = await _imageRepository.FindAsync(
-            new ImageFilter { Ids = request.EntityIds.ToList() }, null, ct);
+            new ImageFilter { Ids = request.EntityIds.ToList() },
+            new FindFilter { PerPage = request.EntityIds.Count },
+            ct);
         var imageById = images.ToDictionary(static i => i.Id);
 
         var results = new List<AiResolvedRunTarget>();
@@ -215,6 +219,12 @@ public sealed class AiRunQueueService(
             : settings with { RequestTimeoutSeconds = 0 };
 
         progress.Report(0d, $"Preparing {targets.Count} target(s)");
+        RegisterBatchUnits(progress, targets);
+
+        var unitPositions = targets
+            .Select((target, index) => new { target.UnitId, Position = index + 1 })
+            .ToDictionary(static item => item.UnitId, static item => item.Position, StringComparer.Ordinal);
+        var unitKind = BuildUnitKind(request);
 
         var batchResult = await jobService.RunBatchAsync(
             targets,
@@ -223,7 +233,9 @@ public sealed class AiRunQueueService(
             {
                 using var scope = scopeFactory.CreateScope();
                 var orchestrator = scope.ServiceProvider.GetRequiredService<IAiCoreOrchestrator>();
-                unit.Report(0.05d, "Analyzing");
+                var position = unitPositions[target.UnitId];
+                var processingMessage = BuildProcessingMessage(unitKind, position, targets.Count, target.Label);
+                unit.Report(0.05d, processingMessage);
                 string runId;
                 try
                 {
@@ -234,7 +246,7 @@ public sealed class AiRunQueueService(
                     logger.LogError(ex, "AI queue item {UnitId} failed for {Path}", target.UnitId, target.Path);
                     throw;
                 }
-                unit.Report(1d, $"Run {runId}");
+                unit.Report(1d, $"Completed {unitKind} {position} of {targets.Count}: {target.Label} (run {runId})");
             },
             progress,
             unitIdFactory: static (target, _) => target.UnitId,
@@ -243,6 +255,32 @@ public sealed class AiRunQueueService(
 
         progress.Report(1d, batchResult.Summary);
     }
+
+    private static void RegisterBatchUnits(IJobProgress progress, IReadOnlyList<AiResolvedRunTarget> targets)
+    {
+        foreach (var target in targets)
+        {
+            progress.StartUnit(target.UnitId, target.Label).Dispose();
+        }
+    }
+
+    private static string BuildUnitKind(AiQueueRunRequest request)
+        => request.EntityType switch
+        {
+            "video" => "Video",
+            "image" => "Image",
+            _ => request.MediaKind switch
+            {
+                AiMediaKinds.Image => "Image",
+                AiMediaKinds.Audio => "Audio",
+                _ => "Video",
+            },
+        };
+
+    private static string BuildProcessingMessage(string unitKind, int position, int total, string label)
+        => string.IsNullOrWhiteSpace(label)
+            ? $"Processing {unitKind} {position} of {total}"
+            : $"Processing {unitKind} {position} of {total}: {label}";
 
     private static async Task<string> ExecuteTargetAsync(
         IAiCoreOrchestrator orchestrator,

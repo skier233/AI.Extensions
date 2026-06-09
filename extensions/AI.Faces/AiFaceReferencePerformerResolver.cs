@@ -10,9 +10,12 @@ internal sealed record AiFaceReferencePerformerMatch(
     bool LocalPerformerHasImage,
     bool LocalPerformerIsLocalOnly);
 
-internal sealed class AiFaceReferencePerformerResolver(IPerformerRepository performerRepository)
+internal sealed class AiFaceReferencePerformerResolver(
+    IPerformerRepository performerRepository,
+    IReferencePerformerImporter? performerImporter = null)
 {
     private readonly IPerformerRepository _performerRepository = performerRepository;
+    private readonly IReferencePerformerImporter? _performerImporter = performerImporter;
 
     public async Task<IReadOnlyDictionary<string, AiFaceReferencePerformerMatch>> ResolveAsync(
         IReadOnlyCollection<SaieReferenceIdentity> identities,
@@ -88,6 +91,8 @@ internal sealed class AiFaceReferencePerformerResolver(IPerformerRepository perf
 
         if (!string.IsNullOrWhiteSpace(sourceEndpoint))
         {
+            // Record the originating site's remote id even when we cannot scrape now, so the performer
+            // can be enriched later if the user links that metadata server in the future.
             performer.RemoteIds.Add(new PerformerRemoteId
             {
                 Endpoint = sourceEndpoint,
@@ -95,7 +100,16 @@ internal sealed class AiFaceReferencePerformerResolver(IPerformerRepository perf
             });
         }
 
-        return await _performerRepository.AddAsync(performer, ct);
+        var created = await _performerRepository.AddAsync(performer, ct);
+
+        // Brand-new performer: if the originating site is configured as a metadata server, enrich it now
+        // with a full scrape (image, bio, measurements, aliases, …). No-op when no server is configured.
+        if (_performerImporter is not null && !string.IsNullOrWhiteSpace(sourceEndpoint))
+        {
+            await _performerImporter.TryImportAsync(created.Id, sourceEndpoint!, identity.ExternalId, ct);
+        }
+
+        return created;
     }
 
     private static Performer? SelectMatch(IReadOnlyCollection<Performer> performers, SaieReferenceIdentity identity, string? sourceEndpoint)

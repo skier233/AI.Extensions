@@ -218,6 +218,11 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
         }
 
         var resolver = services.GetService(resolverType);
+        if (resolver is null)
+        {
+            return;
+        }
+
         var evictVideo = resolverType.GetMethod("EvictVideo", [typeof(int)]);
         evictVideo?.Invoke(resolver, [videoId]);
     }
