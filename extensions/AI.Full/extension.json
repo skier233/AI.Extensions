@@ -11,7 +11,7 @@
     "automation",
     "tools"
   ],
-  "minCoveVersion": "0.4.0",
+  "minCoveVersion": "0.4.2",
   "dependencies": {
     "cove.community.ai.core": ">=0.1.0",
     "cove.community.ai.tagging": ">=0.1.0",

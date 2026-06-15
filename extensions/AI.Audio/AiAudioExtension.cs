@@ -25,7 +25,7 @@ public sealed class AiAudioExtension : FullExtensionBase
 
     public override string Url => "https://github.com/skier233/AI.Extensions";
 
-    public override string MinCoveVersion => "0.4.0";
+    public override string MinCoveVersion => "0.4.2";
 
     public override IReadOnlyList<string> Categories =>
     [

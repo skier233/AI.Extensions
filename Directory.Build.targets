@@ -1,0 +1,63 @@
+<Project>
+
+  <!--
+    Central Cove host-contract wiring for every extension project (anything with an extension.json).
+
+    Extensions compile against the Cove host contracts (Cove.Sdk + Cove.Core, which transitively expose
+    Cove.Plugins and the infrastructure types: EF Core, Npgsql, Pgvector, …). The host process provides all
+    of those assemblies at runtime, so they are referenced COMPILE-ONLY and never shipped in the package:
+    a bundled copy is dead weight and, if loaded into the extension's AssemblyLoadContext, would split the
+    identity of types that cross the host boundary (entities, DbContext, Pgvector.Vector, …) and silently
+    break casts and DI.
+
+      * Local dev (sibling ../cove checkout present) → ProjectReference, so changes flow without a NuGet bump.
+      * CI / external authors          → PackageReference to the published Cove.* packages.
+
+    When the Cove.Sdk *package* is used, its own buildTransitive/Cove.Sdk.targets also strips the host
+    closure; the strip target below covers the local ProjectReference path, where buildTransitive does not
+    flow. Both are idempotent.
+  -->
+
+  <ItemGroup Condition="Exists('$(MSBuildProjectDirectory)\extension.json') and '$(UseLocalCoveSource)' == 'true'">
+    <ProjectReference Include="$(MSBuildThisFileDirectory)..\cove\src\Cove.Sdk\Cove.Sdk.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemGroup Condition="Exists('$(MSBuildProjectDirectory)\extension.json') and '$(UseLocalCoveSource)' != 'true'">
+    <PackageReference Include="Cove.Sdk" Version="$(CoveSdkVersion)" />
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(MSBuildProjectDirectory)\extension.json') and '$(UseLocalCoveCore)' == 'true'">
+    <ProjectReference Include="$(MSBuildThisFileDirectory)..\cove\src\Cove.Core\Cove.Core.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemGroup Condition="Exists('$(MSBuildProjectDirectory)\extension.json') and '$(UseLocalCoveCore)' != 'true'">
+    <PackageReference Include="Cove.Core" Version="$(CoveCoreVersion)" />
+  </ItemGroup>
+
+  <!-- Assemblies the Cove host provides at runtime — see note above. Semicolon-delimited with leading/
+       trailing ';' so membership is a substring test. Mirrors Cove.Sdk's buildTransitive list. -->
+  <PropertyGroup Condition="Exists('$(MSBuildProjectDirectory)\extension.json')">
+    <CoveHostProvidedAssemblies Condition="'$(CoveHostProvidedAssemblies)' == ''">;Cove.Core;Cove.Plugins;Cove.Sdk;Microsoft.EntityFrameworkCore;Microsoft.EntityFrameworkCore.Abstractions;Microsoft.EntityFrameworkCore.Relational;Npgsql;Npgsql.EntityFrameworkCore.PostgreSQL;Pgvector;Pgvector.EntityFrameworkCore;MediatR.Contracts;</CoveHostProvidedAssemblies>
+  </PropertyGroup>
+
+  <Target Name="CoveStripHostProvidedCopyLocal" AfterTargets="ResolveReferences"
+          Condition="Exists('$(MSBuildProjectDirectory)\extension.json')">
+    <ItemGroup>
+      <ReferenceCopyLocalPaths Remove="@(ReferenceCopyLocalPaths)"
+        Condition="$(CoveHostProvidedAssemblies.Contains(';%(ReferenceCopyLocalPaths.FileName);'))" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="CoveStripHostProvidedPublish" AfterTargets="ComputeFilesToPublish"
+          Condition="Exists('$(MSBuildProjectDirectory)\extension.json')">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+        Condition="$(CoveHostProvidedAssemblies.Contains(';%(ResolvedFileToPublish.FileName);'))" />
+    </ItemGroup>
+  </Target>
+
+</Project>

@@ -4,14 +4,5 @@
     <RootNamespace>AI.Full</RootNamespace>
   </PropertyGroup>
 
-  <ItemGroup Condition="'$(UseLocalCoveSource)' == 'true' and Exists('$(MSBuildThisFileDirectory)..\\..\\..\\cove\\src\\Cove.Sdk\\Cove.Sdk.csproj')">
-    <ProjectReference Include="..\\..\\..\\cove\\src\\Cove.Sdk\\Cove.Sdk.csproj">
-      <Private>false</Private>
-      <ExcludeAssets>runtime</ExcludeAssets>
-    </ProjectReference>
-  </ItemGroup>
-
-  <ItemGroup Condition="'$(UseLocalCoveSource)' != 'true'">
-    <PackageReference Include="Cove.Sdk" Version="$(CoveSdkVersion)" />
-  </ItemGroup>
+  <!-- Cove host contracts are referenced centrally and compile-only by ..\..\Directory.Build.targets. -->
 </Project>

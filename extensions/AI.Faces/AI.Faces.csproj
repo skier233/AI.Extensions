@@ -32,25 +32,6 @@
     </PackageReference>
   </ItemGroup>
 
-  <ItemGroup Condition="'$(UseLocalCoveSource)' == 'true' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Sdk\Cove.Sdk.csproj')">
-    <ProjectReference Include="..\..\..\cove\src\Cove.Sdk\Cove.Sdk.csproj">
-      <Private>false</Private>
-      <ExcludeAssets>runtime</ExcludeAssets>
-    </ProjectReference>
-  </ItemGroup>
-
-  <ItemGroup Condition="'$(UseLocalCoveSource)' != 'true'">
-    <PackageReference Include="Cove.Sdk" Version="$(CoveSdkVersion)" />
-  </ItemGroup>
-
-  <ItemGroup Condition="'$(UseLocalCoveCore)' == 'true' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Core\Cove.Core.csproj')">
-    <ProjectReference Include="..\..\..\cove\src\Cove.Core\Cove.Core.csproj">
-      <Private>false</Private>
-      <ExcludeAssets>runtime</ExcludeAssets>
-    </ProjectReference>
-  </ItemGroup>
-
-  <ItemGroup Condition="'$(UseLocalCoveCore)' != 'true'">
-    <PackageReference Include="Cove.Core" Version="$(CoveCoreVersion)" />
-  </ItemGroup>
+  <!-- Cove host contracts (Cove.Sdk + Cove.Core) are referenced centrally and compile-only by
+       ..\..\Directory.Build.targets. -->
 </Project>

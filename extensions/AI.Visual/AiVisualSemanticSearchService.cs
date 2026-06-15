@@ -1267,7 +1267,7 @@ internal sealed class AiVisualSemanticSearchService(
             video.Captions,
             video.InteractiveSpeed,
             video.Urls.Select(static url => url.Url).ToList(),
-            video.VideoTags.Where(static vt => vt.Tag != null).Select(static vt => new TagDto(vt.Tag!.Id, vt.Tag.Name, vt.Tag.Description, vt.Tag.Favorite, vt.Tag.IgnoreAutoTag, [])).ToList(),
+            video.VideoTags.Where(static vt => vt.Tag != null).Select(static vt => new TagDto(vt.Tag!.Id, vt.Tag.Name, vt.Tag.Description, vt.Tag.Favorite, [])).ToList(),
             video.VideoPerformers.Where(static vp => vp.Performer != null).Select(static vp => MapPerformer(vp.Performer!)).ToList(),
             video.Files.Select(file => new VideoFileDto(
                 file.Id,
@@ -1303,7 +1303,7 @@ internal sealed class AiVisualSemanticSearchService(
             image.Studio?.Name,
             image.Date?.ToString("yyyy-MM-dd"),
             image.Urls.Select(static url => url.Url).ToList(),
-            image.ImageTags.Where(static imageTag => imageTag.Tag != null).Select(static imageTag => new TagDto(imageTag.Tag!.Id, imageTag.Tag.Name, imageTag.Tag.Description, imageTag.Tag.Favorite, imageTag.Tag.IgnoreAutoTag, [])).ToList(),
+            image.ImageTags.Where(static imageTag => imageTag.Tag != null).Select(static imageTag => new TagDto(imageTag.Tag!.Id, imageTag.Tag.Name, imageTag.Tag.Description, imageTag.Tag.Favorite, [])).ToList(),
             image.ImagePerformers.Where(static imagePerformer => imagePerformer.Performer != null).Select(static imagePerformer => MapPerformer(imagePerformer.Performer!)).ToList(),
             image.GalleryCount,
             image.ImageGalleries?.Select(static imageGallery => imageGallery.GalleryId).ToList() ?? [],
