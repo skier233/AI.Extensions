@@ -337,6 +337,7 @@ public sealed class AiVisualSemanticSearchServiceTests
         services.AddDbContext<CoveContext>(options => options.UseInMemoryDatabase(databaseName, databaseRoot));
         services.AddScoped<IVideoRepository, VideoRepository>();
         services.AddScoped<IImageRepository, ImageRepository>();
+        services.AddScoped<IEmbeddingRepository, EmbeddingRepository>();
         services.AddScoped<ITextEncoder>(_ => textEncoder ?? new FakeTextEncoder());
         services.AddScoped<EmbeddingService>();
         services.AddScoped<IEmbeddingService>(static services => services.GetRequiredService<EmbeddingService>());

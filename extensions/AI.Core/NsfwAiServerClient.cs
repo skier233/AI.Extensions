@@ -28,7 +28,7 @@ public interface INsfwAiServerClient
     Task<TextEncodeResponse> EncodeTextAsync(AiCoreConnectionSettings settings, TextEncodeRequest request, CancellationToken ct = default);
 }
 
-public sealed class NsfwAiServerClient(HttpClient httpClient) : INsfwAiServerClient
+public sealed class NsfwAiServerClient(HttpClient httpClient, IAiModelCatalogCache catalogCache) : INsfwAiServerClient
 {
     private static readonly JsonSerializerOptions SnakeCaseJson = new(JsonSerializerDefaults.Web)
     {
@@ -39,28 +39,51 @@ public sealed class NsfwAiServerClient(HttpClient httpClient) : INsfwAiServerCli
     };
 
     private readonly HttpClient _httpClient = httpClient;
+    private readonly IAiModelCatalogCache _catalogCache = catalogCache;
 
-    public async Task<IReadOnlyList<AiModelCatalogEntry>> GetModelCatalogAsync(AiCoreConnectionSettings settings, CancellationToken ct = default)
+    public Task<IReadOnlyList<AiModelCatalogEntry>> GetModelCatalogAsync(AiCoreConnectionSettings settings, CancellationToken ct = default)
     {
-        var envelope = await GetAsync<AiModelCatalogEnvelope>(settings, "/v4/models/catalog", ct);
-        return envelope.Models;
+        var normalized = settings.Normalize();
+        return _catalogCache.GetOrCreateAsync(
+            normalized.ServerBaseUrl,
+            AiModelCatalogCacheKind.Catalog,
+            TimeSpan.FromSeconds(normalized.ModelCacheSeconds),
+            async innerCt =>
+            {
+                var envelope = await GetAsync<AiModelCatalogEnvelope>(normalized, "/v4/models/catalog", innerCt);
+                return envelope.Models;
+            },
+            ct);
     }
 
-    public async Task<IReadOnlyList<AiModelCatalogEntry>> GetLoadedModelsAsync(AiCoreConnectionSettings settings, CancellationToken ct = default)
+    public Task<IReadOnlyList<AiModelCatalogEntry>> GetLoadedModelsAsync(AiCoreConnectionSettings settings, CancellationToken ct = default)
     {
-        var envelope = await GetAsync<AiModelCatalogEnvelope>(settings, "/v4/models/loaded", ct);
-        return envelope.Models;
+        var normalized = settings.Normalize();
+        return _catalogCache.GetOrCreateAsync(
+            normalized.ServerBaseUrl,
+            AiModelCatalogCacheKind.Loaded,
+            TimeSpan.FromSeconds(normalized.ModelCacheSeconds),
+            async innerCt =>
+            {
+                var envelope = await GetAsync<AiModelCatalogEnvelope>(normalized, "/v4/models/loaded", innerCt);
+                return envelope.Models;
+            },
+            ct);
     }
 
     public async Task<IReadOnlyList<AiModelCatalogEntry>> LoadModelsAsync(AiCoreConnectionSettings settings, AiModelSelectionRequest request, CancellationToken ct = default)
     {
-        var envelope = await PostAsync<AiModelSelectionRequest, AiModelCatalogEnvelope>(settings, "/v4/models/load", request, ct);
+        var normalized = settings.Normalize();
+        var envelope = await PostAsync<AiModelSelectionRequest, AiModelCatalogEnvelope>(normalized, "/v4/models/load", request, ct);
+        _catalogCache.Invalidate(normalized.ServerBaseUrl);
         return envelope.Models;
     }
 
     public async Task<IReadOnlyList<AiModelCatalogEntry>> UnloadModelsAsync(AiCoreConnectionSettings settings, AiModelSelectionRequest request, CancellationToken ct = default)
     {
-        var envelope = await PostAsync<AiModelSelectionRequest, AiModelCatalogEnvelope>(settings, "/v4/models/unload", request, ct);
+        var normalized = settings.Normalize();
+        var envelope = await PostAsync<AiModelSelectionRequest, AiModelCatalogEnvelope>(normalized, "/v4/models/unload", request, ct);
+        _catalogCache.Invalidate(normalized.ServerBaseUrl);
         return envelope.Models;
     }
 

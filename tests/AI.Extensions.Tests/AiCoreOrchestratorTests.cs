@@ -6,6 +6,7 @@ using AI.Extensions.Abstractions;
 using Cove.Plugins;
 
 using Cove.Core.Entities;
+using Cove.Core.Interfaces;
 using Cove.Data;
 
 using Microsoft.EntityFrameworkCore;
@@ -441,11 +442,15 @@ public sealed class AiCoreOrchestratorTests
     }
 
     [Fact]
-    public async Task RunVideoAsync_SkipsSatisfiedFaceDetectionAndEmbeddingRunWithoutCallingServer()
+    public async Task RunVideoAsync_FaceArtifactsWithoutPriorRunDoNotSatisfyAndStillRun()
     {
         await using var provider = CreateProvider();
         await using var scope = provider.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+
+        // Persisted face artifacts exist, but there is no completed ext:ai.core run record.
+        // The planner decides skip/run solely from prior run records, so these artifacts must
+        // NOT make it skip — it should still run.
         db.Faces.Add(new Face { Id = 100, Label = "Existing face", PrimarySourceKey = "ext:ai.faces" });
         db.FaceAppearances.Add(new FaceAppearance
         {
@@ -456,21 +461,16 @@ public sealed class AiCoreOrchestratorTests
             Payload = JsonDocument.Parse("""{"modelKey":"face_detector_torchexport"}"""),
             SampleCount = 1,
         });
-        db.Embeddings.Add(new Embedding
-        {
-            HostType = EmbeddingHostType.Face,
-            HostId = 100,
-            Kind = "face",
-            KindFamily = "face",
-            Modality = EmbeddingModality.Face,
-            Dim = 2,
-            Vector = new Vector(new float[] { 0.1f, 0.2f }),
-            SourceKey = "ext:ai.faces",
-            Meta = JsonDocument.Parse("""{"modelKey":"face_embedding_torchexport"}"""),
-        });
         await db.SaveChangesAsync();
 
-        var client = new RecordingAiServerClient();
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels =
+            [
+                CreateModel("face_detector_torchexport", ["face_detections"], "detection", "frame"),
+                CreateModel("face_embedding_torchexport", ["face_embeddings"], "embedding", "region"),
+            ],
+        };
         var orchestrator = CreatePlannerOrchestrator(scope.ServiceProvider, client, CreateFacesContributor());
 
         var result = await orchestrator.RunVideoAsync(
@@ -484,9 +484,8 @@ public sealed class AiCoreOrchestratorTests
                 DispatchResults = true,
             });
 
-        Assert.Equal(0, client.AnalyzeVideoCallCount);
-        Assert.All(result.Plan, plan => Assert.Equal(AiRunPlanDecision.Skip, plan.Decision));
-        Assert.Equal("skipped", result.Analysis.GetProperty("status").GetString());
+        Assert.Equal(1, client.AnalyzeVideoCallCount);
+        Assert.Contains(result.Plan, plan => plan.Decision == AiRunPlanDecision.Run);
     }
 
     [Fact]
@@ -531,6 +530,115 @@ public sealed class AiCoreOrchestratorTests
         Assert.Equal(1, client.AnalyzeVideoCallCount);
         Assert.All(second.Plan, plan => Assert.Equal(AiRunPlanDecision.Skip, plan.Decision));
         Assert.Equal("skipped", second.Analysis.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_DoesNotCallServerWhenCategoriesToSkipCoversEveryModel()
+    {
+        await using var provider = CreateProvider();
+        await using var scope = provider.CreateAsyncScope();
+
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels =
+            [
+                CreateModel("face_detector_torchexport", ["face_detections"], "detection", "frame"),
+                CreateModel("face_embedding_torchexport", ["face_embeddings"], "embedding", "region"),
+            ],
+            EchoRequestedVideoModels = true,
+        };
+        var orchestrator = CreatePlannerOrchestrator(scope.ServiceProvider, client, CreateFacesContributor());
+
+        var result = await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                ClaimIds = ["faces.video.detection", "faces.video.embedding"],
+                CategoriesToSkip = ["face_detections", "face_embeddings"],
+                DispatchResults = true,
+            });
+
+        // Every requested model's categories are in categories_to_skip, so the server
+        // would only preprocess and run nothing — cove must not call it at all.
+        Assert.Equal(0, client.AnalyzeVideoCallCount);
+        Assert.Equal("skipped", result.Analysis.GetProperty("status").GetString());
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_StillCallsServerWhenAModelHasAnUnskippedCategory()
+    {
+        await using var provider = CreateProvider();
+        await using var scope = provider.CreateAsyncScope();
+
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels =
+            [
+                CreateModel("face_detector_torchexport", ["face_detections"], "detection", "frame"),
+                CreateModel("face_embedding_torchexport", ["face_embeddings"], "embedding", "region"),
+            ],
+            EchoRequestedVideoModels = true,
+        };
+        var orchestrator = CreatePlannerOrchestrator(scope.ServiceProvider, client, CreateFacesContributor());
+
+        var result = await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                ClaimIds = ["faces.video.detection", "faces.video.embedding"],
+                CategoriesToSkip = ["face_detections"],
+                DispatchResults = true,
+            });
+
+        // The embedding model's category is not skipped, so there is real work to do.
+        Assert.Equal(1, client.AnalyzeVideoCallCount);
+    }
+
+    [Fact]
+    public async Task ClearingHostFaceEvidence_LetsFaceRecognitionRunAgain()
+    {
+        await using var provider = CreateProvider();
+        await using var scope = provider.CreateAsyncScope();
+
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels =
+            [
+                CreateModel("face_detector_torchexport", ["face_detections"], "detection", "frame"),
+                CreateModel("face_embedding_torchexport", ["face_embeddings"], "embedding", "region"),
+            ],
+            EchoRequestedVideoModels = true,
+        };
+        var orchestrator = CreatePlannerOrchestrator(scope.ServiceProvider, client, CreateFacesContributor());
+
+        AiRunVideoRequest Request() => new()
+        {
+            Path = "E:/media/example.mp4",
+            EntityType = "video",
+            EntityId = 42,
+            ClaimIds = ["faces.video.detection", "faces.video.embedding"],
+            DispatchResults = false,
+        };
+
+        await orchestrator.RunVideoAsync(new AiCoreConnectionSettings().Normalize(), Request());
+        var skipped = await orchestrator.RunVideoAsync(new AiCoreConnectionSettings().Normalize(), Request());
+        Assert.Equal(1, client.AnalyzeVideoCallCount);
+        Assert.All(skipped.Plan, plan => Assert.Equal(AiRunPlanDecision.Skip, plan.Decision));
+
+        // The face lifecycle reports cleared work by category; this must prune the run evidence so the
+        // planner stops treating face recognition as satisfied.
+        var participant = new AiCoreFaceRunEvidenceParticipant(scope.ServiceProvider.GetRequiredService<IServiceScopeFactory>());
+        await participant.OnHostFacesClearedAsync(new FaceRunEvidenceCleared(DetectionHostType.Video, 42, ["face_detections", "face_embeddings"]));
+
+        var rerun = await orchestrator.RunVideoAsync(new AiCoreConnectionSettings().Normalize(), Request());
+        Assert.Equal(2, client.AnalyzeVideoCallCount);
+        Assert.All(rerun.Plan, plan => Assert.Equal(AiRunPlanDecision.Run, plan.Decision));
     }
 
     [Fact]
@@ -586,7 +694,7 @@ public sealed class AiCoreOrchestratorTests
     }
 
     [Fact]
-    public async Task RunVideoAsync_ChangingPreferredTaggingModelRerunsOnlyTheChangedCategory()
+    public async Task RunVideoAsync_UpgradingTaggingModelVersionRerunsOnlyTheChangedCategory()
     {
         await using var provider = CreateProvider();
         await using var scope = provider.CreateAsyncScope();
@@ -598,11 +706,11 @@ public sealed class AiCoreOrchestratorTests
         {
             CatalogModels =
             [
-                CreateTaggingModel("tagger-actions-v1", ["Actions"], scope: "frame"),
-                CreateTaggingModel("tagger-actions-v2", ["Actions"], scope: "frame"),
-                CreateTaggingModel("tagger-body", ["Body"], scope: "frame"),
+                CreateTaggingModel("tagger-actions-v1", ["Actions"], scope: "frame", version: "1.0"),
+                CreateTaggingModel("tagger-actions-v2", ["Actions"], scope: "frame", version: "2.0"),
+                CreateTaggingModel("tagger-body", ["Body"], scope: "frame", version: "1.0"),
             ],
-                        EchoRequestedVideoModels = true,
+            EchoRequestedVideoModels = true,
         };
         var orchestrator = CreatePlannerOrchestrator(scope.ServiceProvider, client, CreateTaggingContributor("tagging.video.frame", AiMediaKinds.Video, "frame"));
 
@@ -710,6 +818,12 @@ public sealed class AiCoreOrchestratorTests
         var databaseName = $"ai-core-orchestrator-{Guid.NewGuid():N}";
         var databaseRoot = new InMemoryDatabaseRoot();
         services.AddDbContext<CoveContext>(options => options.UseInMemoryDatabase(databaseName, databaseRoot));
+        services.AddScoped<Cove.Core.Interfaces.IAiRunRepository, Cove.Data.Repositories.AiRunRepository>();
+        services.AddScoped<Cove.Core.Interfaces.IEmbeddingRepository, Cove.Data.Repositories.EmbeddingRepository>();
+        services.AddScoped<Cove.Core.Interfaces.IDetectionRepository, Cove.Data.Repositories.DetectionRepository>();
+        services.AddScoped<Cove.Core.Interfaces.IFaceRepository, Cove.Data.Repositories.FaceRepository>();
+        services.AddScoped<Cove.Core.Interfaces.ITagApplicationRepository, Cove.Data.Repositories.TagApplicationRepository>();
+        services.AddScoped<Cove.Core.Interfaces.ISegmentRepository, Cove.Data.Repositories.SegmentRepository>();
         services.AddScoped<IAiRunJournal, AiRunJournal>();
         services.AddScoped<IAiRunPlanner, AiRunPlanner>();
         services.AddScoped<IAiArtifactReplaceService, AiArtifactReplaceService>();
@@ -874,7 +988,9 @@ public sealed class AiCoreOrchestratorTests
         IReadOnlyList<string> categories,
         bool loaded = true,
         bool active = true,
-        string scope = "asset")
+        string scope = "asset",
+        string? version = null,
+        int? identifier = null)
         => new()
         {
             ConfigName = configName,
@@ -884,9 +1000,11 @@ public sealed class AiCoreOrchestratorTests
             SupportedScopes = [scope],
             Loaded = loaded,
             Active = active,
+            Version = version,
+            Identifier = identifier,
         };
 
-    private static AiModelCatalogEntry CreateModel(string configName, IReadOnlyList<string> categories, string capability, string scope, bool loaded = true, bool active = true)
+    private static AiModelCatalogEntry CreateModel(string configName, IReadOnlyList<string> categories, string capability, string scope, bool loaded = true, bool active = true, string? version = null, int? identifier = null)
         => new()
         {
             ConfigName = configName,
@@ -896,6 +1014,8 @@ public sealed class AiCoreOrchestratorTests
             SupportedScopes = [scope],
             Loaded = loaded,
             Active = active,
+            Version = version,
+            Identifier = identifier,
         };
 
     private sealed class StubContributor(AiCapabilityDescriptor descriptor) : IAiCapabilityContributor
@@ -980,6 +1100,8 @@ public sealed class AiCoreOrchestratorTests
                     categories = model.Categories,
                     capabilities = model.Capabilities,
                     supported_scopes = model.SupportedScopes,
+                    identifier = model.Identifier,
+                    version = model.Version,
                 })
                 .ToArray();
 

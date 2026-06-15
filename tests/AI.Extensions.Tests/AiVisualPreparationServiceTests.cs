@@ -55,4 +55,61 @@ public sealed class AiVisualPreparationServiceTests
                     Embeddings = [new AiEmbeddingObservation("visual", "frame", vector, 1.0)],
                 });
     }
+
+    [Fact]
+    public void Prepare_RoutesSemanticAndFeatureCategoriesToDistinctKinds()
+    {
+        // Both the feature ("visual_embeddings_visual") and semantic ("visual_embeddings_semvisual")
+        // models run on the same frames. The semantic category also contains the substring "visual",
+        // so a loose match would misroute it to the feature target. Each must land on its own kind.
+        var service = new AiVisualPreparationService();
+        var featureClaim = new AiCapabilityClaim(
+            "visual.video.feature", "Video Feature Embeddings",
+            AiMediaKinds.Video, "embedding", "frame", "frames",
+            PreferredModels: ["visual"]);
+        var semanticClaim = new AiCapabilityClaim(
+            "visual.video.semantic", "Video Semantic Embeddings",
+            AiMediaKinds.Video, "embedding", "frame", "frames",
+            PreferredModels: ["semvisual"]);
+
+        var result = new AiAnalyzeResult
+        {
+            MediaKind = AiMediaKinds.Video,
+            AssetId = "video-both",
+            FrameIntervalSeconds = 1.0,
+            Frames =
+            [
+                Frame(0, 0.0),
+                Frame(1, 1.0),
+                Frame(2, 2.0),
+            ],
+        };
+
+        var batch = service.Prepare(AiTestData.CreateRequest(AiMediaKinds.Video, [featureClaim, semanticClaim], result, "video-both"));
+
+        Assert.Contains(batch.Embeddings, e => e.Kind == "visual.feature.v1" && e.KindFamily == "feature.v1" && !e.IsSemantic);
+        Assert.Contains(batch.Embeddings, e => e.Kind == "visual.semantic.v1" && e.KindFamily == "semantic.v1" && e.IsSemantic);
+        Assert.All(
+            batch.Embeddings.Where(e => e.IsSemantic),
+            e => Assert.Equal("visual_embeddings_semvisual", e.ModelKey));
+        Assert.All(
+            batch.Embeddings.Where(e => !e.IsSemantic),
+            e => Assert.Equal("visual_embeddings_visual", e.ModelKey));
+
+        static AiTemporalSlice Frame(int index, double timeSeconds)
+            => new(
+                "frame",
+                index,
+                timeSeconds,
+                null,
+                null,
+                new AiAnalysisNode
+                {
+                    Embeddings =
+                    [
+                        new AiEmbeddingObservation("visual_embeddings_visual", "frame", [1f, 0f], 1.0),
+                        new AiEmbeddingObservation("visual_embeddings_semvisual", "frame", [0f, 1f], 1.0),
+                    ],
+                });
+    }
 }

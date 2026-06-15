@@ -12,6 +12,7 @@ using Cove.Core.Interfaces;
 using Cove.Plugins;
 using Cove.Sdk;
 
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AI.Faces;
@@ -27,15 +28,15 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
 
     public override string Name => "AI Faces";
 
-    public override string Version => "0.0.2";
+    public override string Version => "0.1.0";
 
     public override string Description => "Contributes face-region and face-embedding claims for AI workflows.";
 
     public override string Author => "Cove Team";
 
-    public override string Url => "https://github.com/yourcove/AI.Extensions";
+    public override string Url => "https://github.com/skier233/AI.Extensions";
 
-    public override string MinCoveVersion => "0.1.0";
+    public override string MinCoveVersion => "0.4.0";
 
     public override IReadOnlyList<string> Categories =>
     [
@@ -47,7 +48,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
 
     public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
     {
-        ["cove.community.ai.core"] = ">=0.0.2",
+        ["cove.community.ai.core"] = ">=0.1.0",
     };
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
@@ -59,13 +60,18 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
         var legacyReferenceRoot = Path.Combine(context.DataDirectory, Id, "reference");
         var referenceRoot = Path.Combine(context.DataDirectory, ".ai-faces-data", "reference");
 
+        // The legacy blob store is retained only so DbFaceIdentityStore can perform the one-time import of
+        // the old `face-identity-snapshot` into the relational identity tables.
         services.AddSingleton<StoreBackedFaceIdentityStateStore>();
         services.AddSingleton<IFaceIdentityStateStore>(static services => services.GetRequiredService<StoreBackedFaceIdentityStateStore>());
+        services.AddSingleton<IFaceIdentityStore, DbFaceIdentityStore>();
         services.AddSingleton<StoreBackedAiFacesSettingsStore>();
         services.AddSingleton<IAiFacesSettingsStore>(static services => services.GetRequiredService<StoreBackedAiFacesSettingsStore>());
         services.AddSingleton<SaieArchiveReader>();
         services.AddSingleton(services => new AiFaceReferencePackStore(referenceRoot, services.GetRequiredService<SaieArchiveReader>(), legacyReferenceRoot));
         services.AddSingleton<AiFaceReferenceSuggestionDecisionStore>();
+        services.AddSingleton<AiFacePresenceSuppressionStore>();
+        services.AddSingleton<AiFaceNotPresentService>();
         services.AddSingleton<IFaceLifecycleParticipant, AiFacesDeleteParticipant>();
         services.AddSingleton<AiAssetFaceClusterer>();
         services.AddSingleton<AiFaceIdentityReconciler>();
@@ -98,6 +104,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
         AiFacesSettingsRuntime.Attach(services.GetRequiredService<IAiFacesSettingsStore>());
         services.GetRequiredService<AiFaceReferencePackStore>().Attach(Store);
         services.GetRequiredService<AiFaceReferenceSuggestionDecisionStore>().Attach(Store);
+        services.GetRequiredService<AiFacePresenceSuppressionStore>().Attach(Store);
         return Task.CompletedTask;
     }
 
@@ -228,6 +235,127 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
                 new RequestSizeLimitAttribute(512L * 1024 * 1024),
                 new RequestFormLimitsAttribute { MultipartBodyLengthLimit = 512L * 1024 * 1024 });
 
+        // Mark a face as not actually present on a video/image. Splits the wrong-person occurrences off
+        // the face (re-homing them to a matching or new face) and records a durable suppression.
+        group.MapPost("/faces/{faceId:int}/not-present", async (
+            int faceId,
+            AiFaceNotPresentRequest body,
+            AiFaceNotPresentService notPresentService,
+            ICurrentPrincipalAccessor principalAccessor,
+            CancellationToken ct) =>
+        {
+            if (RequirePermission(principalAccessor, Cove.Core.Auth.Permissions.FacesWrite) is { } denied)
+                return denied;
+
+            if (body is null || string.IsNullOrWhiteSpace(body.HostType) || body.HostId <= 0)
+                return Results.BadRequest(new { error = "hostType and a positive hostId are required." });
+
+            var result = await notPresentService.MarkNotPresentAsync(faceId, body.HostType, body.HostId, ct);
+            if (!result.FaceFound)
+                return Results.NotFound(new { error = "Face was not found." });
+            if (!result.HostHadFace)
+                return Results.BadRequest(new { error = "That face is not present on the specified host." });
+
+            return Results.Ok(result);
+        });
+    }
+
+    // Extension-owned identity graph schema. Maps the persistence entities into the host CoveContext
+    // (queried via the injected DbContext) and creates the backing tables via a raw migration. The
+    // provisional/promoted identity graph used to live in a single serialized `face-identity-snapshot`
+    // blob, which had to be fully loaded, globally re-merged, and re-saved on every asset — O(N^2+) per
+    // asset and unbounded in N. These tables move it to relational, pgvector-backed storage so reconcile
+    // can load only similarity candidates and persist deltas. See DbFaceIdentityStore.
+    public override void ConfigureModel(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<ExtAiFacesIdentityEntity>(entity =>
+        {
+            entity.ToTable("ext_ai_faces_identity");
+            entity.HasKey(item => item.Id);
+            entity.Property(item => item.Id).HasColumnName("id");
+            entity.Property(item => item.FaceKey).HasColumnName("face_key");
+            entity.Property(item => item.Ordinal).HasColumnName("ordinal");
+            entity.Property(item => item.Label).HasColumnName("label");
+            entity.Property(item => item.LifecycleStatus).HasColumnName("lifecycle_status");
+            entity.Property(item => item.PromotionReason).HasColumnName("promotion_reason");
+            entity.Property(item => item.ReferenceExternalId).HasColumnName("reference_external_id");
+            entity.Property(item => item.ReferenceDisplayName).HasColumnName("reference_display_name");
+            entity.Property(item => item.ReferencePackId).HasColumnName("reference_pack_id");
+            entity.Property(item => item.ReferenceSuggestionId).HasColumnName("reference_suggestion_id");
+            entity.Property(item => item.QualityScore).HasColumnName("quality_score");
+            entity.Property(item => item.CoverAssetId).HasColumnName("cover_asset_id");
+            entity.Property(item => item.CoverX1).HasColumnName("cover_x1");
+            entity.Property(item => item.CoverY1).HasColumnName("cover_y1");
+            entity.Property(item => item.CoverX2).HasColumnName("cover_x2");
+            entity.Property(item => item.CoverY2).HasColumnName("cover_y2");
+            entity.Property(item => item.CoverQualityScore).HasColumnName("cover_quality_score");
+            entity.Property(item => item.ObservationCount).HasColumnName("observation_count");
+            entity.Property(item => item.AssetIdsJson).HasColumnName("asset_ids_json");
+            entity.Property(item => item.CreatedAt).HasColumnName("created_at");
+            entity.Property(item => item.UpdatedAt).HasColumnName("updated_at");
+            entity.HasIndex(item => item.FaceKey).IsUnique();
+            entity.HasIndex(item => item.ReferenceExternalId);
+            entity.HasMany(item => item.Anchors)
+                .WithOne()
+                .HasForeignKey(anchor => anchor.IdentityId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<ExtAiFacesIdentityAnchorEntity>(entity =>
+        {
+            entity.ToTable("ext_ai_faces_identity_anchor");
+            entity.HasKey(item => item.Id);
+            entity.Property(item => item.Id).HasColumnName("id");
+            entity.Property(item => item.IdentityId).HasColumnName("identity_id");
+            entity.Property(item => item.ModelKey).HasColumnName("model_key");
+            entity.Property(item => item.QualityScore).HasColumnName("quality_score");
+            entity.Property(item => item.Vector).HasColumnName("vector");
+            entity.HasIndex(item => item.IdentityId);
+        });
+    }
+
+    protected override void DefineMigrations()
+    {
+        // Raw SQL owns the exact column types (notably the pgvector `vector` column, which EF maps but
+        // does not create). The anchor table is small (bounded by distinct people, not detections) and
+        // candidate lookups are scoped to it, so a sequential cosine scan is fast; an ANN index can be
+        // added later once the face embedder's dimension is pinned.
+        Migration("001_create_identity_graph", """
+            CREATE TABLE IF NOT EXISTS ext_ai_faces_identity (
+                id integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                face_key text NOT NULL,
+                ordinal integer NOT NULL,
+                label text NULL,
+                lifecycle_status text NOT NULL,
+                promotion_reason text NULL,
+                reference_external_id text NULL,
+                reference_display_name text NULL,
+                reference_pack_id text NULL,
+                reference_suggestion_id integer NULL,
+                quality_score double precision NOT NULL,
+                cover_asset_id text NULL,
+                cover_x1 double precision NULL,
+                cover_y1 double precision NULL,
+                cover_x2 double precision NULL,
+                cover_y2 double precision NULL,
+                cover_quality_score double precision NOT NULL,
+                observation_count integer NOT NULL,
+                asset_ids_json text NOT NULL,
+                created_at timestamp with time zone NOT NULL,
+                updated_at timestamp with time zone NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS ix_ext_ai_faces_identity_face_key ON ext_ai_faces_identity (face_key);
+            CREATE INDEX IF NOT EXISTS ix_ext_ai_faces_identity_reference_external_id ON ext_ai_faces_identity (reference_external_id);
+
+            CREATE TABLE IF NOT EXISTS ext_ai_faces_identity_anchor (
+                id integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+                identity_id integer NOT NULL REFERENCES ext_ai_faces_identity (id) ON DELETE CASCADE,
+                model_key text NOT NULL,
+                quality_score double precision NOT NULL,
+                vector vector NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_ext_ai_faces_identity_anchor_identity_id ON ext_ai_faces_identity_anchor (identity_id);
+            """);
     }
 
     private static IResult? RequirePermission(ICurrentPrincipalAccessor principalAccessor, string permission)
@@ -347,9 +475,10 @@ internal sealed class AiFacesContributor(
 
     public async Task<AiDispatchResult> DispatchAsync(AiDispatchRequest request, CancellationToken ct = default)
     {
-        var batch = await _preparationService.PrepareAsync(request, ct);
+        var outcome = await _preparationService.PrepareWithReportAsync(request, ct);
+        var batch = outcome.Batch;
         var notes = new List<string>(batch.Notes);
-        notes.AddRange(await _persistenceService.PersistAsync(request, batch, ct));
+        notes.AddRange(await _persistenceService.PersistAsync(request, batch, outcome.MergedFaceKeyMap, ct));
 
         return new AiDispatchResult(
             Descriptor.ExtensionId,

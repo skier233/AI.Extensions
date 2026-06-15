@@ -20,15 +20,15 @@ public sealed class AiTaggingExtension : FullExtensionBase, IPermissionContribut
 
     public override string Name => "AI Tagging";
 
-    public override string Version => "0.0.2";
+    public override string Version => "0.1.0";
 
     public override string Description => "Contributes tagging claims for image and video AI workflows.";
 
     public override string Author => "Cove Team";
 
-    public override string Url => "https://github.com/yourcove/AI.Extensions";
+    public override string Url => "https://github.com/skier233/AI.Extensions";
 
-    public override string MinCoveVersion => "0.1.0";
+    public override string MinCoveVersion => "0.4.0";
 
     public override IReadOnlyList<string> Categories =>
     [
@@ -40,7 +40,7 @@ public sealed class AiTaggingExtension : FullExtensionBase, IPermissionContribut
 
     public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
     {
-        ["cove.community.ai.core"] = ">=0.0.2",
+        ["cove.community.ai.core"] = ">=0.1.0",
     };
 
     public override UIManifest GetUIManifest()

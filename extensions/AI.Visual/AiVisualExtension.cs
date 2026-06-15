@@ -20,15 +20,15 @@ public sealed class AiVisualExtension : FullExtensionBase
 
     public override string Name => "AI Visual";
 
-    public override string Version => "0.0.2";
+    public override string Version => "0.1.0";
 
     public override string Description => "Contributes general visual detection claims for image and video AI similarity and recommendation systems.";
 
     public override string Author => "Cove Team";
 
-    public override string Url => "https://github.com/yourcove/AI.Extensions";
+    public override string Url => "https://github.com/skier233/AI.Extensions";
 
-    public override string MinCoveVersion => "0.1.0";
+    public override string MinCoveVersion => "0.4.0";
 
     public override IReadOnlyList<string> Categories =>
     [
@@ -40,7 +40,7 @@ public sealed class AiVisualExtension : FullExtensionBase
 
     public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
     {
-        ["cove.community.ai.core"] = ">=0.0.2",
+        ["cove.community.ai.core"] = ">=0.1.0",
     };
 
     public override UIManifest GetUIManifest()
@@ -123,6 +123,14 @@ public sealed class AiVisualExtension : FullExtensionBase
 
         group.MapGet("/images/{imageId:int}/similar-images", async (int imageId, int? page, int? perPage, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
             Results.Ok(await searchService.SimilarImagesForImageAsync(imageId, page ?? 1, perPage ?? 12, ct)));
+
+        // Cheap "does this host have visual embeddings?" checks so the UI can decide whether to show the
+        // visual-similarity tab without running a full (slow) similarity search.
+        group.MapGet("/videos/{videoId:int}/has-embeddings", async (int videoId, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
+            Results.Ok(new { hasEmbeddings = await searchService.HasVisualEmbeddingsAsync(Cove.Core.Entities.EmbeddingHostType.Video, videoId, ct) }));
+
+        group.MapGet("/images/{imageId:int}/has-embeddings", async (int imageId, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
+            Results.Ok(new { hasEmbeddings = await searchService.HasVisualEmbeddingsAsync(Cove.Core.Entities.EmbeddingHostType.Image, imageId, ct) }));
 
         group.MapGet("/videos/{videoId:int}/similar-videos/segment", async (int videoId, double? startSec, double? endSec, int? page, int? perPage, AiVisualSemanticSearchService searchService, CancellationToken ct) =>
         {

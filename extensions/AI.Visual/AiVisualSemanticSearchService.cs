@@ -95,6 +95,11 @@ internal sealed class AiVisualSemanticSearchService(
     private const int DefaultSimilarPerPage = 12;
     private const int MaxSimilarPerPage = 48;
     private const int MaxSimilarResults = 500;
+    // Upper bound on nearest-neighbour candidates pulled per KNN query. The embedding column has no ANN
+    // index, so an unbounded scan (int.MaxValue) sorts and materializes the entire table; a bounded
+    // top-N is dramatically cheaper while still leaving ample candidates for per-host grouping,
+    // diversification, and paging (>> MaxSimilarResults).
+    private const int MaxKnnCandidates = 2000;
     private const int MaxFilteredIds = 100_000;
     private const int FastTextEncodeTimeoutMilliseconds = 400;
     private const int LocalTextSeedLimit = 48;
@@ -142,6 +147,18 @@ internal sealed class AiVisualSemanticSearchService(
 
         return new PaginatedResponse<ImageDto>(items, sorted.Count, findFilter.Page, findFilter.PerPage);
     }
+
+    // Cheap existence check for whether a host has any visual embeddings, used to decide if the
+    // visual-similarity tab should appear — far faster than running the full similarity search with
+    // perPage=1 (whose cost is the KNN scan, which perPage does not reduce).
+    public Task<bool> HasVisualEmbeddingsAsync(EmbeddingHostType hostType, int hostId, CancellationToken ct = default)
+        => _embeddingRepository.ExistsAsync(new EmbeddingFilter
+        {
+            HostType = hostType,
+            HostId = hostId,
+            SourceKey = VisualSourceKey,
+            Modality = EmbeddingModality.Visual,
+        }, ct);
 
     public async Task<PaginatedResponse<AiVisualSimilarVideoDto>> SimilarVideosForVideoAsync(int videoId, int page = 1, int perPage = DefaultSimilarPerPage, CancellationToken ct = default)
     {
@@ -406,7 +423,7 @@ internal sealed class AiVisualSemanticSearchService(
         {
             var matches = await _embeddingService.KnnAsync(
                 query.Query.Vector,
-                int.MaxValue,
+                MaxKnnCandidates,
                 new EmbeddingSearchOptions
                 {
                     HostType = targetHostType,
@@ -792,7 +809,7 @@ internal sealed class AiVisualSemanticSearchService(
 
         var matches = await _embeddingService.KnnAsync(
             queryVector,
-            int.MaxValue,
+            MaxKnnCandidates,
             new EmbeddingSearchOptions
             {
                 HostType = hostType,
@@ -1185,7 +1202,7 @@ internal sealed class AiVisualSemanticSearchService(
     private async Task<List<VideoDto>> BuildVideoResultsAsync(IReadOnlyList<EmbeddingSearchResult> ranked, CancellationToken ct)
     {
         var hostIds = ranked.Select(static match => match.Embedding.HostId).Distinct().ToList();
-        var (videos, _) = await _videoRepository.FindAsync(new VideoFilter { Ids = hostIds }, null, ct);
+        var (videos, _) = await _videoRepository.FindAsync(new VideoFilter { Ids = hostIds }, new FindFilter { Page = 1, PerPage = Math.Max(hostIds.Count, 1) }, ct);
         var videoMap = videos.ToDictionary(static v => v.Id);
 
         var results = new List<VideoDto>(ranked.Count);
@@ -1203,7 +1220,7 @@ internal sealed class AiVisualSemanticSearchService(
     private async Task<List<ImageDto>> BuildImageResultsAsync(IReadOnlyList<EmbeddingSearchResult> ranked, CancellationToken ct)
     {
         var hostIds = ranked.Select(static match => match.Embedding.HostId).Distinct().ToList();
-        var (images, _) = await _imageRepository.FindAsync(new ImageFilter { Ids = hostIds }, null, ct);
+        var (images, _) = await _imageRepository.FindAsync(new ImageFilter { Ids = hostIds }, new FindFilter { Page = 1, PerPage = Math.Max(hostIds.Count, 1) }, ct);
         var imageMap = images.ToDictionary(static i => i.Id);
 
         var results = new List<ImageDto>(ranked.Count);

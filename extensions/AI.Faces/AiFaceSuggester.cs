@@ -403,9 +403,16 @@ internal sealed class AiFaceSuggester(
                 : await referencePerformerResolver.ResolveAsync(identities, packs[index].Manifest.SourceEndpoint, cancellationToken);
         }
 
+        // Linking a reference match refreshes the resolved local performer from its metadata server when
+        // the user keeps "Update existing performers from metadata servers" enabled. Stamp each reference
+        // suggestion so the compare UI can hide the now-irrelevant "use face image" option in that case.
+        var refreshFromMetadata = (await AiFacesSettingsRuntime.LoadAsync(cancellationToken)).UpdateExistingPerformersFromMetadataServers;
+
         return matchesByFaceId.ToDictionary(
-            static pair => pair.Key,
-            pair => BuildReferenceSuggestionsForFace(pair.Value, performerMatchesByPack, maxResults));
+            pair => pair.Key,
+            pair => (IReadOnlyList<FaceSuggestionDto>)BuildReferenceSuggestionsForFace(pair.Value, performerMatchesByPack, maxResults)
+                .Select(suggestion => suggestion with { ReferenceWillRefreshFromMetadata = refreshFromMetadata })
+                .ToList());
     }
 
     private static IReadOnlyList<FaceSuggestionDto> BuildReferenceSuggestionsForFace(
@@ -579,7 +586,11 @@ internal sealed class AiFaceSuggester(
             LocalPerformerId: performerMatch?.PerformerId,
             ExternalUrl: BuildReferenceProfileUrl(manifest.SourceEndpoint, identity.ExternalId),
             LocalPerformerHasImage: performerMatch?.LocalPerformerHasImage ?? false,
-            LocalPerformerIsLocalOnly: performerMatch?.LocalPerformerIsLocalOnly ?? false);
+            LocalPerformerIsLocalOnly: performerMatch?.LocalPerformerIsLocalOnly ?? false,
+            // The originating server endpoint + this server's id, so accepting a match that resolved to an
+            // existing local performer can still record the remote id (and scrape) on the host side.
+            ReferenceEndpoint: manifest.SourceEndpoint,
+            ReferenceExternalId: identity.ExternalId);
     }
 
     private static float ComputeConfidence(float topSimilarity, double meanSimilarity, int uniqueFaceCount, int observationCount)

@@ -1,22 +1,22 @@
 {
   "id": "cove.community.ai.full",
   "name": "AI Full",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "kind": "bundle",
   "description": "Dependency bundle that activates the full Cove AI extension family.",
   "author": "Cove Team",
-  "url": "https://github.com/yourcove/AI.Extensions",
+  "url": "https://github.com/skier233/AI.Extensions",
   "categories": [
     "ai",
     "automation",
     "tools"
   ],
-  "minCoveVersion": "0.1.0",
+  "minCoveVersion": "0.4.0",
   "dependencies": {
-    "cove.community.ai.core": ">=0.0.2",
-    "cove.community.ai.tagging": ">=0.0.2",
-    "cove.community.ai.faces": ">=0.0.2",
-    "cove.community.ai.visual": ">=0.0.2",
-    "cove.community.ai.audio": ">=0.0.2"
+    "cove.community.ai.core": ">=0.1.0",
+    "cove.community.ai.tagging": ">=0.1.0",
+    "cove.community.ai.faces": ">=0.1.0",
+    "cove.community.ai.visual": ">=0.1.0",
+    "cove.community.ai.audio": ">=0.1.0"
   }
 }

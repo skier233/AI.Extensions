@@ -643,7 +643,12 @@ function collectRequestedTaggingModels(catalog, scope, selectedTaggingCategories
 
     categories.forEach((category) => {
       const categoryKey = normalizeTaggingCategoryKey(category);
-      if (selectedCategoryKeys.size > 0 && !selectedCategoryKeys.has(categoryKey)) {
+      // The caller (collectRequestedModels) passes the already-resolved category selection: the
+      // untouched default is expanded to the full available list before we get here, so an empty
+      // selection means the user explicitly cleared every category and no categorized model should
+      // be requested. (A previous `selectedCategoryKeys.size > 0` guard treated empty as "all",
+      // which left the model request summary unchanged after clicking Clear.)
+      if (!selectedCategoryKeys.has(categoryKey)) {
         return;
       }
 
@@ -882,6 +887,7 @@ function copySettings(settings) {
     defaultThreshold: settings?.defaultThreshold ?? null,
     requestTimeoutSeconds: settings?.requestTimeoutSeconds ?? 120,
     maxInFlight: settings?.maxInFlight ?? 2,
+    imageBatchSize: settings?.imageBatchSize ?? 288,
     dispatchResultsByDefault: settings?.dispatchResultsByDefault ?? true,
     pathMappings: (settings?.pathMappings || []).map((mapping) => ({
       fromPrefix: mapping.fromPrefix || "",
@@ -1098,6 +1104,8 @@ function formatSelectionDescription(selection) {
   }
 
 function SettingsEditor({ settings, health, catalog, capabilities = [], busy, message, pipelineBusy = "", onChange, onSyncPipeline = null, onDeletePipeline = null }) {
+  const [serverBaseUrlDraft, setServerBaseUrlDraft] = useState(settings.serverBaseUrl || "");
+  const [editingServerBaseUrl, setEditingServerBaseUrl] = useState(false);
   const [pathMappingDrafts, setPathMappingDrafts] = useState(settings.pathMappings || []);
   const [editingPathMappings, setEditingPathMappings] = useState(false);
   const settingsPathMappingsSerialized = JSON.stringify(settings.pathMappings || []);
@@ -1105,6 +1113,12 @@ function SettingsEditor({ settings, health, catalog, capabilities = [], busy, me
   const mappings = pathMappingDrafts;
   const modelBindingRows = getModelBindingRows(capabilities, catalog, settings);
   const customPipelines = settings.customPipelines || [];
+
+  useEffect(() => {
+    if (!editingServerBaseUrl) {
+      setServerBaseUrlDraft(settings.serverBaseUrl || "");
+    }
+  }, [settings.serverBaseUrl, editingServerBaseUrl]);
 
   useEffect(() => {
     if (settingsPathMappingsSerialized === lastSettingsPathMappingsRef.current) {
@@ -1119,6 +1133,13 @@ function SettingsEditor({ settings, health, catalog, capabilities = [], busy, me
 
   function patch(next) {
     onChange({ ...settings, ...next });
+  }
+
+  function commitServerBaseUrl() {
+    setEditingServerBaseUrl(false);
+    if (serverBaseUrlDraft !== settings.serverBaseUrl) {
+      patch({ serverBaseUrl: serverBaseUrlDraft });
+    }
   }
 
   function commitPathMappings(nextMappings = mappings) {
@@ -1189,8 +1210,14 @@ function SettingsEditor({ settings, health, catalog, capabilities = [], busy, me
         h("input", {
           className: "ai-core-input",
           type: "text",
-          value: settings.serverBaseUrl,
-          onChange: (event) => patch({ serverBaseUrl: event.target.value }),
+          value: serverBaseUrlDraft,
+          autoComplete: "off",
+          autoCorrect: "off",
+          autoCapitalize: "none",
+          spellCheck: false,
+          onFocus: () => setEditingServerBaseUrl(true),
+          onBlur: commitServerBaseUrl,
+          onChange: (event) => setServerBaseUrlDraft(event.target.value),
           placeholder: "http://127.0.0.1:8000",
         }),
       ]),
@@ -1235,14 +1262,15 @@ function SettingsEditor({ settings, health, catalog, capabilities = [], busy, me
           onChange: (event) => patch({ maxInFlight: Number(event.target.value || 1) }),
         }),
       ]),
-      h("label", { className: "ai-core-field ai-core-checkbox-field", key: "dispatchResultsByDefault" }, [
+      h("label", { className: "ai-core-field", key: "imageBatchSize" }, [
+        h("span", { className: "ai-core-label" }, "Image batch size"),
         h("input", {
-          className: "ai-core-checkbox",
-          type: "checkbox",
-          checked: settings.dispatchResultsByDefault,
-          onChange: (event) => patch({ dispatchResultsByDefault: event.target.checked }),
+          className: "ai-core-input",
+          type: "number",
+          min: "1",
+          value: settings.imageBatchSize,
+          onChange: (event) => patch({ imageBatchSize: Number(event.target.value || 1) }),
         }),
-        h("span", { className: "ai-core-label" }, "Dispatch results to installed AI extensions by default"),
       ]),
     ]),
     h("div", { className: "ai-core-section", key: "pathMappings" }, [
@@ -1323,7 +1351,6 @@ function SettingsEditor({ settings, health, catalog, capabilities = [], busy, me
               h("div", { className: "ai-core-model-meta" }, [
                 h("span", { className: "ai-core-pill ai-core-pill-muted", key: "extension" }, row.extensionLabel),
                 row.defaultModel ? h("span", { key: "default" }, `Auto -> ${row.defaultModel}`) : h("span", { key: "default" }, "No automatic model available"),
-                row.description ? h("span", { key: "description" }, row.description) : null,
                 row.savedModelUnavailable ? h("span", { className: "ai-core-pill ai-core-pill-warning", key: "missing" }, "saved model not loaded") : null,
               ]),
             ]),
@@ -1669,11 +1696,27 @@ function ModelsPanel({ catalog, busyModel, onLoadToggle, onRefresh }) {
     return Array.from(warnings.values());
   }
 
-  function groupModelsByCategory(items) {
+  const DOMAIN_GROUP_LABELS = { audio: "Audio", face: "Face Recognition", visual: "Visual" };
+
+  function getPrimaryModelCapabilityGroup(model) {
+    const firstCategory = (Array.isArray(model?.categories) ? model.categories : [])
+      .find((cat) => (cat || "").trim());
+    if (firstCategory) {
+      const prefix = firstCategory.trim().toLowerCase().split("_")[0];
+      if (DOMAIN_GROUP_LABELS[prefix]) return DOMAIN_GROUP_LABELS[prefix];
+    }
+    const firstCapability = (Array.isArray(model?.capabilities) ? model.capabilities : [])
+      .find((cap) => (cap || "").trim());
+    return firstCapability ? humanizeCatalogToken(firstCapability) : "Other";
+  }
+
+  // Group models by their primary capability (Tagging, Classification, Embedding, …) so related
+  // models sit together regardless of category, then loaded-first and alphabetical within a group.
+  function groupModelsByCapability(items) {
     const groups = new Map();
 
     (items || []).forEach((model) => {
-      const label = getPrimaryModelCategoryGroup(model);
+      const label = getPrimaryModelCapabilityGroup(model);
       const key = label.toLowerCase();
       if (!groups.has(key)) {
         groups.set(key, { label, items: [] });
@@ -1698,22 +1741,22 @@ function ModelsPanel({ catalog, busyModel, onLoadToggle, onRefresh }) {
     return model.imageSize ?? model.modelSize ?? "-";
   }
 
-  function renderModelDetail(label, value, code = false) {
-    return h("div", { className: "ai-core-model-detail", key: label }, [
-      h("span", { className: "ai-core-model-detail-label" }, label),
-      h("span", { className: code ? "ai-core-model-detail-value ai-core-code" : "ai-core-model-detail-value" }, value || "-"),
+  function renderModelMetaItem(label, value) {
+    return h("span", { className: "ai-core-model-meta-item", key: label }, [
+      h("span", { className: "ai-core-model-meta-label" }, label),
+      h("span", { className: "ai-core-model-meta-value" }, value || "-"),
     ]);
   }
 
   function renderList(title, items, emptyText) {
-    const groups = groupModelsByCategory(items);
+    const groups = groupModelsByCapability(items);
     return h("section", { className: "ai-core-model-group", key: title }, [
       h("div", { className: "ai-core-model-group-header" }, title),
       items.length === 0
         ? h("p", { className: "ai-core-empty" }, emptyText)
         : h("div", { className: "ai-core-stack ai-core-tight" }, groups.map((group) => h("div", { className: "ai-core-model-category-group", key: `${title}:${group.label}` }, [
             h("div", { className: "ai-core-model-category-header" }, group.label),
-            h("div", { className: "ai-core-stack ai-core-tight" }, group.items.map((model) => {
+            h("div", { className: "ai-core-model-list" }, group.items.map((model) => {
               const busy = busyModel === model.configName;
               const warnings = collectModelWarnings(model);
               const blocked = !model.active && warnings.length > 0;
@@ -1721,22 +1764,21 @@ function ModelsPanel({ catalog, busyModel, onLoadToggle, onRefresh }) {
               const secondaryName = model.name && model.name !== model.configName ? model.name : "";
               return h("div", { className: "ai-core-model-row", key: model.configName }, [
                 h("div", { className: "ai-core-model-copy" }, [
-                  h("div", { className: "ai-core-model-heading" }, [
-                    h("div", { className: "ai-core-model-title" }, model.configName || model.name || "Unnamed model"),
+                  // Title, optional code name, and status pills all share one wrapping line to keep
+                  // each row compact (capability is the group header, so it is not repeated here).
+                  h("div", { className: "ai-core-model-headline" }, [
+                    h("span", { className: "ai-core-model-title" }, model.configName || model.name || "Unnamed model"),
                     secondaryName
-                      ? h("div", { className: "ai-core-model-subtitle ai-core-code" }, secondaryName)
+                      ? h("span", { className: "ai-core-model-subtitle ai-core-code" }, secondaryName)
                       : null,
-                  ]),
-                  h("div", { className: "ai-core-model-pill-row" }, [
                     model.version ? h("span", { className: "ai-core-pill ai-core-pill-muted", key: "version" }, `v${model.version}`) : null,
                     h("span", { className: "ai-core-pill ai-core-pill-muted", key: "size" }, `size ${formatSize(model)}`),
                     model.loaded ? h("span", { className: "ai-core-pill ai-core-pill-success", key: "loaded" }, "loaded") : null,
                     model.active ? h("span", { className: "ai-core-pill ai-core-pill-success", key: "active" }, "active") : null,
                   ]),
-                  h("div", { className: "ai-core-model-detail-grid" }, [
-                    renderModelDetail("Category", displayCategories.join(", ") || "-"),
-                    renderModelDetail("Capability", formatFacetList(model.capabilities)),
-                    renderModelDetail("Scope", formatFacetList(model.supportedScopes)),
+                  h("div", { className: "ai-core-model-meta" }, [
+                    renderModelMetaItem("Category", displayCategories.join(", ") || "-"),
+                    renderModelMetaItem("Scope", formatFacetList(model.supportedScopes)),
                   ]),
                   model.info
                     ? h("div", { className: "ai-core-model-note" }, model.info)
@@ -2470,233 +2512,8 @@ function AiCoreSettingsPanel() {
   ]);
 }
 
-function AiCorePage() {
-  const [settings, setSettings] = useState(copySettings(null));
-  const [health, setHealth] = useState(null);
-  const [capabilities, setCapabilities] = useState([]);
-  const [catalog, setCatalog] = useState({ models: [] });
-  const [loading, setLoading] = useState(true);
-  const [settingsBusy, setSettingsBusy] = useState(false);
-  const [settingsMessage, setSettingsMessage] = useState("");
-  const [pipelineBusy, setPipelineBusy] = useState("");
-  const [queueBusy, setQueueBusy] = useState(false);
-  const [queueMessage, setQueueMessage] = useState("");
-  const [busyModel, setBusyModel] = useState("");
-
-  async function refresh() {
-    const snapshot = await loadRuntimeSnapshot({ includeSettings: true });
-    setSettings(copySettings(snapshot.settings));
-    setHealth(snapshot.health);
-    setCapabilities(snapshot.capabilities);
-    setCatalog(snapshot.catalog);
-    if (snapshot.errors.length > 0) {
-      setSettingsMessage(snapshot.errors.join("; "));
-    }
-  }
-
-  async function refreshRuntime() {
-    const snapshot = await loadRuntimeSnapshot();
-    setHealth(snapshot.health);
-    setCapabilities(snapshot.capabilities);
-    setCatalog(snapshot.catalog);
-    if (snapshot.errors.length > 0) {
-      setSettingsMessage(snapshot.errors.join("; "));
-    }
-  }
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        await refresh();
-      } catch (error) {
-        if (!cancelled) {
-          setSettingsMessage(error.message || "Failed to load AI Core.");
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useAutosaveSettings(
-    settings,
-    !loading,
-    () => {
-      setSettingsBusy(true);
-      setSettingsMessage("");
-    },
-    (saved) => {
-      setSettingsBusy(false);
-      setSettings((current) => mergeSavedSettings(current, saved));
-      setSettingsMessage("Settings saved.");
-      refreshRuntime();
-    },
-    (error) => {
-      setSettingsBusy(false);
-      setSettingsMessage(error.message || "Failed to update settings.");
-    }
-  );
-
-  async function toggleLoad(configName, shouldLoad) {
-    setBusyModel(configName);
-    try {
-      await api(shouldLoad ? "/models/load" : "/models/unload", {
-        method: "POST",
-        body: JSON.stringify({ models: [configName] }),
-      });
-      await refresh();
-    } catch (error) {
-      setSettingsMessage(error.message || "Failed to update model state.");
-    } finally {
-      setBusyModel("");
-    }
-  }
-
-  async function syncPipeline(pipeline) {
-    setPipelineBusy(pipeline.pipelineName);
-    setSettingsMessage("");
-    try {
-      await api("/pipelines/custom", {
-        method: "POST",
-        body: JSON.stringify(pipeline),
-      });
-      await refresh();
-      setSettingsMessage(`Pipeline ${pipeline.pipelineName} synced.`);
-    } catch (error) {
-      setSettingsMessage(error.message || "Failed to sync custom pipeline.");
-    } finally {
-      setPipelineBusy("");
-    }
-  }
-
-  async function deletePipeline(pipelineName) {
-    setPipelineBusy(pipelineName);
-    setSettingsMessage("");
-    try {
-      await api(`/pipelines/custom/${encodeURIComponent(pipelineName)}`, { method: "DELETE" });
-      await refresh();
-      setSettingsMessage(`Pipeline ${pipelineName} removed.`);
-    } catch (error) {
-      setSettingsMessage(error.message || "Failed to remove custom pipeline.");
-    } finally {
-      setPipelineBusy("");
-    }
-  }
-
-  async function queueRun(payload) {
-    setQueueBusy(true);
-    setQueueMessage("");
-    try {
-      const queued = await api("/jobs/queue", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-      setQueueMessage(`Queued ${queued.description || "AI job"} (${queued.jobId}).`);
-    } catch (error) {
-      setQueueMessage(error.message || "Failed to queue AI job.");
-    } finally {
-      setQueueBusy(false);
-    }
-  }
-
-  if (loading) {
-    return h("div", { className: "ai-core-shell" }, h("div", { className: "ai-core-card" }, h("p", { className: "ai-core-empty" }, "Loading AI Core...")));
-  }
-
-  return h("div", { className: "ai-core-shell" }, [
-    h("section", { className: "ai-core-card", key: "summary" }, [
-      h("div", { className: "ai-core-card-header" }, [
-        h("div", null, [
-          h("h2", { className: "ai-core-title" }, "AI Control"),
-          h("p", { className: "ai-core-muted" }, "Manage the nsfw_ai_server connection, active models, and queued AI runs from one place."),
-        ]),
-        h("button", {
-          className: "ai-core-button ai-core-button-secondary",
-          type: "button",
-          onClick: refresh,
-        }, "Refresh"),
-      ]),
-      h("div", { className: "ai-core-card-body ai-core-grid" }, [
-        h("div", { className: "ai-core-metric", key: "status" }, [
-          h("span", { className: "ai-core-metric-label" }, "Server"),
-          h("strong", { className: "ai-core-metric-value" }, health?.status || "unknown"),
-          h("span", { className: `ai-core-pill ai-core-pill-${statusTone(health?.status)}` }, health?.serverBaseUrl || settings.serverBaseUrl),
-        ]),
-        h("div", { className: "ai-core-metric", key: "contributors" }, [
-          h("span", { className: "ai-core-metric-label" }, "Contributor extensions"),
-          h("strong", { className: "ai-core-metric-value" }, String(health?.contributorCount ?? capabilities.length)),
-        ]),
-        h("div", { className: "ai-core-metric", key: "models" }, [
-          h("span", { className: "ai-core-metric-label" }, "Catalog models"),
-          h("strong", { className: "ai-core-metric-value" }, String((catalog.models || []).length)),
-        ]),
-        h("div", { className: "ai-core-metric", key: "mappings" }, [
-          h("span", { className: "ai-core-metric-label" }, "Path mappings"),
-          h("strong", { className: "ai-core-metric-value" }, String((settings.pathMappings || []).length)),
-        ]),
-      ]),
-    ]),
-    h("section", { className: "ai-core-card", key: "settings" }, [
-      h("div", { className: "ai-core-card-header" }, [
-        h("div", null, [
-          h("h3", { className: "ai-core-title" }, "Connection and defaults"),
-          h("p", { className: "ai-core-muted" }, "This is the primary home for AI Core runtime settings."),
-        ]),
-      ]),
-      h("div", { className: "ai-core-card-body" }, h(SettingsEditor, {
-        settings,
-        health,
-        capabilities,
-        catalog,
-        busy: settingsBusy,
-        message: settingsMessage,
-        pipelineBusy,
-        onChange: setSettings,
-        onSyncPipeline: syncPipeline,
-        onDeletePipeline: deletePipeline,
-      })),
-    ]),
-    h("section", { className: "ai-core-card", key: "models" }, [
-      h("div", { className: "ai-core-card-header" }, [
-        h("div", null, [
-          h("h3", { className: "ai-core-title" }, "Model catalog"),
-        ]),
-      ]),
-      h("div", { className: "ai-core-card-body" }, h(ModelsPanel, {
-        catalog,
-        busyModel,
-        onLoadToggle: toggleLoad,
-        onRefresh: refresh,
-      })),
-    ]),
-    h("section", { className: "ai-core-card", key: "run" }, [
-      h("div", { className: "ai-core-card-header" }, [
-        h("div", null, [
-          h("h3", { className: "ai-core-title" }, "Queue AI runs"),
-          h("p", { className: "ai-core-muted" }, "Compose a multi-capability run and send it through Cove's job system as one parent job."),
-        ]),
-      ]),
-      h("div", { className: "ai-core-card-body" }, h(RunComposer, {
-        capabilities,
-        catalog,
-        settings,
-        busy: queueBusy,
-        message: queueMessage,
-        onQueue: queueRun,
-      })),
-    ]),
-  ]);
-}
-
 export default {
   components: {
-    AiCorePage,
     AiCoreSettingsPanel,
   },
   actionHandlers: {

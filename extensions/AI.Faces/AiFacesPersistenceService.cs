@@ -12,7 +12,7 @@ using Pgvector;
 
 namespace AI.Faces;
 
-internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactory)
+internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactory, AiFacePresenceSuppressionStore? suppressionStore = null)
 {
     private const string FaceSourceKey = "ext:ai.faces";
     private const int NormalizedFrameSize = 1;
@@ -21,8 +21,16 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
     private const double CoverReplacementQualityMargin = 0.02;
 
     private readonly IServiceScopeFactory _scopeFactory = scopeFactory;
+    private readonly AiFacePresenceSuppressionStore? _suppressionStore = suppressionStore;
 
-    public async Task<IReadOnlyList<string>> PersistAsync(AiDispatchRequest request, AiPreparedArtifactBatch batch, CancellationToken ct = default)
+    public Task<IReadOnlyList<string>> PersistAsync(AiDispatchRequest request, AiPreparedArtifactBatch batch, CancellationToken ct = default)
+        => PersistAsync(request, batch, mergedFaceKeyMap: null, ct);
+
+    public async Task<IReadOnlyList<string>> PersistAsync(
+        AiDispatchRequest request,
+        AiPreparedArtifactBatch batch,
+        IReadOnlyDictionary<string, string>? mergedFaceKeyMap,
+        CancellationToken ct = default)
     {
         if (request.Context.HostEntityId is null || string.IsNullOrWhiteSpace(request.Context.HostEntityType))
         {
@@ -46,7 +54,14 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         var detectionHostType = hostEntityType == "video" ? DetectionHostType.Video : DetectionHostType.Image;
         var appearanceHostType = hostEntityType == "video" ? FaceAppearanceHostType.Video : FaceAppearanceHostType.Image;
 
-        var facesByKey = await ResolveFacesAsync(faceRepo, batch.Faces, ct);
+        // Faces the user has explicitly marked not-present on this host must not be re-attached by a
+        // re-run. Drop their artifacts before persistence so the host's previously-removed appearance
+        // stays gone (the detections that would have backed it are simply not attributed here).
+        var suppressedFaceKeys = _suppressionStore is null
+            ? (IReadOnlySet<string>)new HashSet<string>()
+            : await _suppressionStore.GetSuppressedFaceKeysAsync(hostEntityType, hostEntityId, ct);
+
+        var facesByKey = await ResolveFacesAsync(faceRepo, batch.Faces, suppressedFaceKeys, ct);
         var affectedFaceIds = new HashSet<int>(facesByKey.Values.Select(static face => face.Id));
 
         var existingAppearances = await faceRepo.FindAppearancesAsync(new FaceAppearanceFilter
@@ -98,6 +113,20 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
 
         await faceRepo.SaveChangesAsync(ct);
 
+        // Reconciliation during preparation may have merged identities whose Cove rows were persisted
+        // by earlier runs; apply those merges here so the duplicate face rows don't linger as orphans
+        // that keep collecting stale suggestions.
+        AiFacePersistedFaceMergeResult? mergeResult = null;
+        if (mergedFaceKeyMap is { Count: > 0 })
+        {
+            mergeResult = await AiFacePersistedFaceMerger.ApplyAsync(
+                faceRepo, embeddingRepo, detectionRepo, segmentRepo, FaceSourceKey, mergedFaceKeyMap, ct);
+            foreach (var faceId in mergeResult.AffectedFaceIds)
+                affectedFaceIds.Add(faceId);
+            if (mergeResult.MergedPersistedFaceCount > 0)
+                await faceRepo.SaveChangesAsync(ct);
+        }
+
         if (affectedFaceIds.Count > 0)
         {
             await RefreshFaceStatsAsync(faceRepo, detectionRepo, affectedFaceIds, ct);
@@ -118,6 +147,17 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
             try
             {
                 await propagation.ReconcileHostAsync(appearanceHostType, hostEntityId, ct);
+
+                // A merge that transferred a performer onto its target face must propagate that
+                // performer to every host the target now appears on, not just this run's host.
+                if (mergeResult is { RelinkedTargetFaceIds.Count: > 0 })
+                {
+                    var mergedHosts = await faceRepo.FindAppearancesAsync(
+                        new FaceAppearanceFilter { FaceIds = mergeResult.RelinkedTargetFaceIds.Distinct().ToArray() }, ct);
+                    foreach (var hostGroup in mergedHosts.GroupBy(static appearance => (appearance.HostType, appearance.HostId)))
+                        await propagation.ReconcileHostAsync(hostGroup.Key.HostType, hostGroup.Key.HostId, ct);
+                }
+
                 await faceRepo.SaveChangesAsync(ct);
             }
             catch (Exception ex)
@@ -126,7 +166,28 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
             }
         }
 
+        // The faces list reads a materialized top-suggestion projection. Evidence persisted in this
+        // run changes what the suggester would say for these faces, so stamp them for recompute —
+        // otherwise the list keeps showing a suggestion computed before this run's evidence existed,
+        // diverging from the (compute-on-read) detail page.
+        if (affectedFaceIds.Count > 0)
+        {
+            var suggestionMaintenance = scope.ServiceProvider.GetService<IFaceTopSuggestionMaintenance>();
+            if (suggestionMaintenance is not null)
+            {
+                try
+                {
+                    await suggestionMaintenance.InvalidateAsync(affectedFaceIds.ToArray(), ct);
+                }
+                catch (Exception ex)
+                {
+                    notes.Add($"AI.Faces persisted face artifacts but could not invalidate materialized top suggestions: {ex.Message}");
+                }
+            }
+        }
+
         if (batch.Faces.Count > 0) notes.Add($"Resolved {batch.Faces.Count} AI face identity candidate(s) into Cove face cluster(s).");
+        if (mergeResult is { MergedPersistedFaceCount: > 0 }) notes.Add($"Merged {mergeResult.MergedPersistedFaceCount} duplicate face row(s) into their reconciled targets.");
         if (persistedAppearances > 0) notes.Add($"Persisted {persistedAppearances} AI-generated face appearance(s) onto the {hostEntityType}.");
         if (persistedDetections > 0) notes.Add($"Persisted {persistedDetections} retained AI-generated face spatial sample(s) onto the {hostEntityType}.");
         if (persistedSegments > 0) notes.Add($"Persisted {persistedSegments} AI-generated face segment(s) onto the video timeline.");
@@ -143,9 +204,12 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         return notes;
     }
 
-    private static async Task<Dictionary<string, Face>> ResolveFacesAsync(IFaceRepository faceRepo, IReadOnlyList<AiPreparedFaceIdentity> faces, CancellationToken ct)
+    private static async Task<Dictionary<string, Face>> ResolveFacesAsync(IFaceRepository faceRepo, IReadOnlyList<AiPreparedFaceIdentity> faces, IReadOnlySet<string> suppressedFaceKeys, CancellationToken ct)
     {
-        var persistableFaces = faces.Where(IsPersistableFace).ToArray();
+        var persistableFaces = faces
+            .Where(IsPersistableFace)
+            .Where(face => !suppressedFaceKeys.Contains(face.FaceKey))
+            .ToArray();
         var faceKeys = persistableFaces
             .Select(static f => f.FaceKey)
             .Where(static k => !string.IsNullOrWhiteSpace(k))
@@ -336,7 +400,7 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         return generated;
     }
 
-    private static async Task RefreshFaceStatsAsync(IFaceRepository faceRepo, IDetectionRepository detectionRepo, IReadOnlyCollection<int> faceIds, CancellationToken ct)
+    internal static async Task RefreshFaceStatsAsync(IFaceRepository faceRepo, IDetectionRepository detectionRepo, IReadOnlyCollection<int> faceIds, CancellationToken ct)
     {
         if (faceIds.Count == 0) return;
 

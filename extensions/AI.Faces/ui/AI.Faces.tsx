@@ -102,25 +102,13 @@ function ActionButton({ label, busyLabel, pending, onClick, tone = "default" }) 
 }
 
 const DEFAULT_FACE_SETTINGS = {
-  minimumPoseQuality: 0.78,
-  minimumImageQuality: 0.22,
-  identityMatchThreshold: 0.54,
-  identityAmbiguityMargin: 0.03,
+  identityMatchThreshold: 0.5,
+  identityAmbiguityMargin: 0.05,
+  minimumVideoFacePresenceSeconds: 8,
+  updateExistingPerformersFromMetadataServers: true,
 };
 
 const FACE_SETTINGS_FIELDS = [
-  {
-    key: "minimumPoseQuality",
-    label: "Minimum pose quality",
-    hint: "Reject profile-heavy samples from anchor, centroid, and cover selection.",
-    step: "0.01",
-  },
-  {
-    key: "minimumImageQuality",
-    label: "Minimum image quality",
-    hint: "Reject blurry face crops before they influence clustering or cover choice.",
-    step: "0.01",
-  },
   {
     key: "identityMatchThreshold",
     label: "Existing cluster match threshold",
@@ -132,6 +120,12 @@ const FACE_SETTINGS_FIELDS = [
     label: "Ambiguity margin",
     hint: "Require the best candidate to clearly beat the runner-up before attaching to an existing face.",
     step: "0.01",
+  },
+  {
+    key: "minimumVideoFacePresenceSeconds",
+    label: "Minimum video presence (seconds)",
+    hint: "A face must have at least this much screen time in a video to be marked present, filtering out brief mis-attributions and intro-clip cameos. Capped at half the video length for short clips; images are never gated. Set to 0 to disable.",
+    step: "1",
   },
 ];
 
@@ -147,12 +141,28 @@ function readFaceSetting(settings, camelKey, pascalKey) {
   return DEFAULT_FACE_SETTINGS[camelKey];
 }
 
+function readFaceBoolSetting(settings, camelKey, pascalKey) {
+  if (settings && settings[camelKey] != null) {
+    return settings[camelKey] === true;
+  }
+
+  if (settings && settings[pascalKey] != null) {
+    return settings[pascalKey] === true;
+  }
+
+  return DEFAULT_FACE_SETTINGS[camelKey];
+}
+
 function toFaceSettingsDraft(settings) {
   return {
-    minimumPoseQuality: String(readFaceSetting(settings, "minimumPoseQuality", "MinimumPoseQuality")),
-    minimumImageQuality: String(readFaceSetting(settings, "minimumImageQuality", "MinimumImageQuality")),
     identityMatchThreshold: String(readFaceSetting(settings, "identityMatchThreshold", "IdentityMatchThreshold")),
     identityAmbiguityMargin: String(readFaceSetting(settings, "identityAmbiguityMargin", "IdentityAmbiguityMargin")),
+    minimumVideoFacePresenceSeconds: String(readFaceSetting(settings, "minimumVideoFacePresenceSeconds", "MinimumVideoFacePresenceSeconds")),
+    updateExistingPerformersFromMetadataServers: readFaceBoolSetting(
+      settings,
+      "updateExistingPerformersFromMetadataServers",
+      "UpdateExistingPerformersFromMetadataServers",
+    ),
   };
 }
 
@@ -178,6 +188,22 @@ function SettingField({ label, hint, value, step, onInput, onCommit }) {
       onBlur: onCommit,
       className: "w-full rounded-xl border border-border bg-input px-3 py-2 text-sm text-foreground outline-none transition focus:border-accent",
     }),
+  ]);
+}
+
+function ToggleField({ label, hint, checked, onToggle }) {
+  return h("label", { className: "flex items-start gap-3 rounded-xl border border-border bg-card p-4" }, [
+    h("input", {
+      key: "input",
+      type: "checkbox",
+      checked,
+      onChange: (event) => onToggle(event.target.checked),
+      className: "mt-1 rounded border-border bg-input accent-accent",
+    }),
+    h("div", { key: "copy", className: "space-y-1" }, [
+      h("div", { key: "label", className: "text-sm font-medium text-foreground" }, label),
+      h("p", { key: "hint", className: "text-sm text-secondary" }, hint),
+    ]),
   ]);
 }
 
@@ -312,9 +338,20 @@ function AiFacesSettingsPanel() {
     }));
   }
 
+  // The boolean toggle commits immediately on change. We thread the new value through explicitly because
+  // the setSettings update above has not flushed yet when we build the PUT payload.
+  function handleToggleSetting(key, checked) {
+    setSettings((current) => ({ ...current, [key]: checked }));
+    void persistSettings({ ...settings, [key]: checked });
+  }
+
   // Settings pages auto-save. Each field commits on blur; we PUT the full settings object built from
   // the latest draft (numbers fall back to defaults when a field is left blank/invalid).
-  async function commitSettings() {
+  function commitSettings() {
+    void persistSettings(settings);
+  }
+
+  async function persistSettings(draft) {
     if (!settingsLoaded) {
       return;
     }
@@ -323,10 +360,10 @@ function AiFacesSettingsPanel() {
     setSettingsError("");
 
     const payload = {
-      minimumPoseQuality: parseFaceSetting(settings.minimumPoseQuality, DEFAULT_FACE_SETTINGS.minimumPoseQuality),
-      minimumImageQuality: parseFaceSetting(settings.minimumImageQuality, DEFAULT_FACE_SETTINGS.minimumImageQuality),
-      identityMatchThreshold: parseFaceSetting(settings.identityMatchThreshold, DEFAULT_FACE_SETTINGS.identityMatchThreshold),
-      identityAmbiguityMargin: parseFaceSetting(settings.identityAmbiguityMargin, DEFAULT_FACE_SETTINGS.identityAmbiguityMargin),
+      identityMatchThreshold: parseFaceSetting(draft.identityMatchThreshold, DEFAULT_FACE_SETTINGS.identityMatchThreshold),
+      identityAmbiguityMargin: parseFaceSetting(draft.identityAmbiguityMargin, DEFAULT_FACE_SETTINGS.identityAmbiguityMargin),
+      minimumVideoFacePresenceSeconds: parseFaceSetting(draft.minimumVideoFacePresenceSeconds, DEFAULT_FACE_SETTINGS.minimumVideoFacePresenceSeconds),
+      updateExistingPerformersFromMetadataServers: draft.updateExistingPerformersFromMetadataServers === true,
     };
 
     try {
@@ -398,6 +435,13 @@ function AiFacesSettingsPanel() {
             onInput: (event) => handleSettingInput(field.key, event.target.value),
             onCommit: commitSettings,
           }))),
+        h(ToggleField, {
+          key: "updateExisting",
+          label: "Update existing performers from metadata servers",
+          hint: "When accepting a reference (metadata-server) face match for a performer that already exists locally, also scrape that performer from the originating server to refresh their image, bio, and aliases. The remote id is linked either way.",
+          checked: settings.updateExistingPerformersFromMetadataServers === true,
+          onToggle: (checked) => handleToggleSetting("updateExistingPerformersFromMetadataServers", checked),
+        }),
       ]);
 
   return h("div", { className: "ai-faces-settings-panel space-y-5" }, [

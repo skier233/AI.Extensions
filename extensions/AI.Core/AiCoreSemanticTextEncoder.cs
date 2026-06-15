@@ -22,7 +22,9 @@ internal sealed class AiCoreSemanticTextEncoder(
     private readonly IExtensionStoreFactory _storeFactory = storeFactory;
     private readonly INsfwAiServerClient _aiServerClient = aiServerClient;
 
-    public string KindFamily => "semantic.v1";
+    public const string SemanticKindFamily = "semantic.v1";
+
+    public string KindFamily => SemanticKindFamily;
 
     public async Task<Vector> EncodeAsync(string text, CancellationToken cancellationToken = default)
     {

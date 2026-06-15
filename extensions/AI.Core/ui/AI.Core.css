@@ -49,9 +49,9 @@
 }
 
 .ai-core-model-copy {
-  display: grid;
-  grid-template-columns: minmax(220px, 1.15fr) minmax(420px, 1.85fr);
-  gap: 0.45rem 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -219,8 +219,14 @@
 .ai-core-claim {
   justify-content: space-between;
   align-items: flex-start;
-  padding: 0.75rem 0.9rem;
+  padding: 0.45rem 0.9rem;
   border-top: 1px solid color-mix(in srgb, var(--color-border, #3c3c3c) 84%, transparent);
+}
+
+/* Catalog rows are packed tightly with a hairline divider so many models fit on screen at once. */
+.ai-core-model-list {
+  display: flex;
+  flex-direction: column;
 }
 
 .ai-core-claim-block {
@@ -244,7 +250,8 @@
 .ai-core-model-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 1rem;
+  gap: 0.75rem;
+  align-items: center;
 }
 
 .ai-core-model-title,
@@ -253,10 +260,12 @@
   font-weight: 700;
 }
 
-.ai-core-model-heading {
-  display: grid;
-  gap: 0.2rem;
-  align-content: start;
+/* Title + code name + status pills on a single wrapping line. */
+.ai-core-model-headline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 .ai-core-model-subtitle {
@@ -264,52 +273,38 @@
   color: color-mix(in srgb, var(--color-foreground, #f5f5f5) 62%, transparent);
 }
 
-.ai-core-model-pill-row,
 .ai-core-model-warning-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.45rem;
+  gap: 0.4rem;
 }
 
-.ai-core-model-pill-row {
-  align-items: flex-start;
+/* Compact inline metadata (Category · Scope) in place of the old tall labeled grid. */
+.ai-core-model-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 1rem;
+  font-size: 0.8rem;
+  color: color-mix(in srgb, var(--color-foreground, #f5f5f5) 80%, transparent);
 }
 
-.ai-core-model-detail-grid {
-  display: grid;
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  align-self: start;
-  gap: 0.45rem 1rem;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.ai-core-model-detail {
-  display: grid;
-  gap: 0.18rem;
-}
-
-.ai-core-model-detail-label {
-  font-size: 0.72rem;
+.ai-core-model-meta-label {
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: color-mix(in srgb, var(--color-foreground, #f5f5f5) 54%, transparent);
-}
-
-.ai-core-model-detail-value {
-  color: color-mix(in srgb, var(--color-foreground, #f5f5f5) 82%, transparent);
+  letter-spacing: 0.06em;
+  font-size: 0.68rem;
+  color: color-mix(in srgb, var(--color-foreground, #f5f5f5) 52%, transparent);
+  margin-right: 0.3rem;
 }
 
 .ai-core-model-note {
-  grid-column: 1 / -1;
-  color: color-mix(in srgb, var(--color-foreground, #f5f5f5) 74%, transparent);
-  font-size: 0.92rem;
-  line-height: 1.45;
+  color: color-mix(in srgb, var(--color-foreground, #f5f5f5) 70%, transparent);
+  font-size: 0.8rem;
+  line-height: 1.3;
 }
 
 .ai-core-model-warning-list {
-  grid-column: 1 / -1;
+  margin-top: 0.05rem;
 }
 
 .ai-core-model-category-group {

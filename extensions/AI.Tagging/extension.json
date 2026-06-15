@@ -1,10 +1,10 @@
 {
   "id": "cove.community.ai.tagging",
   "name": "AI Tagging",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "Tagging capability contributions for image and video AI runs.",
   "author": "Cove Team",
-  "url": "https://github.com/yourcove/AI.Extensions",
+  "url": "https://github.com/skier233/AI.Extensions",
   "categories": [
     "ai",
     "metadata",
@@ -14,7 +14,7 @@
     {
       "id": "cove.community.ai.tagging",
       "title": "AI Tagging",
-      "description": "Generated tag claims and tag-name override settings.",
+      "description": "Auto-tag your media, then tune which tags matter and how long they must last.",
       "parentTopicId": "cove.ai",
       "pages": [
         "tags",
@@ -29,21 +29,75 @@
         "settings-tab:extensions/ai/tagging",
         "route:/settings/extensions/ai/tagging"
       ],
-      "order": 82,
+      "order": 83,
       "slides": [
         {
-          "id": "tag-claims",
-          "title": "Generate reviewable tags",
-          "caption": "AI Tagging contributes tag claims that AI Core can request during video and image runs.",
-          "bodyMarkdown": "Choose tagging claims in the run dialog, use settings to normalize generated tag names, then review the results in tagger and detail views before broad cleanup.",
-          "imageSrc": "docs/manual/tag-claims.svg",
-          "imageAlt": "AI Tagging generated tag claims review screen",
+          "id": "generate-tags",
+          "title": "Generate tags automatically",
+          "caption": "With AI Tagging enabled, choose tagging when you Run AI on videos or images. Cove adds tags it recognizes in the media so you don't have to tag by hand.",
+          "bodyMarkdown": "On a video, AI Tagging doesn't just say *which* tags are present — it also records *when* and *for how long* each tag appears. That timing is what powers the duration filters and player‑bar segments on the next slides.",
+          "imageSrc": "docs/manual/ai-tagging-generated.png",
+          "imageAlt": "A video with AI-generated tags after a run",
           "mockKind": "tagging"
+        },
+        {
+          "id": "tag-thresholds",
+          "title": "Set how long a tag must last",
+          "caption": "A tag that flashes by for half a second usually isn't worth showing. On a tag's page, open Edit and set a minimum duration so the tag only counts when it's really there.",
+          "bodyMarkdown": "Open any tag (`/tag/…`) and edit it. Two fields control this, per tag:\n\n- **Min Seconds** — the tag must be present for at least this many seconds on a video.\n- **Min Percent** — or for at least this share of the video's length.\n\nThis lets you tune noisy tags one at a time without touching the rest.",
+          "imageSrc": "docs/manual/ai-tagging-min-duration.png",
+          "imageAlt": "Tag edit page showing the Min Seconds and Min Percent fields",
+          "mockKind": "tagging",
+          "points": [
+            "[green] Min Seconds — minimum time the tag must be present",
+            "[blue] Min Percent — or a minimum share of the video's length",
+            "Set this tag-by-tag, so noisy tags get a higher bar"
+          ]
+        },
+        {
+          "id": "filter-by-duration",
+          "title": "Filter by how long a tag lasts",
+          "caption": "On the Videos page, open Filter and add a Tag Duration condition to find videos where a tag is present for more (or less) than a chosen amount.",
+          "bodyMarkdown": "Pick the tag, a comparison (greater than, less than, between), and whether you mean **seconds** or **percent**. For example: videos where a tag appears for *more than 60 seconds*. Great for finding content where a tag is actually prominent rather than incidental.",
+          "imageSrc": "docs/manual/ai-tagging-duration-filter.png",
+          "imageAlt": "The Videos filter dialog with a Tag Duration condition",
+          "mockKind": "tagging"
+        },
+        {
+          "id": "tags-as-segments",
+          "title": "Show tags as segments on the player bar",
+          "caption": "Timed tags can appear as colored segments on the video's player bar so you can jump straight to the parts you want. Display profiles decide which tags show, and how.",
+          "bodyMarkdown": "Go to **Settings → Segments → Display Profiles**. A profile is a set of rules that control which segments appear on the player bar and how they look — you can require a **minimum duration**, set a lane, color, or merge nearby segments. Switch the active profile to instantly change what every video's player bar shows.",
+          "imageSrc": "docs/manual/ai-tagging-display-profiles.png",
+          "imageAlt": "Display Profiles settings with the active profile preview and rules",
+          "mockKind": "tagging"
+        },
+        {
+          "id": "player-bar-override",
+          "title": "Force a specific tag on (or off)",
+          "caption": "Sometimes you always want one tag on the player bar regardless of the active profile. The Player Bar setting on the tag's edit page does exactly that.",
+          "bodyMarkdown": "On a tag's edit page, set **Player Bar** to:\n\n- **Default** — follow the display profiles (the usual choice).\n- **Always** — force this tag onto the player bar, with an optional color and lane override.\n- **Never** — suppress this tag from the player bar.\n\nA per-tag override wins over display‑profile rules, so use it for the handful of tags you always (or never) want to see.",
+          "imageSrc": "docs/manual/ai-tagging-player-bar.png",
+          "imageAlt": "Tag edit page Player Bar selector with Default, Always, and Never options",
+          "mockKind": "tagging",
+          "points": [
+            "Set Player Bar to Always to pin a tag on, or Never to keep it off",
+            "Overrides beat display-profile rules for that tag"
+          ]
+        },
+        {
+          "id": "tag-name-overrides",
+          "title": "Rename generated tags to match yours",
+          "caption": "If the model's tag names don't match your library's naming, map them once in AI Tagging settings and future runs use your preferred names. You can also add an AI tag as an alias of one you already have, or merge an AI-created tag into your existing tag.",
+          "bodyMarkdown": "Open **Settings → Extensions → AI → AI Tagging** and add tag‑name overrides so future runs use your preferred names. To clean up tags an earlier run already created, you can instead add the AI tag as an **alias** of your existing tag, or **merge** the AI‑created tag into the tag you already use — both consolidate duplicates without re‑running.",
+          "imageSrc": "docs/manual/ai-tagging-name-overrides.png",
+          "imageAlt": "AI Tagging settings showing tag name override mappings",
+          "mockKind": "settings"
         }
       ]
     }
   ],
-  "minCoveVersion": "0.1.0",
+  "minCoveVersion": "0.4.0",
   "entryDll": "AI.Tagging.dll",
   "sharedAssemblies": [
     "AI.Extensions.Abstractions"
@@ -51,6 +105,6 @@
   "jsBundle": "dist/bundle.js",
   "cssBundle": "dist/bundle.css",
   "dependencies": {
-    "cove.community.ai.core": ">=0.0.2"
+    "cove.community.ai.core": ">=0.1.0"
   }
 }

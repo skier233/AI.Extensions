@@ -12,10 +12,12 @@ internal sealed record AiFaceReferencePerformerMatch(
 
 internal sealed class AiFaceReferencePerformerResolver(
     IPerformerRepository performerRepository,
-    IReferencePerformerImporter? performerImporter = null)
+    IReferencePerformerImporter? performerImporter = null,
+    IAiFacesSettingsStore? settingsStore = null)
 {
     private readonly IPerformerRepository _performerRepository = performerRepository;
     private readonly IReferencePerformerImporter? _performerImporter = performerImporter;
+    private readonly IAiFacesSettingsStore? _settingsStore = settingsStore;
 
     public async Task<IReadOnlyDictionary<string, AiFaceReferencePerformerMatch>> ResolveAsync(
         IReadOnlyCollection<SaieReferenceIdentity> identities,
@@ -72,7 +74,23 @@ internal sealed class AiFaceReferencePerformerResolver(
         var nameMatches = await _performerRepository.FindByNamesOrRemoteIdsAsync(
             searchNames, null, [], ct);
         if (nameMatches.Count == 1)
-            return nameMatches[0];
+        {
+            // A local performer already exists (matched by name/alias) but is missing this metadata
+            // server's remote id. Record that remote id so future matches link directly, and — when the
+            // user has "Update existing performers from metadata servers" enabled — scrape the server to
+            // refresh the performer. TryImportAsync records the remote id either way; the bool only gates
+            // the scrape. Safe no-op when no server is configured for this endpoint.
+            var matched = nameMatches[0];
+            if (_performerImporter is not null && !string.IsNullOrWhiteSpace(sourceEndpoint))
+            {
+                var updateExisting = _settingsStore is null
+                    || (await _settingsStore.LoadAsync(ct)).UpdateExistingPerformersFromMetadataServers;
+                await _performerImporter.TryImportAsync(
+                    matched.Id, sourceEndpoint!, identity.ExternalId, importMetadata: updateExisting, ct);
+            }
+
+            return matched;
+        }
 
         var performer = new Performer
         {
@@ -104,9 +122,10 @@ internal sealed class AiFaceReferencePerformerResolver(
 
         // Brand-new performer: if the originating site is configured as a metadata server, enrich it now
         // with a full scrape (image, bio, measurements, aliases, …). No-op when no server is configured.
+        // New performers are always populated regardless of the update-existing setting.
         if (_performerImporter is not null && !string.IsNullOrWhiteSpace(sourceEndpoint))
         {
-            await _performerImporter.TryImportAsync(created.Id, sourceEndpoint!, identity.ExternalId, ct);
+            await _performerImporter.TryImportAsync(created.Id, sourceEndpoint!, identity.ExternalId, importMetadata: true, ct);
         }
 
         return created;

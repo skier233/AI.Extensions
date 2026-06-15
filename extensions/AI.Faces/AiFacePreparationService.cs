@@ -22,7 +22,6 @@ internal sealed class AiFacePreparationService
     private const double HardMinimumEmbeddingNorm = 10.0;
     private const double AnchorDetectionScore = 0.65;
     private const double AnchorEmbeddingNorm = 18.0;
-    private const double ProvisionalMinimumPoseQuality = 0.6;
     private const double MinimumNormalizedAnchorArea = 0.01;
     private const double MinimumPixelAnchorArea = 4096.0;
     private const double RepresentativeDedupSimilarity = 0.96;
@@ -32,38 +31,45 @@ internal sealed class AiFacePreparationService
     private const int MaxAnchorsPerIdentity = 12;
     private const int MaxAssetIdsPerIdentity = 32;
 
-    private readonly IFaceIdentityStateStore _stateStore;
+    // Candidate identities loaded per query embedding for the incremental reconcile. Generous enough to
+    // cover both the best identity match and the local merge neighborhood, while keeping the working set
+    // bounded regardless of total corpus size.
+    private const int CandidateK = 20;
+
+    private readonly IFaceIdentityStore _store;
     private readonly AiAssetFaceClusterer _assetClusterer;
     private readonly AiFaceIdentityReconciler _identityReconciler;
     private readonly AiFaceReferencePackStore? _referencePackStore;
 
-    public AiFacePreparationService(IFaceIdentityStateStore stateStore)
-        : this(stateStore, new AiAssetFaceClusterer(), new AiFaceIdentityReconciler(), null)
+    public AiFacePreparationService(IFaceIdentityStore store)
+        : this(store, new AiAssetFaceClusterer(), new AiFaceIdentityReconciler(), null)
     {
     }
 
     public AiFacePreparationService(
-        IFaceIdentityStateStore stateStore,
+        IFaceIdentityStore store,
         AiAssetFaceClusterer assetClusterer,
         AiFaceIdentityReconciler? identityReconciler = null,
         AiFaceReferencePackStore? referencePackStore = null)
     {
-        _stateStore = stateStore;
+        _store = store;
         _assetClusterer = assetClusterer;
         _identityReconciler = identityReconciler ?? new AiFaceIdentityReconciler();
         _referencePackStore = referencePackStore;
     }
 
     public async Task<AiPreparedArtifactBatch> PrepareAsync(AiDispatchRequest request, CancellationToken ct = default)
+        => (await PrepareWithReportAsync(request, ct)).Batch;
+
+    public async Task<AiFacePreparationOutcome> PrepareWithReportAsync(AiDispatchRequest request, CancellationToken ct = default)
     {
         var batch = new AiPreparedArtifactBatch();
         if (request.Result.MediaKind is not (AiMediaKinds.Image or AiMediaKinds.Video))
         {
             batch.Notes.Add($"AI.Faces does not consume media kind '{request.Result.MediaKind}'.");
-            return batch;
+            return new AiFacePreparationOutcome(batch, EmptyMergedFaceKeyMap);
         }
 
-        var snapshot = await _stateStore.LoadAsync(ct);
         var settings = await AiFacesSettingsRuntime.LoadAsync(ct);
         var rawTracks = request.Result.MediaKind == AiMediaKinds.Image
             ? BuildImageTracks(request)
@@ -74,7 +80,7 @@ internal sealed class AiFacePreparationService
         if (tracks.Count == 0)
         {
             batch.Notes.Add("No face detections were available to prepare.");
-            return batch;
+            return new AiFacePreparationOutcome(batch, EmptyMergedFaceKeyMap);
         }
 
         // Seeding/clustering currently reconciles against a single pack; with several packs active we
@@ -84,10 +90,22 @@ internal sealed class AiFacePreparationService
             ? (IReadOnlyList<SaieReferencePack>)Array.Empty<SaieReferencePack>()
             : await _referencePackStore.GetActivePacksAsync(ct);
         var referencePack = referencePacks.Count > 0 ? referencePacks[0] : null;
-        var initialReconciliation = _identityReconciler.Reconcile(snapshot, referencePack, settings);
+
+        // Load only the identity-graph candidates relevant to this asset (similarity neighbors of the
+        // track embeddings, plus any reference-linked identities), instead of the whole graph. The
+        // reconcile/match logic below operates unchanged on this bounded working snapshot; the
+        // transaction persists only the resulting deltas.
+        var (candidateVectors, candidateReferenceIds) = CollectCandidateKeys(tracks, referencePack, settings);
+        await using var transaction = await _store.BeginIncrementalAsync(candidateVectors, candidateReferenceIds, CandidateK, ct);
+        var snapshot = transaction.Snapshot;
+        // Per-asset: skip whole-snapshot reference re-matching (the dominant cost with a large pack). The
+        // assignment loop below reference-matches this image's own faces; loaded candidates are already
+        // settled. Pack-import backfill still does the full re-match.
+        var initialReconciliation = _identityReconciler.Reconcile(snapshot, referencePack, settings, applyReferenceMatches: false);
 
         var emittedFaces = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var unresolvedTracks = 0;
+        var lowQualityCreationSkips = 0;
         var provisionalClusters = 0;
         var newIdentityCount = 0;
         var promotedIdentityCount = 0;
@@ -129,6 +147,17 @@ internal sealed class AiFacePreparationService
 
             if (identity is null)
             {
+                // Only mint a new identity from anchor-grade evidence (or a confident reference-pack
+                // match). Tracks that clear the identity floor but never produce an anchor are mostly
+                // blurred, tiny, occluded, or non-face crops; matching them onto an existing identity
+                // is fine, but creating a new visible face from them just makes junk the user deletes.
+                if (anchorEmbeddings.Length == 0 && referenceMatch is null)
+                {
+                    preparedTracks.Add(new PreparedFaceAssignment(track, null, [], false));
+                    lowQualityCreationSkips++;
+                    continue;
+                }
+
                 identity = CreateIdentity(snapshot, request.Context.AssetId, track, referenceMatch);
                 wasCreated = true;
                 newIdentityCount++;
@@ -144,17 +173,28 @@ internal sealed class AiFacePreparationService
             preparedTracks.Add(new PreparedFaceAssignment(track, identity, identityEmbeddings, wasCreated));
         }
 
-        var finalReconciliation = _identityReconciler.Reconcile(snapshot, referencePack, settings);
+        var finalReconciliation = _identityReconciler.Reconcile(snapshot, referencePack, settings, applyReferenceMatches: false);
+
+        var briefPresenceFaceKeys = ResolveBriefPresenceFaceKeys(request, preparedTracks, snapshot, finalReconciliation, settings);
+        var briefPresenceSuppressions = 0;
 
         foreach (var preparedTrack in preparedTracks)
         {
             var identity = ResolveFinalIdentity(preparedTrack.Identity, snapshot, finalReconciliation);
-            if (identity is null || !ShouldEmitPromotedIdentity(request, identity, preparedTrack.Track, settings))
+            var suppressedForBriefPresence = identity is not null && briefPresenceFaceKeys.Contains(identity.FaceKey);
+            if (identity is null || suppressedForBriefPresence || !ShouldEmitPromotedIdentity(request, identity, preparedTrack.Track, settings))
             {
                 EmitDetections(batch, request, preparedTrack.Track, faceKey: null, settings);
                 if (identity is not null)
                 {
-                    provisionalClusters++;
+                    if (suppressedForBriefPresence)
+                    {
+                        briefPresenceSuppressions++;
+                    }
+                    else
+                    {
+                        provisionalClusters++;
+                    }
                 }
 
                 continue;
@@ -171,7 +211,7 @@ internal sealed class AiFacePreparationService
             EmitTrackEmbedding(batch, request, preparedTrack.Track, identity.FaceKey, preparedTrack.IdentityEmbeddings);
         }
 
-        await _stateStore.SaveAsync(snapshot, ct);
+        await transaction.CommitAsync(ct);
 
         if (newIdentityCount > 0)
         {
@@ -188,9 +228,19 @@ internal sealed class AiFacePreparationService
             batch.Notes.Add($"Left {unresolvedTracks} track(s) unresolved rather than forcing them into muddy clusters.");
         }
 
+        if (lowQualityCreationSkips > 0)
+        {
+            batch.Notes.Add($"Skipped creating {lowQualityCreationSkips} face(s) from tracks without anchor-grade evidence.");
+        }
+
         if (provisionalClusters > 0)
         {
             batch.Notes.Add($"Kept {provisionalClusters} unknown face cluster(s) provisional instead of creating visible Cove face rows.");
+        }
+
+        if (briefPresenceSuppressions > 0)
+        {
+            batch.Notes.Add($"Did not mark {briefPresenceSuppressions} face(s) present on this video for falling below the {settings.MinimumVideoFacePresenceSeconds:R}s minimum screen time.");
         }
 
         AddTelemetryNotes(
@@ -204,9 +254,77 @@ internal sealed class AiFacePreparationService
             seededMatchCount,
             conflictingReferenceCount,
             unresolvedTracks,
+            lowQualityCreationSkips,
             provisionalClusters);
 
-        return batch;
+        return new AiFacePreparationOutcome(
+            batch,
+            CombineMergedFaceKeyMaps(initialReconciliation.MergedFaceKeyMap, finalReconciliation.MergedFaceKeyMap));
+    }
+
+    // Mirrors the per-track computation at the head of the assignment loop to gather the keys the
+    // incremental working set must load: every identity-grade embedding (similarity candidates) plus any
+    // reference-pack external id a track matches (so an already-linked identity is in the working set and
+    // is reused rather than duplicated). The duplicated representative-embedding/reference work is cheap
+    // SIMD relative to the cost it avoids (loading and globally re-merging the whole graph).
+    private (IReadOnlyList<IReadOnlyList<float>> Vectors, IReadOnlyCollection<string> ReferenceExternalIds) CollectCandidateKeys(
+        IReadOnlyList<PreparedFaceTrack> tracks,
+        SaieReferencePack? referencePack,
+        AiFacesSettings settings)
+    {
+        var vectors = new List<IReadOnlyList<float>>();
+        var referenceIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var track in tracks)
+        {
+            var representativeEmbeddings = SelectRepresentativeEmbeddings(track, settings);
+            var identityPassEmbeddings = representativeEmbeddings.Where(static embedding => embedding.PassesIdentityFloor).ToArray();
+            if (identityPassEmbeddings.Length == 0)
+            {
+                continue;
+            }
+
+            var anchorEmbeddings = representativeEmbeddings
+                .Where(static embedding => embedding.PassesHardFloor && embedding.IsAnchor)
+                .ToArray();
+            var identityEmbeddings = anchorEmbeddings.Length > 0 ? anchorEmbeddings : identityPassEmbeddings;
+
+            foreach (var embedding in identityEmbeddings)
+            {
+                vectors.Add(embedding.Vector);
+            }
+
+            var referenceMatch = TryMatchReference(identityEmbeddings, referencePack, settings);
+            if (referenceMatch is not null && !string.IsNullOrWhiteSpace(referenceMatch.Identity.ExternalId))
+            {
+                referenceIds.Add(referenceMatch.Identity.ExternalId);
+            }
+        }
+
+        return (vectors, referenceIds);
+    }
+
+    private static readonly IReadOnlyDictionary<string, string> EmptyMergedFaceKeyMap =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    // Chains the two reconciliation passes' duplicate→target maps: a key merged away in the first
+    // pass whose target was itself merged in the second pass resolves to the final target.
+    private static IReadOnlyDictionary<string, string> CombineMergedFaceKeyMaps(
+        IReadOnlyDictionary<string, string> first,
+        IReadOnlyDictionary<string, string> second)
+    {
+        if (first.Count == 0)
+        {
+            return second;
+        }
+
+        var combined = new Dictionary<string, string>(second, StringComparer.OrdinalIgnoreCase);
+        foreach (var (duplicate, target) in first)
+        {
+            combined[duplicate] = second.TryGetValue(target, out var finalTarget) ? finalTarget : target;
+        }
+
+        return combined;
     }
 
     private static IReadOnlyList<PreparedFaceTrack> BuildImageTracks(AiDispatchRequest request)
@@ -432,15 +550,18 @@ internal sealed class AiFacePreparationService
             {
                 var poseQuality = GetMetadataQuality(embedding, AiFaceQualityScorer.PoseQualityMetadataKey);
                 var imageQuality = GetMetadataQuality(embedding, AiFaceQualityScorer.ImageQualityMetadataKey);
+                // Pose and image quality rank *which* instances win representative/cover selection (see
+                // qualityScore below and AiFaceQualityScorer) — they no longer gate whether a face exists.
+                // A face's existence keys off the robust ArcFace embedding norm and the detector score, so a
+                // strong, clearly-recognizable face (high norm) is never discarded just because a single
+                // still wasn't perfectly frontal. Pose is a noisy per-frame heuristic; norm is the reliable
+                // face-quality signal, and over a growing set of detections the best-pose instance still
+                // wins the thumbnail without ever vetoing the identity.
                 var qualityScore = (embedding.Norm ?? 0.0) * sample.Detection.Score * poseQuality * imageQuality;
                 var hardPass = sample.Detection.Score >= HardMinimumDetectionScore
-                    && (embedding.Norm ?? 0.0) >= HardMinimumEmbeddingNorm
-                    && poseQuality >= settings.MinimumPoseQuality
-                    && imageQuality >= settings.MinimumImageQuality;
+                    && (embedding.Norm ?? 0.0) >= HardMinimumEmbeddingNorm;
                 var identityPass = sample.Detection.Score >= AnchorDetectionScore
-                    && (embedding.Norm ?? 0.0) >= AnchorEmbeddingNorm
-                    && poseQuality >= ProvisionalMinimumPoseQuality
-                    && imageQuality >= settings.MinimumImageQuality;
+                    && (embedding.Norm ?? 0.0) >= AnchorEmbeddingNorm;
                 var area = sample.Detection.BoundingBox.Area;
                 var minimumArea = area <= 1.0 ? MinimumNormalizedAnchorArea : MinimumPixelAnchorArea;
                 var isAnchor = hardPass
@@ -509,12 +630,37 @@ internal sealed class AiFacePreparationService
         var matchThreshold = IsObservedInAsset(best.Identity, assetId)
             ? Math.Max(0.0, settings.IdentityMatchThreshold - SameAssetIdentityMatchRelaxation)
             : settings.IdentityMatchThreshold;
-        if (best.Score < matchThreshold || (best.Score - secondBest) < settings.IdentityAmbiguityMargin)
+        if (best.Score < matchThreshold)
         {
             return null;
         }
 
+        if ((best.Score - secondBest) < settings.IdentityAmbiguityMargin)
+        {
+            // An ambiguous best match usually means the runner-ups are duplicates of the best
+            // identity (the same person already split across faces). Refusing the match would mint
+            // yet another duplicate — the snowball that splits one performer across many faces — so
+            // ambiguity only blocks when an in-margin rival looks like a genuinely different person.
+            var rivalsAreDuplicatesOfBest = ranked
+                .Skip(1)
+                .TakeWhile(candidate => (best.Score - candidate.Score) < settings.IdentityAmbiguityMargin)
+                .All(candidate => AreLikelyDuplicateIdentities(best.Identity, candidate.Identity, settings));
+            if (!rivalsAreDuplicatesOfBest)
+            {
+                return null;
+            }
+        }
+
         return best.Identity;
+    }
+
+    private static bool AreLikelyDuplicateIdentities(StoredFaceIdentity left, StoredFaceIdentity right, AiFacesSettings settings)
+    {
+        var conflictingReferences = !string.IsNullOrWhiteSpace(left.ReferenceExternalId)
+            && !string.IsNullOrWhiteSpace(right.ReferenceExternalId)
+            && !string.Equals(left.ReferenceExternalId, right.ReferenceExternalId, StringComparison.OrdinalIgnoreCase);
+        return !conflictingReferences
+            && AiFaceIdentityReconciler.ScoreIdentityPair(left, right) >= settings.ConsolidationSimilarityThreshold;
     }
 
     private static bool IsObservedInAsset(StoredFaceIdentity identity, string? assetId)
@@ -548,57 +694,16 @@ internal sealed class AiFacePreparationService
             return null;
         }
 
-        var ranked = referencePack.Identities
-            .Select(identity => new FaceReferenceMatch(
-                identity,
-                referencePack.Manifest.PackId,
-                AiFaceReferenceSuggestionIds.FromOrdinal(identity.Ordinal),
-                ScoreReferenceIdentity(anchors, referencePack, identity.Ordinal)))
-            .Where(static match => match.Score > 0.0)
-            .OrderByDescending(static match => match.Score)
-            .ToArray();
-        if (ranked.Length == 0)
+        var match = SaieReferenceMatcher.FindBest(referencePack, anchors.Select(static anchor => anchor.Vector).ToArray());
+        if (match is not { } best
+            || best.Score < settings.ReferenceMatchThreshold
+            || (best.Score - best.SecondScore) < settings.ReferenceAmbiguityMargin)
         {
             return null;
         }
 
-        var best = ranked[0];
-        var secondBestScore = ranked.Length > 1 ? ranked[1].Score : 0.0;
-        if (best.Score < settings.ReferenceMatchThreshold || (best.Score - secondBestScore) < settings.ReferenceAmbiguityMargin)
-        {
-            return null;
-        }
-
-        return best;
-    }
-
-    private static double ScoreReferenceIdentity(IReadOnlyList<RepresentativeFaceEmbedding> anchors, SaieReferencePack referencePack, int ordinal)
-    {
-        if (ordinal < 0 || ordinal >= referencePack.Identities.Count)
-        {
-            return 0.0;
-        }
-
-        var centroid = referencePack.GetCentroid(ordinal);
-        var centroidNorm = referencePack.GetCentroidNorm(ordinal);
-        var scores = new List<double>();
-        foreach (var anchor in anchors)
-        {
-            if (anchor.Vector.Count != referencePack.Manifest.EmbeddingDim)
-            {
-                continue;
-            }
-
-            var score = CosineSimilarity(anchor.Vector, centroid, centroidNorm);
-            if (score > 0.0)
-            {
-                scores.Add(score);
-            }
-        }
-
-        return scores.Count == 0
-            ? 0.0
-            : scores.OrderByDescending(static score => score).Take(Math.Min(2, scores.Count)).Average();
+        var identity = referencePack.Identities[best.Ordinal];
+        return new FaceReferenceMatch(identity, referencePack.Manifest.PackId, AiFaceReferenceSuggestionIds.FromOrdinal(identity.Ordinal), best.Score);
     }
 
     private static StoredFaceIdentity? TryFindReferenceIdentity(FaceIdentitySnapshot snapshot, FaceReferenceMatch? referenceMatch)
@@ -816,6 +921,85 @@ internal sealed class AiFacePreparationService
 
     private static bool IsPromoted(StoredFaceIdentity identity)
         => string.Equals(identity.LifecycleStatus, StoredFaceIdentityLifecycle.Promoted, StringComparison.OrdinalIgnoreCase);
+
+    // Faces whose total screen time in this video falls below the configured presence floor. Their
+    // tracks still emit detections, but the face is not marked present (no appearance/segment), which
+    // suppresses mis-attributed single detections and incidental intro/outro cameos. Aggregated per
+    // resolved identity so a face split across several short tracks is judged on its combined time, and
+    // the floor is capped at half the video's duration so a legitimately short clip keeps its main face.
+    private static HashSet<string> ResolveBriefPresenceFaceKeys(
+        AiDispatchRequest request,
+        IReadOnlyList<PreparedFaceAssignment> preparedTracks,
+        FaceIdentitySnapshot snapshot,
+        AiFaceIdentityReconciliationReport reconciliation,
+        AiFacesSettings settings)
+    {
+        var suppressed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (request.Result.MediaKind != AiMediaKinds.Video || settings.MinimumVideoFacePresenceSeconds <= 0.0)
+        {
+            return suppressed;
+        }
+
+        // Cap the floor at half the video's length so a legitimately short clip still surfaces its main
+        // face. Prefer the real duration; when it is absent fall back to the analyzed sample span so the
+        // cap still scales to the content (and stays a no-op for single-moment clips).
+        var durationSeconds = ResolveDurationSeconds(request) ?? ResolveAnalyzedSpanSeconds(preparedTracks);
+        var threshold = settings.MinimumVideoFacePresenceSeconds;
+        if (durationSeconds is > 0.0)
+        {
+            threshold = Math.Min(threshold, durationSeconds.Value * 0.5);
+        }
+
+        if (threshold <= 0.0)
+        {
+            return suppressed;
+        }
+
+        var secondsByFaceKey = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        foreach (var preparedTrack in preparedTracks)
+        {
+            var identity = ResolveFinalIdentity(preparedTrack.Identity, snapshot, reconciliation);
+            if (identity is null)
+            {
+                continue;
+            }
+
+            var frameIntervalSeconds = ResolveFrameIntervalSeconds(request, preparedTrack.Track);
+            var trackSeconds = EstimateRepresentedVideoEvidenceSeconds(request, preparedTrack.Track, frameIntervalSeconds);
+            secondsByFaceKey[identity.FaceKey] = secondsByFaceKey.GetValueOrDefault(identity.FaceKey) + trackSeconds;
+        }
+
+        foreach (var (faceKey, seconds) in secondsByFaceKey)
+        {
+            if (seconds < threshold)
+            {
+                suppressed.Add(faceKey);
+            }
+        }
+
+        return suppressed;
+    }
+
+    private static double? ResolveAnalyzedSpanSeconds(IReadOnlyList<PreparedFaceAssignment> preparedTracks)
+    {
+        var starts = preparedTracks
+            .Select(static preparedTrack => preparedTrack.Track.StartSeconds)
+            .Where(static value => value.HasValue)
+            .Select(static value => value!.Value)
+            .ToArray();
+        var ends = preparedTracks
+            .Select(static preparedTrack => preparedTrack.Track.EndSeconds)
+            .Where(static value => value.HasValue)
+            .Select(static value => value!.Value)
+            .ToArray();
+        if (starts.Length == 0 || ends.Length == 0)
+        {
+            return null;
+        }
+
+        var span = ends.Max() - starts.Min();
+        return span > 0.0 ? span : null;
+    }
 
     private static StoredFaceIdentity? ResolveFinalIdentity(
         StoredFaceIdentity? identity,
@@ -1380,29 +1564,6 @@ internal sealed class AiFacePreparationService
         return dot / (Math.Sqrt(leftNorm) * Math.Sqrt(rightNorm));
     }
 
-    private static double CosineSimilarity(IReadOnlyList<float> left, ReadOnlySpan<float> right, float rightNorm)
-    {
-        if (left.Count == 0 || left.Count != right.Length || rightNorm <= 0f)
-        {
-            return 0.0;
-        }
-
-        double dot = 0.0;
-        double leftNorm = 0.0;
-        for (var index = 0; index < left.Count; index++)
-        {
-            dot += left[index] * right[index];
-            leftNorm += left[index] * left[index];
-        }
-
-        if (leftNorm <= 0.0)
-        {
-            return 0.0;
-        }
-
-        return Math.Clamp(dot / (Math.Sqrt(leftNorm) * rightNorm), 0.0, 1.0);
-    }
-
     private static double ComputeIoU(AiBoundingBox left, AiBoundingBox right)
     {
         var x1 = Math.Max(left.X1, right.X1);
@@ -1434,11 +1595,12 @@ internal sealed class AiFacePreparationService
         int seededMatchCount,
         int conflictingReferenceCount,
         int unresolvedTracks,
+        int lowQualityCreationSkips,
         int provisionalClusters)
     {
         batch.Notes.Add(string.Create(
             CultureInfo.InvariantCulture,
-            $"AI.Faces telemetry: rawTracks={clusterDiagnostics.InputTrackCount}; assetClusters={clusterDiagnostics.ClusterCount}; clusterMerges={clusterDiagnostics.MergedTrackCount}; clusterRejectedConcurrency={clusterDiagnostics.RejectedByConcurrencyCount}; clusterRejectedThreshold={clusterDiagnostics.RejectedByThresholdCount}; clusterRejectedAmbiguous={clusterDiagnostics.RejectedByAmbiguityCount}; createdIdentities={newIdentityCount}; promotedThisRun={promotedIdentityCount}; provisionalClusters={provisionalClusters}; seededMatches={seededMatchCount}; conflictingReferences={conflictingReferenceCount}; unresolvedTracks={unresolvedTracks}; faces={batch.Faces.Count}; detections={batch.Detections.Count}; reconciliationMerges={initialReconciliation.MergedIdentityCount + finalReconciliation.MergedIdentityCount}; reconciliationReferencePromotions={initialReconciliation.ReferencePromotedIdentityCount + finalReconciliation.ReferencePromotedIdentityCount}; reconciliationEvidencePromotions={initialReconciliation.EvidencePromotedIdentityCount + finalReconciliation.EvidencePromotedIdentityCount}"));
+            $"AI.Faces telemetry: rawTracks={clusterDiagnostics.InputTrackCount}; assetClusters={clusterDiagnostics.ClusterCount}; clusterMerges={clusterDiagnostics.MergedTrackCount}; clusterRejectedConcurrency={clusterDiagnostics.RejectedByConcurrencyCount}; clusterRejectedThreshold={clusterDiagnostics.RejectedByThresholdCount}; clusterRejectedAmbiguous={clusterDiagnostics.RejectedByAmbiguityCount}; createdIdentities={newIdentityCount}; promotedThisRun={promotedIdentityCount}; provisionalClusters={provisionalClusters}; seededMatches={seededMatchCount}; conflictingReferences={conflictingReferenceCount}; unresolvedTracks={unresolvedTracks}; lowQualityCreationSkips={lowQualityCreationSkips}; faces={batch.Faces.Count}; detections={batch.Detections.Count}; reconciliationMerges={initialReconciliation.MergedIdentityCount + finalReconciliation.MergedIdentityCount}; reconciliationReferencePromotions={initialReconciliation.ReferencePromotedIdentityCount + finalReconciliation.ReferencePromotedIdentityCount}; reconciliationEvidencePromotions={initialReconciliation.EvidencePromotedIdentityCount + finalReconciliation.EvidencePromotedIdentityCount}"));
         batch.Notes.Add(string.Create(
             CultureInfo.InvariantCulture,
                 $"AI.Faces thresholds: identity={settings.IdentityMatchThreshold:R}/{settings.IdentityAmbiguityMargin:R}; assetCluster={settings.AssetClusterSimilarityThreshold:R}/{settings.AssetClusterAmbiguityMargin:R}; reference={settings.ReferenceMatchThreshold:R}/{settings.ReferenceAmbiguityMargin:R}; consolidation={settings.ConsolidationSimilarityThreshold:R}/{settings.ConsolidationAmbiguityMargin:R}; sameAssetConsolidation={settings.ConsolidationSameAssetSimilarityThreshold:R}; videoPromotionSamples={settings.PromotionMinimumVideoSamples}; videoPromotionEvidenceSeconds={settings.PromotionMinimumVideoEvidenceSeconds:R}; sparseVideoPromotionSamples={settings.PromotionMinimumSparseVideoSamples}; sparseVideoPromotionFrameInterval={settings.SparseVideoPromotionFrameIntervalSeconds:R}; sparseVideoPromotionCoverageRatio={settings.PromotionMinimumSparseVideoSampleCoverageRatio:R}; detectionKeyframeIoU={settings.DetectionKeyframeIoUThreshold:R}; detectionKeyframeMaxGap={settings.DetectionKeyframeMaxGapSeconds:R}; maxDetectionKeyframes={settings.MaxDetectionKeyframesPerTrack}"));
@@ -1509,3 +1671,7 @@ internal sealed class AiFacePreparationService
         double Score
     );
 }
+
+internal sealed record AiFacePreparationOutcome(
+    AiPreparedArtifactBatch Batch,
+    IReadOnlyDictionary<string, string> MergedFaceKeyMap);

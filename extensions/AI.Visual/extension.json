@@ -1,10 +1,10 @@
 {
   "id": "cove.community.ai.visual",
   "name": "AI Visual",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "Visual detection and region-analysis capability contributions for image and video AI runs.",
   "author": "Cove Team",
-  "url": "https://github.com/yourcove/AI.Extensions",
+  "url": "https://github.com/skier233/AI.Extensions",
   "categories": [
     "ai",
     "metadata",
@@ -29,26 +29,49 @@
         "detail-tab:similar",
         "tab:similar"
       ],
-      "order": 83,
+      "order": 84,
       "slides": [
         {
-          "id": "visual-search",
-          "title": "Find visually related media",
-          "caption": "AI Visual contributes embeddings and region-analysis claims used by visual similarity and recommendation workflows.",
-          "bodyMarkdown": "Run visual claims on videos or images, open similar media from detail pages, and use generated detections as context while reviewing results.",
-          "imageSrc": "https://raw.githubusercontent.com/yourcove/AI.Extensions/main/extensions/AI.Visual/docs/manual/visual-search.svg",
-          "imageAlt": "AI Visual similarity search screen",
+          "id": "run-visual",
+          "imageSrc": "docs/manual/ai-visual-search.png",
+          "imageAlt": "Visual search unlocked after running visual analysis",
+          "title": "Teach Cove what your media looks like",
+          "caption": "Run AI with visual analysis on your videos and images. AI Visual studies how each item looks, which unlocks search-by-meaning and look-alike results.",
+          "bodyMarkdown": "Once visual analysis has run, two features light up: **semantic search** (describe what you want to see) and the **Similar** tab (jump from one item to visually related ones). Run it on a small batch first to see it in action.",
+          "mockKind": "images"
+        },
+        {
+          "id": "semantic-search",
+          "title": "Search by meaning, not just words",
+          "caption": "On the Videos and Images pages, switch the search-mode dropdown from Text to Visual, then describe what you're looking for — even if those words appear in no title, description, or tag.",
+          "bodyMarkdown": "Try a phrase like \"red car at night\" or \"two people on a beach.\" Cove ranks your library by how well each item *looks* like your description. When Visual search is active, a **Visual Match** sort option appears so you can order results by closeness.",
+          "imageSrc": "docs/manual/ai-visual-search.png",
+          "imageAlt": "The search bar with the Text/Visual mode dropdown set to Visual and semantic results",
+          "mockKind": "images",
+          "points": [
+            "[green] Switch the search mode from Text to Visual",
+            "[blue] Type what you want to see, in plain language",
+            "Sort by Visual Match to put the closest results first"
+          ]
+        },
+        {
+          "id": "find-similar",
+          "title": "Find look-alikes from any item",
+          "caption": "Open a video or image and choose the Similar tab to see visually related media. Toggle between similar videos and similar images, each scored by match percentage.",
+          "bodyMarkdown": "This is the fast way to say \"more like this.\" From any item's **Similar** tab, browse look‑alikes across your library and open them directly — handy for grouping related content or finding duplicates.",
+          "imageSrc": "docs/manual/ai-visual-similar-tab.png",
+          "imageAlt": "A video detail page Similar tab showing visually similar media with match percentages",
           "mockKind": "images"
         }
       ]
     }
   ],
-  "minCoveVersion": "0.1.0",
+  "minCoveVersion": "0.4.0",
   "entryDll": "AI.Visual.dll",
   "sharedAssemblies": [
     "AI.Extensions.Abstractions"
   ],
   "dependencies": {
-    "cove.community.ai.core": ">=0.0.2"
+    "cove.community.ai.core": ">=0.1.0"
   }
 }

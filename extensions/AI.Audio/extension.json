@@ -1,10 +1,10 @@
 {
   "id": "cove.community.ai.audio",
   "name": "AI Audio",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "Audio embedding and classification capability contributions for AI runs.",
   "author": "Cove Team",
-  "url": "https://github.com/yourcove/AI.Extensions",
+  "url": "https://github.com/skier233/AI.Extensions",
   "categories": [
     "ai",
     "metadata",
@@ -27,24 +27,35 @@
         "detail-tab:audio-similar",
         "tab:audio-similar"
       ],
-      "order": 84,
+      "order": 85,
       "slides": [
         {
-          "id": "audio-similarity",
-          "title": "Compare media by sound",
-          "caption": "AI Audio contributes audio embedding and classification claims for video similarity and downstream routing.",
-          "bodyMarkdown": "Run audio claims on videos with usable audio, use similar-video results from detail pages, and combine audio evidence with visual and tag signals.",
+          "id": "run-audio",
+          "imageSrc": "docs/manual/ai-audio-similar.png",
+          "imageAlt": "Audio similarity results after running audio analysis",
+          "title": "Find videos that sound alike",
+          "caption": "Run AI with audio analysis on videos that have usable sound. AI Audio learns how each video sounds so it can surface others that are sonically similar.",
+          "bodyMarkdown": "Audio similarity is great for matching the same scene, soundtrack, or audio source across different videos — signals that visual search alone would miss. Run it on videos with real audio for the best results.",
+          "mockKind": "videoPlayer"
+        },
+        {
+          "id": "audio-similar-tab",
+          "imageSrc": "docs/manual/ai-audio-similar.png",
+          "imageAlt": "The Audio Similar tab with ranked matches",
+          "title": "Open the Audio Similar tab",
+          "caption": "On a video's detail page, choose the Audio Similar tab to see other videos that sound like this one, each ranked by match percentage.",
+          "bodyMarkdown": "Combine it with **Visual** similarity and **tag** filters to zero in on exactly the content you're after — for example, look‑alike *and* sound‑alike videos.",
           "mockKind": "videoPlayer"
         }
       ]
     }
   ],
-  "minCoveVersion": "0.1.0",
+  "minCoveVersion": "0.4.0",
   "entryDll": "AI.Audio.dll",
   "sharedAssemblies": [
     "AI.Extensions.Abstractions"
   ],
   "dependencies": {
-    "cove.community.ai.core": ">=0.0.2"
+    "cove.community.ai.core": ">=0.1.0"
   }
 }

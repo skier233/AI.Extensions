@@ -23,7 +23,7 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
         ArgumentNullException.ThrowIfNull(referencePack);
 
         await using var scope = _scopeFactory.CreateAsyncScope();
-        var stateStore = scope.ServiceProvider.GetRequiredService<IFaceIdentityStateStore>();
+        var store = scope.ServiceProvider.GetRequiredService<IFaceIdentityStore>();
         var settingsStore = scope.ServiceProvider.GetRequiredService<IAiFacesSettingsStore>();
         var reconciler = scope.ServiceProvider.GetRequiredService<AiFaceIdentityReconciler>();
         var faceRepo = scope.ServiceProvider.GetRequiredService<IFaceRepository>();
@@ -31,7 +31,10 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
         var detectionRepo = scope.ServiceProvider.GetRequiredService<IDetectionRepository>();
         var segmentRepo = scope.ServiceProvider.GetRequiredService<ISegmentRepository>();
 
-        var snapshot = await stateStore.LoadAsync(ct);
+        // A pack import is a rare, whole-graph operation: load every identity, re-match against the new
+        // pack, and re-consolidate. BeginFullAsync takes the same reconcile gate as the per-asset path.
+        await using var transaction = await store.BeginFullAsync(ct);
+        var snapshot = transaction.Snapshot;
         if (snapshot.Identities.Count == 0)
         {
             return new AiFaceReferenceBackfillResult(0, 0, 0, 0, 0);
@@ -40,7 +43,7 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
         var settings = await settingsStore.LoadAsync(ct);
         var report = reconciler.Reconcile(snapshot, referencePack, settings);
         ApplyReferenceDisplayLabels(snapshot);
-        await stateStore.SaveAsync(snapshot, ct);
+        await transaction.CommitAsync(ct);
 
         var relinkedTargetFaceIds = new List<int>();
         var (mergedPersistedFaces, relabeledPersistedFaces) = await ApplyPersistedFaceUpdatesAsync(
@@ -112,95 +115,15 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
             relabeledPersistedFaces++;
         }
 
-        var mergeOperations = mergedFaceKeyMap
-            .Select(entry => new
-            {
-                Duplicate = facesByKey.GetValueOrDefault(entry.Key),
-                Target = facesByKey.GetValueOrDefault(entry.Value),
-            })
-            .Where(static entry => entry.Duplicate is not null
-                && entry.Target is not null
-                && entry.Duplicate.Id != entry.Target.Id)
-            .ToArray();
-
-        if (mergeOperations.Length == 0)
+        var mergeResult = await AiFacePersistedFaceMerger.ApplyAsync(
+            faceRepo, embeddingRepo, detectionRepo, segmentRepo, FaceSourceKey, mergedFaceKeyMap, ct);
+        foreach (var targetFaceId in mergeResult.RelinkedTargetFaceIds)
         {
-            await faceRepo.SaveChangesAsync(ct);
-            return (0, relabeledPersistedFaces);
-        }
-
-        var duplicateFaceIds = mergeOperations.Select(static entry => entry.Duplicate!.Id).Distinct().ToArray();
-        var targetFaceIdByDuplicateFaceId = mergeOperations
-            .ToDictionary(static entry => entry.Duplicate!.Id, static entry => entry.Target!.Id);
-
-        await faceRepo.UpdateAppearanceFaceIdAsync(FaceSourceKey, duplicateFaceIds, -1 /* temp */, ct);
-        // Re-point each duplicate face's appearances to their target
-        var appearances = await faceRepo.FindAppearancesAsync(
-            new FaceAppearanceFilter { SourceKey = FaceSourceKey, FaceIds = duplicateFaceIds }, ct);
-        foreach (var appearance in appearances)
-        {
-            appearance.FaceId = targetFaceIdByDuplicateFaceId[appearance.FaceId];
-        }
-
-        var detections = await detectionRepo.FindAsync(new DetectionFilter
-        {
-            SourceKey = FaceSourceKey,
-            RefKind = "face",
-            RefIds = duplicateFaceIds.Select(static id => (long)id).ToArray(),
-        }, ct);
-        foreach (var detection in detections)
-        {
-            detection.RefId = targetFaceIdByDuplicateFaceId[(int)detection.RefId!.Value];
-        }
-
-        var segments = await segmentRepo.FindAsync(new SegmentFilter
-        {
-            SourceKey = FaceSourceKey,
-            RefIds = duplicateFaceIds.Select(static id => (long)id).ToArray(),
-        }, ct);
-        foreach (var segment in segments)
-        {
-            segment.RefId = targetFaceIdByDuplicateFaceId[(int)segment.RefId!.Value];
-        }
-
-        await embeddingRepo.UpdateHostIdAsync(
-            EmbeddingHostType.Face, FaceSourceKey, duplicateFaceIds,
-            newHostId: -1 /* placeholder; per-face handled below */, ct);
-        var embeddings = await embeddingRepo.FindAsync(new EmbeddingFilter
-        {
-            SourceKey = FaceSourceKey,
-            HostType = EmbeddingHostType.Face,
-            HostIds = duplicateFaceIds,
-        }, ct);
-        foreach (var embedding in embeddings)
-        {
-            embedding.HostId = targetFaceIdByDuplicateFaceId[embedding.HostId];
-        }
-
-        var mergedPersistedFaces = 0;
-        foreach (var operation in mergeOperations)
-        {
-            var duplicate = operation.Duplicate!;
-            var target = operation.Target!;
-
-            if (duplicate.PerformerId.HasValue && !target.PerformerId.HasValue)
-            {
-                target.PerformerId = duplicate.PerformerId;
-                relinkedTargetFaceIds.Add(target.Id);
-            }
-
-            if (ShouldRefreshTargetLabel(target, duplicate))
-                target.Label = duplicate.Label;
-
-            if (duplicate.MergedIntoFaceId != target.Id)
-            {
-                duplicate.MergedIntoFaceId = target.Id;
-                mergedPersistedFaces++;
-            }
+            relinkedTargetFaceIds.Add(targetFaceId);
         }
 
         await faceRepo.SaveChangesAsync(ct);
-        return (mergedPersistedFaces, relabeledPersistedFaces);
+        return (mergeResult.MergedPersistedFaceCount, relabeledPersistedFaces);
     }
 
     private static bool ShouldRefreshFaceLabel(Face face, StoredFaceIdentity identity)
@@ -227,9 +150,4 @@ internal sealed class AiFaceReferenceBackfillService(IServiceScopeFactory scopeF
         => !string.IsNullOrWhiteSpace(identity.ReferenceDisplayName)
             ? identity.ReferenceDisplayName
             : identity.Label;
-
-    private static bool ShouldRefreshTargetLabel(Face target, Face duplicate)
-        => !string.IsNullOrWhiteSpace(duplicate.Label)
-           && (string.IsNullOrWhiteSpace(target.Label)
-               || string.Equals(target.Label, target.PrimarySourceKey, StringComparison.OrdinalIgnoreCase));
 }

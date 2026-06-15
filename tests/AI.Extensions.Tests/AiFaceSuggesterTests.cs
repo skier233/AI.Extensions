@@ -57,7 +57,7 @@ public sealed class AiFaceSuggesterTests
             Assert.Equal("Performer Alpha", suggestions[0].PerformerName);
             Assert.True(suggestions[0].Confidence > suggestions[1].Confidence);
             Assert.Equal([2, 3], suggestions[0].Evidence.Select(item => item.FaceId).OrderBy(id => id).ToArray());
-            Assert.Contains("2 linked face clusters", suggestions[0].Why, StringComparison.Ordinal);
+            Assert.Contains("2 of this performer's saved faces", suggestions[0].Why, StringComparison.Ordinal);
             Assert.NotNull(suggestions[0].CoverImageUrl);
         }
     }
@@ -123,7 +123,7 @@ public sealed class AiFaceSuggesterTests
                 Assert.Equal("Reference Performer", suggestion.PerformerName);
                 Assert.Equal("https://stashdb.org/images/reference.jpg", suggestion.CoverImageUrl);
                 Assert.Empty(suggestion.Evidence);
-                Assert.Contains("stashdb-pack match", suggestion.Why, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("Found in https://stashdb.org", suggestion.Why, StringComparison.OrdinalIgnoreCase);
             }
         }
         finally
@@ -167,7 +167,7 @@ public sealed class AiFaceSuggesterTests
             Assert.Equal(2, suggestions.Count);
             Assert.Equal(11, suggestions[0].PerformerId);
             Assert.Equal("Mia Melon", suggestions[0].PerformerName);
-            Assert.Contains("Host evidence only", suggestions[0].Why, StringComparison.Ordinal);
+            Assert.Contains("Already tagged on 1 video or image", suggestions[0].Why, StringComparison.Ordinal);
             Assert.True(suggestions[0].Confidence > suggestions[1].Confidence);
             Assert.Equal(22, suggestions[1].PerformerId);
         }
@@ -204,8 +204,8 @@ public sealed class AiFaceSuggesterTests
             var suggestion = Assert.Single(suggestions);
             Assert.Equal(77, suggestion.PerformerId);
             Assert.Equal("Video Performer", suggestion.PerformerName);
-            Assert.Contains("Host evidence only", suggestion.Why, StringComparison.Ordinal);
-            Assert.Contains("2 tagged hosts", suggestion.Why, StringComparison.Ordinal);
+            Assert.Contains("Already tagged on 2 videos or images", suggestion.Why, StringComparison.Ordinal);
+            Assert.Contains("every video and image with this face points to this performer", suggestion.Why, StringComparison.Ordinal);
         }
     }
 
@@ -233,7 +233,7 @@ public sealed class AiFaceSuggesterTests
 
             Assert.Equal(78, suggestion.PerformerId);
             Assert.Equal(40f, suggestion.Confidence);
-            Assert.Contains("Host evidence only", suggestion.Why, StringComparison.Ordinal);
+            Assert.Contains("Already tagged on 1 video or image", suggestion.Why, StringComparison.Ordinal);
         }
     }
 

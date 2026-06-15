@@ -51,6 +51,18 @@ internal sealed class AiAudioSimilarityService(
     private bool CanReadFiles => _principalAccessor?.Current?.Has(Permissions.FilesRead) == true;
     private bool HasUserScopedEngagement => _principalAccessor?.Current?.UserId != null;
 
+    // Cheap existence check for whether a video has any audio embeddings, used to decide if the
+    // audio-similarity tab should appear — far faster than running the full similarity search with
+    // perPage=1 (whose cost is the KNN scan, which perPage does not reduce).
+    public Task<bool> HasAudioEmbeddingsAsync(int videoId, CancellationToken ct = default)
+        => _embeddingRepository.ExistsAsync(new EmbeddingFilter
+        {
+            HostType = EmbeddingHostType.Video,
+            HostId = videoId,
+            SourceKey = AudioSourceKey,
+            Modality = EmbeddingModality.Audio,
+        }, ct);
+
     public async Task<PaginatedResponse<AiAudioSimilarVideoDto>> SimilarVideosForVideoAsync(int videoId, int page = 1, int perPage = DefaultSimilarPerPage, CancellationToken ct = default)
     {
         var pageInfo = NormalizeSimilarPage(page, perPage);

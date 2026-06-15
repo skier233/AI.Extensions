@@ -218,6 +218,27 @@ public sealed class AiRunQueueService(
             ? settings
             : settings with { RequestTimeoutSeconds = 0 };
 
+        // Images are sent to the AI server in batches (one server call per ImageBatchSize images), each
+        // batch counting as a single in-flight unit. Video/audio stay one server call per target.
+        if (request.MediaKind == AiMediaKinds.Image)
+        {
+            await ExecuteImageBatchesAsync(scopeFactory, jobService, logger, settings, executionSettings, request, targets, progress, ct);
+            return;
+        }
+
+        await ExecutePerTargetAsync(scopeFactory, jobService, logger, executionSettings, request, targets, progress, ct);
+    }
+
+    private static async Task ExecutePerTargetAsync(
+        IServiceScopeFactory scopeFactory,
+        IJobService jobService,
+        ILogger<AiRunQueueService> logger,
+        AiCoreConnectionSettings executionSettings,
+        AiQueueRunRequest request,
+        IReadOnlyList<AiResolvedRunTarget> targets,
+        IJobProgress progress,
+        CancellationToken ct)
+    {
         progress.Report(0d, $"Preparing {targets.Count} target(s)");
         RegisterBatchUnits(progress, targets);
 
@@ -228,7 +249,7 @@ public sealed class AiRunQueueService(
 
         var batchResult = await jobService.RunBatchAsync(
             targets,
-            settings.MaxInFlight,
+            executionSettings.MaxInFlight,
             async (target, unit, unitCt) =>
             {
                 using var scope = scopeFactory.CreateScope();
@@ -255,6 +276,87 @@ public sealed class AiRunQueueService(
 
         progress.Report(1d, batchResult.Summary);
     }
+
+    private static async Task ExecuteImageBatchesAsync(
+        IServiceScopeFactory scopeFactory,
+        IJobService jobService,
+        ILogger<AiRunQueueService> logger,
+        AiCoreConnectionSettings settings,
+        AiCoreConnectionSettings executionSettings,
+        AiQueueRunRequest request,
+        IReadOnlyList<AiResolvedRunTarget> targets,
+        IJobProgress progress,
+        CancellationToken ct)
+    {
+        var batchSize = Math.Max(1, settings.ImageBatchSize);
+        var batches = new List<ImageBatch>();
+        for (var start = 0; start < targets.Count; start += batchSize)
+        {
+            var slice = targets.Skip(start).Take(batchSize).ToArray();
+            batches.Add(new ImageBatch(slice, start + 1, start + slice.Length));
+        }
+
+        progress.Report(0d, $"Preparing {targets.Count} image(s) in {batches.Count} batch(es)");
+        foreach (var batch in batches)
+        {
+            progress.StartUnit(BatchUnitId(batch), BatchLabel(batch, targets.Count)).Dispose();
+        }
+
+        var template = BuildImageTemplate(request);
+        var batchResult = await jobService.RunBatchAsync(
+            batches,
+            settings.MaxInFlight,
+            async (batch, unit, unitCt) =>
+            {
+                using var scope = scopeFactory.CreateScope();
+                var orchestrator = scope.ServiceProvider.GetRequiredService<IAiCoreOrchestrator>();
+                unit.Report(0.05d, $"Processing {BatchLabel(batch, targets.Count)}");
+                try
+                {
+                    var imageTargets = batch.Targets
+                        .Select(static target => new AiRunImageTarget(target.Path, target.EntityType, target.EntityId))
+                        .ToList();
+                    await orchestrator.RunImageBatchAsync(executionSettings, imageTargets, template, unitCt);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "AI image batch {UnitId} failed", BatchUnitId(batch));
+                    throw;
+                }
+                unit.Report(1d, $"Completed {BatchLabel(batch, targets.Count)}");
+            },
+            progress,
+            unitIdFactory: static (batch, _) => BatchUnitId(batch),
+            labelFactory: batch => BatchLabel(batch, targets.Count),
+            ct: ct);
+
+        progress.Report(1d, batchResult.Summary);
+    }
+
+    private static string BatchUnitId(ImageBatch batch) => $"imagebatch:{batch.StartPosition}";
+
+    private static string BatchLabel(ImageBatch batch, int total)
+        => batch.StartPosition == batch.EndPosition
+            ? $"image {batch.StartPosition} of {total}"
+            : $"images {batch.StartPosition}–{batch.EndPosition} of {total}";
+
+    private static AiRunImagesRequest BuildImageTemplate(AiQueueRunRequest request)
+        => new()
+        {
+            Paths = [],
+            PresetId = request.PresetId,
+            CapabilityIds = request.CapabilityIds,
+            ClaimIds = request.ClaimIds,
+            PipelineName = request.PipelineName,
+            ForceClaimIds = request.ForceClaimIds,
+            Threshold = request.Threshold,
+            ReturnConfidence = request.ReturnConfidence,
+            CategoriesToSkip = request.CategoriesToSkip,
+            LoadPolicy = request.LoadPolicy,
+            DispatchResults = request.DispatchResults,
+        };
+
+    private sealed record ImageBatch(IReadOnlyList<AiResolvedRunTarget> Targets, int StartPosition, int EndPosition);
 
     private static void RegisterBatchUnits(IJobProgress progress, IReadOnlyList<AiResolvedRunTarget> targets)
     {

@@ -17,15 +17,15 @@ public sealed class AiAudioExtension : FullExtensionBase
 
     public override string Name => "AI Audio";
 
-    public override string Version => "0.0.2";
+    public override string Version => "0.1.0";
 
     public override string Description => "Contributes audio embedding and classification claims for AI workflows.";
 
     public override string Author => "Cove Team";
 
-    public override string Url => "https://github.com/yourcove/AI.Extensions";
+    public override string Url => "https://github.com/skier233/AI.Extensions";
 
-    public override string MinCoveVersion => "0.1.0";
+    public override string MinCoveVersion => "0.4.0";
 
     public override IReadOnlyList<string> Categories =>
     [
@@ -37,7 +37,7 @@ public sealed class AiAudioExtension : FullExtensionBase
 
     public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
     {
-        ["cove.community.ai.core"] = ">=0.0.2",
+        ["cove.community.ai.core"] = ">=0.1.0",
     };
 
     public override UIManifest GetUIManifest()
@@ -68,6 +68,11 @@ public sealed class AiAudioExtension : FullExtensionBase
 
         group.MapGet("/videos/{videoId:int}/similar-videos", async (int videoId, int? page, int? perPage, AiAudioSimilarityService searchService, CancellationToken ct) =>
             Results.Ok(await searchService.SimilarVideosForVideoAsync(videoId, page ?? 1, perPage ?? 12, ct)));
+
+        // Cheap "does this video have audio embeddings?" check so the UI can decide whether to show the
+        // audio-similarity tab without running a full (slow) similarity search.
+        group.MapGet("/videos/{videoId:int}/has-embeddings", async (int videoId, AiAudioSimilarityService searchService, CancellationToken ct) =>
+            Results.Ok(new { hasEmbeddings = await searchService.HasAudioEmbeddingsAsync(videoId, ct) }));
     }
 }
 

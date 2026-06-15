@@ -1,10 +1,10 @@
 {
   "id": "cove.community.ai.faces",
   "name": "AI Faces",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "Face-oriented AI capability contributions for image and video analysis.",
   "author": "Cove Team",
-  "url": "https://github.com/yourcove/AI.Extensions",
+  "url": "https://github.com/skier233/AI.Extensions",
   "categories": [
     "ai",
     "metadata",
@@ -31,19 +31,83 @@
         "settings-tab:extensions/ai/faces",
         "route:/settings/extensions/ai/faces"
       ],
-      "order": 85,
+      "order": 86,
       "slides": [
         {
-          "id": "face-workflow",
-          "title": "Review face identity evidence",
-          "caption": "AI Faces turns face detections and embeddings into reviewable identities, suggestions, and performer links.",
-          "bodyMarkdown": "Run face detection and embedding claims together, review suggestions before applying performer links, and use reference packs when you trust the source.",
+          "id": "run-faces",
+          "imageSrc": "docs/manual/ai-faces-page.png",
+          "imageAlt": "The Faces page after running face analysis",
+          "title": "Recognize people in your library",
+          "caption": "Run AI with face analysis on your videos and images. AI Faces detects faces, then groups the same person's appearances together into face identities you can review.",
+          "bodyMarkdown": "You don't tag people one clip at a time. AI Faces finds every face, clusters the ones that look like the same person, and collects them on the **Faces** page for you to review and link to performers.",
           "mockKind": "tagging"
+        },
+        {
+          "id": "review-faces",
+          "imageSrc": "docs/manual/ai-faces-page.png",
+          "imageAlt": "The Faces page with recognized people",
+          "title": "Review faces on the Faces page",
+          "caption": "Open the Faces page from the top navigation. Each tile is one recognized person, showing a sample image, how many times they were detected, and the top suggested performer with a confidence score.",
+          "bodyMarkdown": "The page defaults to the **Unlinked** filter — the faces still waiting for you to assign them. Work through these to connect the people Cove found to performers in your library.",
+          "mockKind": "tagging"
+        },
+        {
+          "id": "link-performers",
+          "imageSrc": "docs/manual/ai-faces-link.png",
+          "imageAlt": "A face card with Link and Compare actions",
+          "title": "Link a face to a performer",
+          "caption": "When a face has a good suggestion, link it directly. To double-check first, use Compare to see the face and the suggested performer side by side before you confirm.",
+          "bodyMarkdown": "Your options on a face:\n\n- **Link** — accept the top suggestion immediately.\n- **Compare** — review evidence side by side, then **Confirm link**, **Reject**, or **Skip**.\n- **Create new performer** — when the person isn't in your library yet, make a performer from the face (optionally using the face image).\n\nIf two reference sources disagree about who a face is, you'll be prompted to pick the right performer or **merge** the matches.",
+          "mockKind": "tagging",
+          "points": [
+            "[green] Link — accept a confident suggestion",
+            "[blue] Compare — verify side by side before confirming",
+            "Create a new performer when the person isn't in your library yet"
+          ]
+        },
+        {
+          "id": "delete-faces",
+          "imageSrc": "docs/manual/ai-faces-page.png",
+          "imageAlt": "The Faces page where you can delete unwanted faces",
+          "title": "Delete faces you don't want",
+          "caption": "Not every detected face is worth keeping. Delete low-quality faces and people you don't care about so the Faces page stays focused on identities that matter.",
+          "bodyMarkdown": "Good candidates to delete:\n\n- **Blurry or partial detections** that don't clearly show a real person.\n- **Background or one-off people** you'll never want to track.\n\nDelete a single face from its detail page's menu, or select several on the Faces page and delete them together. Deleting removes the face and its AI data but does **not** affect performers or your media. It can't be undone.",
+          "mockKind": "tagging"
+        },
+        {
+          "id": "reference-packs",
+          "title": "Recognize known performers with SAIE packs",
+          "caption": "A SAIE reference pack is a prebuilt set of known performer faces. Import one and AI Faces can suggest those performers automatically, instead of you identifying everyone by hand.",
+          "bodyMarkdown": "Go to **Settings → Extensions → AI → AI Faces** and use **Upload .saie pack** in the Reference Face DB section. After import, Cove reconciles your existing faces against the pack and starts suggesting matches. You can download community SAIE packs from the docs site.",
+          "imageSrc": "docs/manual/ai-faces-saie-upload.png",
+          "imageAlt": "AI Faces settings Reference Face DB section with the Upload .saie pack button",
+          "mockKind": "settings",
+          "links": [
+            {
+              "label": "Download SAIE reference packs (docs)",
+              "url": "https://github.com/skier233/nsfw_ai_model_server/wiki/AI-Models#face-packs"
+            }
+          ]
+        },
+        {
+          "id": "metadata-servers",
+          "imageSrc": "docs/manual/ai-faces-saie-upload.png",
+          "imageAlt": "AI Faces settings pairing a SAIE pack with a metadata server",
+          "title": "Pair each pack with a metadata server",
+          "caption": "For each SAIE pack you import, it's recommended to configure the matching metadata server. Then accepting a face match can also pull that performer's image, bio, and aliases.",
+          "bodyMarkdown": "Configure servers under **Settings → Data Sources**. In AI Faces settings, the **Update existing performers from metadata servers** option means that when you accept a reference match, Cove also refreshes that performer from the originating server — so a single confirmation both links the face *and* fills in rich performer details.",
+          "mockKind": "settings",
+          "links": [
+            {
+              "label": "Metadata servers (docs)",
+              "url": "https://yourcove.net/docs/user/metadata/providers-scrapers-downloaders/#common-metadata-servers"
+            }
+          ]
         }
       ]
     }
   ],
-  "minCoveVersion": "0.1.0",
+  "minCoveVersion": "0.4.0",
   "entryDll": "AI.Faces.dll",
   "sharedAssemblies": [
     "AI.Extensions.Abstractions"

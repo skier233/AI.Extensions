@@ -14,6 +14,8 @@ public interface IAiCoreOrchestrator
 
     Task<AiRunResponse> RunImagesAsync(AiCoreConnectionSettings settings, AiRunImagesRequest request, CancellationToken ct = default);
 
+    Task<IReadOnlyList<AiRunResponse>> RunImageBatchAsync(AiCoreConnectionSettings settings, IReadOnlyList<AiRunImageTarget> targets, AiRunImagesRequest template, CancellationToken ct = default);
+
     Task<AiRunResponse> RunVideoAsync(AiCoreConnectionSettings settings, AiRunVideoRequest request, CancellationToken ct = default);
 
     Task<AiRunResponse> RunAudioAsync(AiCoreConnectionSettings settings, AiRunAudioRequest request, CancellationToken ct = default);
@@ -126,6 +128,200 @@ public sealed class AiCoreOrchestrator(
             await _aiRunJournal.RecordFailureAsync(runId, ex, ct);
             throw;
         }
+    }
+
+    // Processes many images in a single AI-server call. Selection/claims/wants are resolved once (they are
+    // run-level), planning is per entity, and targets are grouped by their resolved execution want-set so a
+    // homogeneous batch (the common case) becomes one server call. The batched response's per-image results
+    // are split back to each entity for the existing per-entity artifact replace, dispatch, and journaling.
+    public async Task<IReadOnlyList<AiRunResponse>> RunImageBatchAsync(
+        AiCoreConnectionSettings settings,
+        IReadOnlyList<AiRunImageTarget> targets,
+        AiRunImagesRequest template,
+        CancellationToken ct = default)
+    {
+        if (targets.Count == 0)
+        {
+            return [];
+        }
+
+        var selection = ResolveRunSelection(settings, AiMediaKinds.Image, template.PresetId, template.CapabilityIds, template.ClaimIds, template.CategoriesToSkip, template.LoadPolicy, template.PipelineName);
+        var claims = SelectClaims(AiMediaKinds.Image, selection.ClaimIds, selection.CapabilityIds);
+        var resolvedLoadPolicy = ResolveLoadPolicy(settings, selection.LoadPolicy);
+        var wants = await BuildWantAsync(settings, claims, selection.CategoriesToSkip, resolvedLoadPolicy, ct);
+        var threshold = template.Threshold ?? settings.DefaultThreshold;
+        var claimDescriptors = claims.Select(static item => item.Claim).ToArray();
+
+        var planned = new List<PlannedImageTarget>(targets.Count);
+        foreach (var target in targets)
+        {
+            var mappedPath = AiPathMapper.MapPath(settings.PathMappings, target.Path);
+            var plans = await _aiRunPlanner.PlanAsync(
+                settings,
+                target.EntityType,
+                target.EntityId,
+                wants.Select(static want => want.ToPlannerWant()).ToArray(),
+                template.ForceClaimIds,
+                frameIntervalSeconds: null,
+                threshold: threshold,
+                ct: ct);
+            planned.Add(new PlannedImageTarget(target, mappedPath, plans, BuildExecution(wants, plans), BuildResponsePlan(plans)));
+        }
+
+        var responses = new List<AiRunResponse>(targets.Count);
+
+        // Fully-satisfied targets need no server call.
+        foreach (var item in planned.Where(static item => item.Execution.Wants.Count == 0))
+        {
+            responses.Add(new AiRunResponse(
+                Guid.NewGuid().ToString("n"),
+                AiMediaKinds.Image,
+                claimDescriptors,
+                CreateSkippedAnalysis(AiMediaKinds.Image, item.Target.Path),
+                [],
+                item.ResponsePlan));
+        }
+
+        foreach (var group in planned.Where(static item => item.Execution.Wants.Count > 0).GroupBy(static item => BuildWantSignature(item.Execution.Wants)))
+        {
+            var members = group.ToArray();
+            var analyzeRequest = new ImageAnalyzeRequest
+            {
+                Paths = members.Select(static item => item.MappedPath).ToList(),
+                Threshold = threshold,
+                ReturnConfidence = template.ReturnConfidence ?? true,
+                CategoriesToSkip = selection.CategoriesToSkip?.ToList(),
+                Want = members[0].Execution.Wants.ToList(),
+                LoadPolicy = resolvedLoadPolicy,
+                PipelineName = selection.PipelineName,
+            };
+
+            var runIds = new string[members.Length];
+            for (var index = 0; index < members.Length; index++)
+            {
+                var member = members[index];
+                runIds[index] = Guid.NewGuid().ToString("n");
+                await _aiRunJournal.RecordStartAsync(
+                    new AiRunJournalStart(runIds[index], member.Target.EntityType, member.Target.EntityId, "AI.Core", resolvedLoadPolicy, null, null, BuildTargetRequest(template, member.Target)),
+                    ct);
+            }
+
+            JsonElement response;
+            try
+            {
+                response = await _aiServerClient.AnalyzeImagesAsync(settings, analyzeRequest, ct);
+            }
+            catch (Exception ex)
+            {
+                foreach (var runId in runIds)
+                {
+                    await _aiRunJournal.RecordFailureAsync(runId, ex, ct);
+                }
+
+                throw;
+            }
+
+            var perImageResults = ExtractImageResults(response, members.Length);
+            for (var index = 0; index < members.Length; index++)
+            {
+                var member = members[index];
+                var runId = runIds[index];
+                var perImage = perImageResults[index];
+                if (TryGetImageError(perImage, out var error))
+                {
+                    await _aiRunJournal.RecordFailureAsync(runId, new InvalidOperationException($"AI server reported an error for '{member.Target.Path}': {error}"), ct);
+                    responses.Add(new AiRunResponse(runId, AiMediaKinds.Image, claimDescriptors, perImage, [], member.ResponsePlan));
+                    continue;
+                }
+
+                try
+                {
+                    await _aiArtifactReplaceService.ReplaceAsync(member.Target.EntityType, member.Target.EntityId, member.Plans, ct);
+                    var dispatchResults = await MaybeDispatchAsync(
+                        settings,
+                        template.DispatchResults,
+                        AiMediaKinds.Image,
+                        member.Target.Path,
+                        runId,
+                        member.Target.EntityType,
+                        member.Target.EntityId,
+                        member.Execution.Claims,
+                        perImage,
+                        ct);
+                    await _aiRunJournal.RecordCompletionAsync(
+                        new AiRunJournalCompletion(runId, AiMediaKinds.Image, perImage, member.Execution.Claims.Select(static item => item.Claim.ClaimId).ToArray(), dispatchResults.Count),
+                        ct);
+                    responses.Add(new AiRunResponse(runId, AiMediaKinds.Image, claimDescriptors, perImage, dispatchResults, member.ResponsePlan));
+                }
+                catch (Exception ex)
+                {
+                    await _aiRunJournal.RecordFailureAsync(runId, ex, ct);
+                    throw;
+                }
+            }
+        }
+
+        return responses;
+    }
+
+    private static string BuildWantSignature(IReadOnlyList<AnalyzeWantRequest> wants)
+        => string.Join("", wants.Select(static want => string.Join(
+            "",
+            want.Capability ?? string.Empty,
+            want.Scope ?? string.Empty,
+            want.FromDetection ?? string.Empty,
+            want.Models is { Count: > 0 } models ? string.Join(",", models) : string.Empty)));
+
+    private static AiRunImagesRequest BuildTargetRequest(AiRunImagesRequest template, AiRunImageTarget target)
+        => new()
+        {
+            Paths = [target.Path],
+            EntityType = target.EntityType,
+            EntityId = target.EntityId,
+            PresetId = template.PresetId,
+            CapabilityIds = template.CapabilityIds,
+            ClaimIds = template.ClaimIds,
+            PipelineName = template.PipelineName,
+            Threshold = template.Threshold,
+            ReturnConfidence = template.ReturnConfidence,
+            CategoriesToSkip = template.CategoriesToSkip,
+            LoadPolicy = template.LoadPolicy,
+            DispatchResults = template.DispatchResults,
+            ForceClaimIds = template.ForceClaimIds,
+        };
+
+    // The v4 /analyze/images response is { "result": [ <per-image>, ... ] } ordered to match the input
+    // paths. Fall back to treating the whole payload as a single result if the shape is unexpected.
+    private static IReadOnlyList<JsonElement> ExtractImageResults(JsonElement response, int expectedCount)
+    {
+        if (response.ValueKind == JsonValueKind.Object
+            && response.TryGetProperty("result", out var result)
+            && result.ValueKind == JsonValueKind.Array)
+        {
+            var items = result.EnumerateArray().Select(static element => element.Clone()).ToArray();
+            if (items.Length == expectedCount)
+            {
+                return items;
+            }
+        }
+
+        // Unexpected shape: hand the same payload to every member so nothing silently drops.
+        var fallback = response.Clone();
+        return Enumerable.Repeat(fallback, expectedCount).ToArray();
+    }
+
+    private static bool TryGetImageError(JsonElement perImage, out string? error)
+    {
+        if (perImage.ValueKind == JsonValueKind.Object
+            && perImage.TryGetProperty("error", out var errorElement)
+            && errorElement.ValueKind == JsonValueKind.String)
+        {
+            error = errorElement.GetString();
+            return true;
+        }
+
+        error = null;
+        return false;
     }
 
     public async Task<AiRunResponse> RunVideoAsync(AiCoreConnectionSettings settings, AiRunVideoRequest request, CancellationToken ct = default)
@@ -506,7 +702,7 @@ public sealed class AiCoreOrchestrator(
                     ["extensionId"] = first.Descriptor.ExtensionId,
                 });
 
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "Dispatching AI response for {MediaKind} to {ExtensionId} with {ClaimCount} claim(s)",
                 mediaKind,
                 first.Descriptor.ExtensionId,
@@ -561,7 +757,9 @@ public sealed class AiCoreOrchestrator(
                     first.Claim.WantScope,
                     first.Claim.FromDetection,
                     group,
-                    ResolveModels(first.Claim, first.Descriptor, loadPolicy, catalogModels, taggingModelsByScope, catalogModelLookup, bindingLookup),
+                    FilterFullySkippedModels(
+                        ResolveModels(first.Claim, first.Descriptor, loadPolicy, catalogModels, taggingModelsByScope, catalogModelLookup, bindingLookup),
+                        categoriesToSkip),
                     IsTaggingExtensionId(first.Descriptor.ExtensionId));
             })
             .Where(static want => want.Models.Count > 0)
@@ -660,7 +858,45 @@ public sealed class AiCoreOrchestrator(
                 category,
                 catalogModel?.Identifier,
                 catalogModel?.Version,
-                string.IsNullOrWhiteSpace(catalogModel?.Name) ? modelKey : catalogModel.Name);
+                string.IsNullOrWhiteSpace(catalogModel?.Name) ? modelKey : catalogModel.Name,
+                catalogModel?.Categories is { Count: > 0 } categories ? categories.ToArray() : []);
+
+        // Mirror the AI server's per-model skip gate: a model is only skipped server-side
+        // when it has categories AND every one of them is in categories_to_skip. Models with
+        // no categories (e.g. embeddings, audio, face models) are never gated by this list.
+        // Dropping fully-skipped models here means a want that resolves to nothing-to-run is
+        // pruned, so the orchestrator's "no execution wants" path skips the server call entirely
+        // instead of issuing a request that only preprocesses and runs no models.
+        static IReadOnlyList<ResolvedWantModel> FilterFullySkippedModels(
+            IReadOnlyList<ResolvedWantModel> models,
+            IReadOnlyList<string>? categoriesToSkip)
+        {
+            if (models.Count == 0 || categoriesToSkip is null || categoriesToSkip.Count == 0)
+            {
+                return models;
+            }
+
+            var skipped = new HashSet<string>(
+                categoriesToSkip
+                    .Where(static category => !string.IsNullOrWhiteSpace(category))
+                    .Select(static category => category.Trim()),
+                StringComparer.OrdinalIgnoreCase);
+            if (skipped.Count == 0)
+            {
+                return models;
+            }
+
+            return models
+                .Where(model =>
+                {
+                    var categories = model.Categories
+                        .Where(static category => !string.IsNullOrWhiteSpace(category))
+                        .Select(static category => category.Trim())
+                        .ToArray();
+                    return categories.Length == 0 || !categories.All(skipped.Contains);
+                })
+                .ToList();
+        }
 
         static IReadOnlyDictionary<string, AiModelCatalogEntry> BuildCatalogModelLookup(IReadOnlyList<AiModelCatalogEntry> models)
         {
@@ -1048,6 +1284,13 @@ public sealed class AiCoreOrchestrator(
 
     private sealed record ExecutionPlan(IReadOnlyList<AnalyzeWantRequest> Wants, IReadOnlyList<ResolvedClaim> Claims);
 
+    private sealed record PlannedImageTarget(
+        AiRunImageTarget Target,
+        string MappedPath,
+        IReadOnlyList<AiRunExecutionPlan> Plans,
+        ExecutionPlan Execution,
+        IReadOnlyList<AiRunPlanItem> ResponsePlan);
+
     private readonly record struct WantKey(string ExtensionId, string Capability, string Scope, string? FromDetection, string CapabilityId, string SlotId, string PreferredModelsKey);
 
     private sealed record ResolvedWantModel(
@@ -1056,10 +1299,11 @@ public sealed class AiCoreOrchestrator(
         string? Category,
         int? Identifier,
         string? Version,
-        string? Name)
+        string? Name,
+        IReadOnlyList<string> Categories)
     {
         public AiRunPlannerModel ToPlannerModel()
-            => new(ModelKey, ArtifactKeys, Category, Identifier, Version, Name);
+            => new(ModelKey, ArtifactKeys, Category, Identifier, Version, Name, Categories);
     }
 
     private sealed record ResolvedWant(

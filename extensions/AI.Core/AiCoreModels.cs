@@ -12,6 +12,8 @@ public sealed record AiCoreConnectionSettings
 
     public const int LegacyDefaultRequestTimeoutSeconds = 120;
 
+    public const int DefaultModelCacheSeconds = 600;
+
     public string ServerBaseUrl { get; init; } = "http://127.0.0.1:8000";
 
     public string DefaultLoadPolicy { get; init; } = AiLoadPolicies.UseLoaded;
@@ -20,7 +22,22 @@ public sealed record AiCoreConnectionSettings
 
     public int RequestTimeoutSeconds { get; init; } = DefaultRequestTimeoutSeconds;
 
+    /// <summary>
+    /// How long the model catalog/loaded listings are cached, in seconds, so batch runs don't
+    /// re-fetch them for every item. Set to 0 to disable caching.
+    /// </summary>
+    public int ModelCacheSeconds { get; init; } = DefaultModelCacheSeconds;
+
     public int MaxInFlight { get; init; } = 2;
+
+    public const int DefaultImageBatchSize = 288;
+
+    /// <summary>
+    /// How many images are sent to the AI server in a single analyze call. The server processes a batch
+    /// far more efficiently than one request per image (internal concurrency), and one batch counts as a
+    /// single "in flight" unit (≈ one video). Set to 1 to disable batching.
+    /// </summary>
+    public int ImageBatchSize { get; init; } = DefaultImageBatchSize;
 
     public bool DispatchResultsByDefault { get; init; } = true;
 
@@ -106,7 +123,9 @@ public sealed record AiCoreConnectionSettings
             ServerBaseUrl = baseUri.ToString().TrimEnd('/'),
             DefaultLoadPolicy = normalizedLoadPolicy,
             RequestTimeoutSeconds = normalizedRequestTimeoutSeconds,
+            ModelCacheSeconds = Math.Max(0, ModelCacheSeconds),
             MaxInFlight = Math.Max(1, MaxInFlight),
+            ImageBatchSize = Math.Clamp(ImageBatchSize, 1, 1000),
             PathMappings = normalizedMappings,
             CapabilityModelBindings = normalizedCapabilityBindings,
             RunPresets = normalizedRunPresets,
@@ -517,6 +536,8 @@ public sealed class AiRunImagesRequest
 
     public List<string>? ForceClaimIds { get; init; }
 }
+
+public sealed record AiRunImageTarget(string Path, string? EntityType, int? EntityId);
 
 public sealed class AiRunVideoRequest
 {

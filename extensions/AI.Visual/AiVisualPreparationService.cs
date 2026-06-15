@@ -237,13 +237,31 @@ internal sealed class AiVisualPreparationService
 
     private static bool TryResolveTarget(string modelKey, IReadOnlyList<VisualEmbeddingTarget> targets, out VisualEmbeddingTarget target)
     {
+        // The server keys each embedding by its model category (e.g. "visual_embeddings_semvisual"
+        // vs "visual_embeddings_visual"), and a claim's PreferredModels carries the distinguishing
+        // category token ("semvisual" / "visual"). Match that token exactly or as the trailing
+        // "_token" segment of the category. A loose Contains() match is ambiguous because the
+        // semantic category "visual_embeddings_semvisual" also contains "visual", which would
+        // misroute semantic embeddings to the feature target. When more than one token matches,
+        // prefer the most specific (longest) one.
+        VisualEmbeddingTarget? best = null;
+        var bestTokenLength = -1;
         foreach (var candidate in targets)
         {
-            if (candidate.PreferredModels.Count > 0 && candidate.PreferredModels.Any(preferred => modelKey.Contains(preferred, StringComparison.OrdinalIgnoreCase) || preferred.Contains(modelKey, StringComparison.OrdinalIgnoreCase)))
+            foreach (var preferred in candidate.PreferredModels)
             {
-                target = candidate;
-                return true;
+                if (MatchesModelToken(modelKey, preferred) && preferred.Length > bestTokenLength)
+                {
+                    best = candidate;
+                    bestTokenLength = preferred.Length;
+                }
             }
+        }
+
+        if (best is not null)
+        {
+            target = best;
+            return true;
         }
 
         var semantic = IsSemanticModelKey(modelKey);
@@ -258,8 +276,14 @@ internal sealed class AiVisualPreparationService
         return true;
     }
 
+    private static bool MatchesModelToken(string modelKey, string preferred)
+        => !string.IsNullOrWhiteSpace(preferred)
+           && (string.Equals(modelKey, preferred, StringComparison.OrdinalIgnoreCase)
+               || modelKey.EndsWith("_" + preferred, StringComparison.OrdinalIgnoreCase));
+
     private static bool IsSemanticModelKey(string modelKey)
-        => modelKey.Contains("clip", StringComparison.OrdinalIgnoreCase)
+        => modelKey.Contains("semvisual", StringComparison.OrdinalIgnoreCase)
+           || modelKey.Contains("clip", StringComparison.OrdinalIgnoreCase)
            || modelKey.Contains("meta", StringComparison.OrdinalIgnoreCase)
            || modelKey.Contains("semantic", StringComparison.OrdinalIgnoreCase);
 

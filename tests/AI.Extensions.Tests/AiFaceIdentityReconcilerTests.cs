@@ -64,13 +64,15 @@ public sealed class AiFaceIdentityReconcilerTests
     [Fact]
     public void Reconcile_DoesNotMergeDifferentPromotedUnknownIdentities()
     {
+        // Cross-asset promoted identities below the promoted consolidation floor stay separate —
+        // lookalikes commonly score in this range.
         var snapshot = new FaceIdentitySnapshot
         {
             NextIdentityOrdinal = 3,
             Identities =
             [
                 CreatePromotedIdentity("face-0001", [1f, 0f]),
-                CreatePromotedIdentity("face-0002", [0.999f, 0.001f]),
+                CreatePromotedIdentity("face-0002", [0.6f, 0.8f]),
             ],
         };
 
@@ -78,6 +80,29 @@ public sealed class AiFaceIdentityReconcilerTests
 
         Assert.Equal(2, snapshot.Identities.Count);
         Assert.Equal(0, report.MergedIdentityCount);
+    }
+
+    [Fact]
+    public void Reconcile_MergesNearIdenticalPromotedUnknownIdentitiesAcrossAssets()
+    {
+        // The same performer split across disjoint videos produces two promoted identities with
+        // near-identical anchors; those must merge above the promoted consolidation floor.
+        var snapshot = new FaceIdentitySnapshot
+        {
+            NextIdentityOrdinal = 3,
+            Identities =
+            [
+                CreatePromotedIdentity("face-0001", [1f, 0f]),
+                CreatePromotedIdentity("face-0002", [0.999f, 0.0447f]),
+            ],
+        };
+
+        var report = new AiFaceIdentityReconciler().Reconcile(snapshot, referencePack: null, new AiFacesSettings());
+
+        var identity = Assert.Single(snapshot.Identities);
+        Assert.Equal("face-0001", identity.FaceKey);
+        Assert.Equal(1, report.MergedIdentityCount);
+        Assert.Equal("face-0001", report.MergedFaceKeyMap["face-0002"]);
     }
 
     [Fact]
@@ -110,7 +135,7 @@ public sealed class AiFaceIdentityReconcilerTests
             Identities =
             [
                 CreatePromotedIdentity("face-0001", [1f, 0f], "video-5634", "ref-zazie", "Zazie Skymm", "reference"),
-                CreatePromotedIdentity("face-0002", [0.48f, 0.8772685f], "video-5634"),
+                CreatePromotedIdentity("face-0002", [0.55f, 0.8351647f], "video-5634"),
             ],
         };
 
@@ -131,8 +156,8 @@ public sealed class AiFaceIdentityReconcilerTests
             Identities =
             [
                 CreatePromotedIdentity("face-0001", [1f, 0f, 0f], "video-5634"),
-                CreatePromotedIdentity("face-0002", [0.48f, 0.8772685f, 0f], "video-5634"),
-                CreatePromotedIdentity("face-0003", [0.43f, 0.3517f, 0.8315f], "video-5634"),
+                CreatePromotedIdentity("face-0002", [0.55f, 0.8351647f, 0f], "video-5634"),
+                CreatePromotedIdentity("face-0003", [0.52f, 0.3f, 0.7997499f], "video-5634"),
             ],
         };
 

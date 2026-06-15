@@ -11,6 +11,8 @@ internal interface IFaceIdentityStateStore
     Task SaveAsync(FaceIdentitySnapshot snapshot, CancellationToken ct = default);
 
     Task DeleteAsync(string faceKey, CancellationToken ct = default);
+
+    Task ClearAsync(CancellationToken ct = default);
 }
 
 internal sealed class StoreBackedFaceIdentityStateStore : IFaceIdentityStateStore
@@ -72,4 +74,8 @@ internal sealed class StoreBackedFaceIdentityStateStore : IFaceIdentityStateStor
 
         await SaveAsync(snapshot, ct);
     }
+
+    // Drops the legacy blob once its contents have been migrated into the relational store.
+    public Task ClearAsync(CancellationToken ct = default)
+        => _store is null ? Task.CompletedTask : _store.DeleteAsync(StoreKey, ct);
 }

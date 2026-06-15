@@ -1,10 +1,10 @@
 {
   "id": "cove.community.ai.core",
   "name": "AI Core",
-  "version": "0.0.2",
+  "version": "0.1.0",
   "description": "AI orchestration, model management, and nsfw_ai_server connectivity for Cove.",
   "author": "Cove Team",
-  "url": "https://github.com/yourcove/AI.Extensions",
+  "url": "https://github.com/skier233/AI.Extensions",
   "categories": [
     "ai",
     "automation",
@@ -15,7 +15,7 @@
     {
       "id": "cove.ai",
       "title": "AI",
-      "description": "Model setup, capability extensions, and AI-assisted media workflows.",
+      "description": "What Cove's AI can do for your library, and how the pieces fit together.",
       "pages": [
         "ai",
         "settings"
@@ -28,24 +28,107 @@
       "order": 80,
       "slides": [
         {
-          "id": "overview",
-          "title": "Use Cove's AI stack",
-          "caption": "The AI extensions work together: AI Core queues runs and specialist extensions contribute tagging, visual, audio, and face capabilities.",
-          "bodyMarkdown": "Install **AI Core** first, then enable the capability extensions you need. Run AI on a small video or image selection before broad cleanup so generated metadata stays reviewable.",
+          "id": "what-ai-does",
+          "imageSrc": "docs/manual/ai-run-ai-dialog.png",
+          "imageAlt": "The Run AI dialog where you queue analysis",
+          "title": "What Cove's AI gives you",
+          "caption": "The AI extensions read your media and add things you can actually use: searchable tags with timing, people recognized across your library, and search by what something looks or sounds like.",
+          "bodyMarkdown": "Each extension unlocks a different superpower:\n\n- **AI Tagging** adds tags that know *when* and *how long* they appear, so they can show up as segments on the player bar and you can filter by how long a tag lasts.\n- **AI Faces** recognizes people and helps you link them to performers.\n- **AI Visual** lets you search by *meaning* (\"sunset on a beach\") and jump to look‑alike videos and images.\n- **AI Audio** finds videos that sound alike.\n\nThey all run through **AI Core**, which talks to the AI server and queues the work.",
           "mockKind": "extension",
+          "points": [
+            "Install AI Core first — every other AI extension needs it",
+            "Then enable just the capabilities you want",
+            "Run on a small selection first so you can review before a big cleanup"
+          ]
+        },
+        {
+          "id": "the-run-ai-button",
+          "title": "Everything starts with Run AI",
+          "caption": "Select one or more videos or images, then use the Run AI action to queue analysis. It appears on the toolbar of a detail page and in the bulk actions bar when you select multiple items.",
+          "bodyMarkdown": "In the Run AI dialog you pick which capabilities to run — tagging, faces, visual, audio — based on the extensions you have enabled.",
+          "imageSrc": "docs/manual/ai-run-ai-dialog.png",
+          "imageAlt": "The Run AI dialog with capability checkboxes for tagging, faces, visual, and audio",
+          "mockKind": "extension"
+        }
+      ]
+    },
+    {
+      "id": "cove.community.ai.core.setup",
+      "title": "AI Core Setup",
+      "description": "One-time setup: connect the AI server, map your paths, and load models.",
+      "parentTopicId": "cove.ai",
+      "kind": "setup",
+      "pages": [
+        "ai",
+        "settings"
+      ],
+      "contexts": [
+        "settings-tab:extensions/ai",
+        "route:/settings/extensions/ai"
+      ],
+      "order": 81,
+      "slides": [
+        {
+          "id": "before-you-start",
+          "imageSrc": "docs/manual/ai-core-connect-server.png",
+          "imageAlt": "AI Core settings where you connect the AI server",
+          "title": "Before you start",
+          "caption": "AI Core does not run the models itself — it connects to a running AI server (nsfw_ai_server). You need that server reachable from Cove before anything will work.",
+          "bodyMarkdown": "You will need:\n\n- A running **AI server** that Cove can reach over the network (local or remote).\n- Enough hardware for the models you plan to use — a GPU makes large runs far faster.\n\nIf you do not have the server yet, set it up first, then come back here.",
+          "mockKind": "settings",
           "links": [
             {
-              "label": "AI Extensions README",
-              "url": "https://github.com/yourcove/AI.Extensions"
+              "label": "AI setup guide (docs)",
+              "url": "https://github.com/skier233/nsfw_ai_model_server/wiki/NSFW-AI-Tagging-Quickstart-Guide"
             }
           ]
+        },
+        {
+          "id": "connect-server",
+          "title": "Connect the AI server",
+          "caption": "Open Settings → Extensions → AI → AI Core and enter your server URL, then run the health check to confirm Cove can reach it.",
+          "bodyMarkdown": "Paste your server address (for example `http://127.0.0.1:8000`) into the **Server URL** field and check health. A green/healthy result means you are connected and Cove can see which models are available.",
+          "imageSrc": "docs/manual/ai-core-connect-server.png",
+          "imageAlt": "AI Core settings with the Server URL field and health check result",
+          "mockKind": "settings",
+          "points": [
+            "[green] Server URL — where your AI server lives",
+            "[blue] Health check — confirms Cove can reach it and lists models"
+          ]
+        },
+        {
+          "id": "path-mappings",
+          "title": "Map your media paths",
+          "caption": "If Cove and the AI server see your files under different folder paths, add a path mapping so the server can open the same media Cove scanned.",
+          "bodyMarkdown": "Add a mapping from the path Cove uses (the **from** prefix) to the path the server uses (the **to** prefix). This is common when the server runs in a container or on another machine. If both run on the same machine with the same paths, you can skip this.",
+          "imageSrc": "docs/manual/ai-core-path-mappings.png",
+          "imageAlt": "AI Core path mappings table with a from-prefix and to-prefix row",
+          "mockKind": "settings"
+        },
+        {
+          "id": "load-models",
+          "title": "Load models and you're ready",
+          "caption": "Open the model catalog, load the models you want, and AI Core will use them for the matching capabilities.",
+          "bodyMarkdown": "Loaded models stay ready for runs. Once at least one model is loaded, you can run AI on a small selection to confirm everything works end to end before doing a large batch.",
+          "imageSrc": "docs/manual/ai-core-load-models.png",
+          "imageAlt": "AI Core model catalog with a model being loaded",
+          "mockKind": "settings"
+        },
+        {
+          "id": "first-run-and-trouble",
+          "imageSrc": "docs/manual/ai-core-load-models.png",
+          "imageAlt": "AI Core model catalog used during a first run",
+          "title": "First run & troubleshooting",
+          "caption": "Run AI on a handful of items first. If a run stalls or fails, the usual causes are the server URL, path mappings, or a model that isn't loaded.",
+          "bodyMarkdown": "Good first checks when something doesn't work:\n\n- Re-run the **health check** — is the server still reachable?\n- Does the failing item's path resolve through your **path mappings**?\n- Is the right **model loaded** for the capability you ran?\n- For large libraries, runs are queued — give them time, and start small.",
+          "mockKind": "extension"
         }
       ]
     },
     {
       "id": "cove.community.ai.core",
-      "title": "AI Core",
-      "description": "AI model setup, run queues, and video or image analysis workflows.",
+      "title": "Running AI",
+      "description": "How to run AI on your media and review the results.",
       "parentTopicId": "cove.ai",
       "pages": [
         "ai",
@@ -62,26 +145,30 @@
         "extension-action:cove.community.ai.core:ai-core-run-videos-bulk",
         "extension-action:cove.community.ai.core:ai-core-run-images-bulk"
       ],
-      "order": 81,
+      "order": 82,
       "slides": [
         {
-          "id": "connect-server",
-          "title": "Connect the AI server",
-          "caption": "AI Core uses the configured nsfw_ai_server endpoint and path mappings before queueing model work.",
-          "bodyMarkdown": "Set the server URL in Settings, check capabilities before large runs, and keep path mappings aligned with Cove media paths.",
+          "id": "run-on-selection",
+          "title": "Run AI on what you've selected",
+          "caption": "From a video or image detail page use the Run AI toolbar action; on a list page, select multiple items and use Run AI in the bulk actions bar.",
+          "bodyMarkdown": "Pick the capabilities to run in the dialog. What you can choose depends on which AI extensions you have enabled — tagging, faces, visual, audio.",
+          "imageSrc": "docs/manual/ai-run-ai-dialog.png",
+          "imageAlt": "Selecting videos and opening the Run AI dialog from the bulk actions bar",
           "mockKind": "extension"
         },
         {
-          "id": "run-selection",
-          "title": "Run AI on selected media",
-          "caption": "Use video or image selections to queue repeatable AI runs once the model stack is ready.",
-          "bodyMarkdown": "Select media first, choose a run target, then review generated artifacts before applying broad cleanup decisions.",
+          "id": "review-results",
+          "imageSrc": "docs/manual/ai-run-ai-dialog.png",
+          "imageAlt": "The Run AI dialog, where you review before committing",
+          "title": "Review before you commit",
+          "caption": "Start with a small selection and look at the results before running across your whole library.",
+          "bodyMarkdown": "Tags appear, faces collect on the Faces page for linking, and visual/audio similarity shows up on detail pages. Once you verify things are working, run for larger batches.",
           "mockKind": "extension"
         }
       ]
     }
   ],
-  "minCoveVersion": "0.1.0",
+  "minCoveVersion": "0.4.0",
   "entryDll": "AI.Core.dll",
   "sharedAssemblies": [
     "AI.Extensions.Abstractions"

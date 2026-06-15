@@ -21,12 +21,18 @@ public sealed class AiFaceReferenceBackfillServiceTests
     {
         await using var provider = CreateProvider(services =>
         {
+            services.AddScoped<DbContext>(static sp => sp.GetRequiredService<CoveContext>());
             services.AddSingleton<StoreBackedFaceIdentityStateStore>();
             services.AddSingleton<IFaceIdentityStateStore>(static services => services.GetRequiredService<StoreBackedFaceIdentityStateStore>());
+            services.AddSingleton<IFaceIdentityStore, DbFaceIdentityStore>();
             services.AddSingleton<StoreBackedAiFacesSettingsStore>();
             services.AddSingleton<IAiFacesSettingsStore>(static services => services.GetRequiredService<StoreBackedAiFacesSettingsStore>());
             services.AddSingleton<AiFaceIdentityReconciler>();
             services.AddSingleton<AiFaceReferenceBackfillService>();
+            services.AddScoped<Cove.Core.Interfaces.IFaceRepository, Cove.Data.Repositories.FaceRepository>();
+            services.AddScoped<Cove.Core.Interfaces.IEmbeddingRepository, Cove.Data.Repositories.EmbeddingRepository>();
+            services.AddScoped<Cove.Core.Interfaces.IDetectionRepository, Cove.Data.Repositories.DetectionRepository>();
+            services.AddScoped<Cove.Core.Interfaces.ISegmentRepository, Cove.Data.Repositories.SegmentRepository>();
         });
 
         var extensionStore = new TestExtensionStore();
@@ -39,7 +45,7 @@ public sealed class AiFaceReferenceBackfillServiceTests
             Identities =
             [
                 CreatePromotedIdentity("face-0001", [1f, 0f], "video-5634"),
-                CreatePromotedIdentity("face-0002", [0.48f, 0.8772685f], "video-5634"),
+                CreatePromotedIdentity("face-0002", [0.55f, 0.8351647f], "video-5634"),
             ],
         };
         await provider.GetRequiredService<IFaceIdentityStateStore>().SaveAsync(snapshot);
@@ -63,11 +69,16 @@ public sealed class AiFaceReferenceBackfillServiceTests
 
         var result = await service.BackfillAsync(referencePack);
 
-        var updatedSnapshot = await provider.GetRequiredService<IFaceIdentityStateStore>().LoadAsync();
-        var identity = Assert.Single(updatedSnapshot.Identities);
-        Assert.Equal("face-0001", identity.FaceKey);
-        Assert.Equal("ref-zazie", identity.ReferenceExternalId);
-        Assert.Equal("Zazie Skymm", identity.Label);
+        // The reconciled identity graph now lives in the DB-backed store (the legacy blob is cleared on
+        // import), so verify the merged/relabeled identity there.
+        await using (var identityScope = provider.CreateAsyncScope())
+        {
+            var identityDb = identityScope.ServiceProvider.GetRequiredService<CoveContext>();
+            var identity = Assert.Single(await identityDb.Set<ExtAiFacesIdentityEntity>().ToListAsync());
+            Assert.Equal("face-0001", identity.FaceKey);
+            Assert.Equal("ref-zazie", identity.ReferenceExternalId);
+            Assert.Equal("Zazie Skymm", identity.Label);
+        }
 
         await using var verificationScope = provider.CreateAsyncScope();
         var verificationDb = verificationScope.ServiceProvider.GetRequiredService<CoveContext>();

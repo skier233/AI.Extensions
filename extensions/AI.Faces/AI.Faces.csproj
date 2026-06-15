@@ -12,6 +12,26 @@
     <PackageReference Include="SixLabors.ImageSharp" Version="3.1.12" />
   </ItemGroup>
 
+  <!-- pgvector LINQ translation (CosineDistance) for identity-anchor candidate lookup. These match the
+       host (Cove.Data) versions and are compile-only: the runtime assemblies are supplied by the host.
+       Npgsql.EntityFrameworkCore.PostgreSQL + Relational are pinned to 10.x to override the EF Core 9
+       that Pgvector.EntityFrameworkCore would otherwise pull in transitively (which conflicts with the
+       host's EF Core 10). -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.5">
+      <ExcludeAssets>runtime</ExcludeAssets>
+      <Private>false</Private>
+    </PackageReference>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.1">
+      <ExcludeAssets>runtime</ExcludeAssets>
+      <Private>false</Private>
+    </PackageReference>
+    <PackageReference Include="Pgvector.EntityFrameworkCore" Version="0.3.0">
+      <ExcludeAssets>runtime</ExcludeAssets>
+      <Private>false</Private>
+    </PackageReference>
+  </ItemGroup>
+
   <ItemGroup Condition="'$(UseLocalCoveSource)' == 'true' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Sdk\Cove.Sdk.csproj')">
     <ProjectReference Include="..\..\..\cove\src\Cove.Sdk\Cove.Sdk.csproj">
       <Private>false</Private>

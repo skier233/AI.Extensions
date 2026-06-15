@@ -19,7 +19,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_DoesNotCreateIdentityForLowQualityUnmatchedFace()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store);
         var request = BuildImageRequest(
             "image-1",
@@ -37,7 +37,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_ReusesExistingIdentityForHighQualityMatchingFace()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store, ShortVideoPromotionSettings());
 
         var firstBatch = await service.PrepareAsync(BuildImageRequest("image-a", 0.95, 24.0, [1f, 0f]));
@@ -53,7 +53,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_VideoTrackPrefersSharperLargerExemplarForCover()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store, ShortVideoPromotionSettings());
         IReadOnlyList<AiCapabilityClaim> claims =
         [
@@ -130,9 +130,13 @@ public sealed class AiFacesPreparationServiceTests
     }
 
     [Fact]
-    public async Task Prepare_DoesNotCreateIdentityForLowPoseOrBlurryFace()
+    public async Task Prepare_CreatesIdentityForStrongFaceDespiteLowPoseOrBlurriness()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        // A strong embedding (high ArcFace norm) from a confident detection is a real, recognizable face
+        // and must be created even when the per-frame pose/image-quality heuristics are low. Those signals
+        // only rank cover/representative selection — they no longer gate a face's existence, so a clear
+        // single still is never silently dropped for not being perfectly frontal or razor-sharp.
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store);
         var request = BuildImageRequest(
             "image-low-quality",
@@ -144,23 +148,17 @@ public sealed class AiFacesPreparationServiceTests
                 ["pose_quality"] = "0.42",
                 ["image_quality"] = "0.08",
             });
-        var embedding = Assert.Single(request.Result.AssetAnalysis!.EnumerateAllEmbeddings());
-
-        Assert.NotNull(embedding.Metadata);
-        Assert.Equal("0.42", embedding.Metadata!["pose_quality"]);
-        Assert.Equal("0.08", embedding.Metadata!["image_quality"]);
 
         var batch = await service.PrepareAsync(request);
 
-        Assert.Empty(batch.Faces);
-        Assert.Single(batch.Detections);
-        Assert.Empty((await store.LoadAsync()).Identities);
+        Assert.Single(batch.Faces);
+        Assert.Single((await store.LoadAsync()).Identities);
     }
 
     [Fact]
     public async Task Prepare_KeepsSingleFrameUnmatchedVideoTrackProvisional()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store);
         IReadOnlyList<AiCapabilityClaim> claims =
         [
@@ -188,7 +186,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_PromotesSparseVideoTrackByRepresentedEvidenceTime()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store);
         IReadOnlyList<AiCapabilityClaim> claims =
         [
@@ -219,7 +217,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_VideoTrackUsesSampleOrderForSparseSourceFrameIndexes()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store, ShortVideoPromotionSettings());
         IReadOnlyList<AiCapabilityClaim> claims =
         [
@@ -252,7 +250,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_KeepsLowCoverageSparseVideoTrackProvisionalInLongVideo()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store);
         IReadOnlyList<AiCapabilityClaim> claims =
         [
@@ -289,7 +287,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_DoesNotReemitSingleAssetVideoEvidenceIdentityWithoutCurrentCoverage()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         await store.SaveAsync(new FaceIdentitySnapshot
         {
             Identities =
@@ -343,7 +341,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_PromotesSingleSparseFrameWhenVideoIsShorterThanInterval()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store);
         IReadOnlyList<AiCapabilityClaim> claims =
         [
@@ -369,7 +367,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_KeepsSingleSparseFrameInLongVideoProvisional()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store);
         IReadOnlyList<AiCapabilityClaim> claims =
         [
@@ -397,7 +395,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_KeepsShortUnmatchedVideoClusterProvisionalByDefault()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store);
         IReadOnlyList<AiCapabilityClaim> claims =
         [
@@ -430,7 +428,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_ReusesSameAssetIdentityForBorderlineVideoFragment()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store, ShortVideoPromotionSettings());
         IReadOnlyList<AiCapabilityClaim> claims =
         [
@@ -465,7 +463,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_VideoTrackerBridgesLowIoUWhenEmbeddingMatches()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store, ShortVideoPromotionSettings());
         IReadOnlyList<AiCapabilityClaim> claims =
         [
@@ -498,7 +496,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_VideoTrackerKeepsConcurrentDifferentEmbeddingsSeparate()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store, ShortVideoPromotionSettings());
         IReadOnlyList<AiCapabilityClaim> claims =
         [
@@ -538,9 +536,100 @@ public sealed class AiFacesPreparationServiceTests
     }
 
     [Fact]
-    public async Task Prepare_CreatesIdentityForUsableNonAnchorFace()
+    public async Task Prepare_DoesNotMarkBrieflyPresentFaceAsPresentInVideo()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        // A long video with a main face (present for the majority) and a second, different face that
+        // only appears for ~2 seconds — the mis-attributed-single-detection / intro-cameo shape. The
+        // brief face must not be marked present even though it would otherwise clear promotion.
+        var store = new InMemoryFaceIdentityStore();
+        var service = CreateService(store, ShortVideoPromotionSettings());
+        IReadOnlyList<AiCapabilityClaim> claims =
+        [
+            new AiCapabilityClaim("faces.video.detection", "Video Face Detection", AiMediaKinds.Video, "detection", "frame", "frames"),
+            new AiCapabilityClaim("faces.video.embedding", "Video Face Identity Embeddings", AiMediaKinds.Video, "embedding", "region", "regions", FromDetection: "face_detector_torchexport"),
+        ];
+
+        var frames = new List<AiTemporalSlice>();
+        for (var i = 0; i < 10; i++)
+        {
+            frames.Add(CreateVideoFrame(i + 1, i, new AiBoundingBox(0.20, 0.20, 0.40, 0.40), [1f, 0f]));
+        }
+
+        // Different person, present only at 20s and 21s (~2s total).
+        frames.Add(CreateVideoFrame(11, 20, new AiBoundingBox(0.60, 0.20, 0.80, 0.40), [0f, 1f]));
+        frames.Add(CreateVideoFrame(12, 21, new AiBoundingBox(0.60, 0.20, 0.80, 0.40), [0f, 1f]));
+
+        var result = new AiAnalyzeResult
+        {
+            MediaKind = AiMediaKinds.Video,
+            AssetId = "brief-presence-video",
+            DurationSeconds = 60,
+            FrameIntervalSeconds = 1,
+            Frames = frames,
+        };
+
+        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "brief-presence-video"));
+
+        var face = Assert.Single(batch.Faces);
+        Assert.All(batch.FaceAppearances, appearance => Assert.Equal(face.FaceKey, appearance.RefKey));
+        // The brief face's detections are still recorded, just not attributed to a present face.
+        Assert.Contains(batch.Detections, detection => detection.RefKey is null);
+    }
+
+    [Fact]
+    public async Task Prepare_DoesNotCreateIdentityForUsableNonAnchorFace()
+    {
+        // A face that clears the identity floor (strong norm + confident detection) but never produces an
+        // anchor-grade embedding — here because the detection is too small to anchor — can still match an
+        // existing identity, but must not mint a new one. Tiny crops are the dominant source of junk faces
+        // the user just deletes.
+        var store = new InMemoryFaceIdentityStore();
+        var service = CreateService(store, ShortVideoPromotionSettings());
+        var request = BuildImageRequest(
+            "image-tiny-crop",
+            detectionScore: 0.96,
+            embeddingNorm: 24.0,
+            vector: [1f, 0f],
+            // Area below MinimumNormalizedAnchorArea (0.01): 0.05 * 0.06 = 0.003.
+            boundingBox: new AiBoundingBox(0.10, 0.10, 0.15, 0.16));
+
+        var batch = await service.PrepareAsync(request);
+        var snapshot = await store.LoadAsync();
+
+        Assert.Empty(batch.Faces);
+        Assert.Empty(snapshot.Identities);
+        Assert.Single(batch.Detections);
+        Assert.Null(batch.Detections[0].RefKey);
+    }
+
+    [Fact]
+    public async Task Prepare_MatchesNonAnchorFaceOntoExistingIdentity()
+    {
+        var store = new InMemoryFaceIdentityStore();
+        await store.SaveAsync(new FaceIdentitySnapshot
+        {
+            NextIdentityOrdinal = 2,
+            Identities =
+            [
+                new StoredFaceIdentity
+                {
+                    FaceKey = "face-0001",
+                    LifecycleStatus = StoredFaceIdentityLifecycle.Promoted,
+                    PromotionReason = "image",
+                    QualityScore = 32.0,
+                    AssetIds = ["image-original"],
+                    Anchors =
+                    [
+                        new StoredFaceAnchor
+                        {
+                            ModelKey = "face_embedding_torchexport",
+                            QualityScore = 20.0,
+                            Vector = [1f, 0f],
+                        },
+                    ],
+                },
+            ],
+        });
         var service = CreateService(store, ShortVideoPromotionSettings());
         var request = BuildImageRequest(
             "image-soft-profile",
@@ -557,17 +646,15 @@ public sealed class AiFacesPreparationServiceTests
         var snapshot = await store.LoadAsync();
 
         var face = Assert.Single(batch.Faces);
-        Assert.Single(batch.FaceAppearances);
-        Assert.Single(batch.Detections);
-        Assert.Single(snapshot.Identities);
-        Assert.Equal(face.FaceKey, batch.FaceAppearances[0].RefKey);
-        Assert.NotEmpty(snapshot.Identities[0].Anchors);
+        Assert.Equal("face-0001", face.FaceKey);
+        var identity = Assert.Single(snapshot.Identities);
+        Assert.Contains("image-soft-profile", identity.AssetIds);
     }
 
     [Fact]
     public async Task Prepare_UsesQualityMetadataForCoverAndCentroidSelection()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store, ShortVideoPromotionSettings());
         IReadOnlyList<AiCapabilityClaim> claims =
         [
@@ -670,7 +757,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_VideoTrackPersistsOnlyRepresentativeDetectionKeyframes()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store, ShortVideoPromotionSettings());
         IReadOnlyList<AiCapabilityClaim> claims =
         [
@@ -706,7 +793,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_VideoTrackRetainsTemporalKeyframesForLongStableBoxes()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store, new AiFacesSettings
         {
             PromotionMinimumVideoSamples = 2,
@@ -742,7 +829,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_SplitsFaceSegmentsAcrossLargeObservationGapsInSameAssetCluster()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store, ShortVideoPromotionSettings());
         IReadOnlyList<AiCapabilityClaim> claims =
         [
@@ -776,11 +863,15 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_UsesConfiguredClusterMatchThresholdToCreateNewIdentity()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         var service = CreateService(store, new AiFacesSettings
         {
             IdentityMatchThreshold = 0.99,
             IdentityAmbiguityMargin = 0.01,
+            // Pin consolidation above the test vectors' similarity so reconciliation doesn't
+            // immediately re-merge the two identities this test expects to stay distinct.
+            ConsolidationSimilarityThreshold = 0.99,
+            ConsolidationPromotedSimilarityThreshold = 0.99,
         });
 
         var firstBatch = await service.PrepareAsync(BuildImageRequest("image-first", 0.95, 24.0, [1f, 0f]));
@@ -802,7 +893,7 @@ public sealed class AiFacesPreparationServiceTests
         try
         {
             var referencePackStore = await CreateReferencePackStoreAsync(tempRoot);
-            var store = new InMemoryFaceIdentityStateStore();
+            var store = new InMemoryFaceIdentityStore();
             var service = CreateService(store, referencePackStore: referencePackStore);
 
             var batch = await service.PrepareAsync(BuildImageRequest("image-reference-seed", 0.95, 24.0, [1f, 0f]));
@@ -831,7 +922,7 @@ public sealed class AiFacesPreparationServiceTests
     [Fact]
     public async Task Prepare_ReplacesMalformedStoredCoverWhenMatchingIdentity()
     {
-        var store = new InMemoryFaceIdentityStateStore();
+        var store = new InMemoryFaceIdentityStore();
         await store.SaveAsync(new FaceIdentitySnapshot
         {
             NextIdentityOrdinal = 2,
@@ -1053,7 +1144,7 @@ public sealed class AiFacesPreparationServiceTests
                 Assert.Single(embeddings);
                 Assert.Equal(0, embeddings[0].DetectionIndex);
 
-                var store = new InMemoryFaceIdentityStateStore();
+                var store = new InMemoryFaceIdentityStore();
                 var service = CreateService(store, ShortVideoPromotionSettings());
                 IReadOnlyList<AiCapabilityClaim> claims =
                 [
@@ -1073,8 +1164,10 @@ public sealed class AiFacesPreparationServiceTests
         double detectionScore,
         double embeddingNorm,
         IReadOnlyList<float> vector,
-        IReadOnlyDictionary<string, string>? embeddingMetadata = null)
+        IReadOnlyDictionary<string, string>? embeddingMetadata = null,
+        AiBoundingBox? boundingBox = null)
     {
+        var bbox = boundingBox ?? new AiBoundingBox(0.1, 0.1, 0.3, 0.4);
         IReadOnlyList<AiCapabilityClaim> claims =
         [
             new AiCapabilityClaim("faces.image.detection", "Image Face Detection", AiMediaKinds.Image, "detection", "asset", "regions"),
@@ -1086,7 +1179,7 @@ public sealed class AiFacesPreparationServiceTests
             AssetId = assetId,
             AssetAnalysis = new AiAnalysisNode
             {
-                Detections = [new AiDetectionObservation("scrfd_face", 0, "face", detectionScore, new AiBoundingBox(0.1, 0.1, 0.3, 0.4))],
+                Detections = [new AiDetectionObservation("scrfd_face", 0, "face", detectionScore, bbox)],
                 RegionBranches =
                 [
                     new AiRegionBranch(
@@ -1158,7 +1251,7 @@ public sealed class AiFacesPreparationServiceTests
             });
 
     private static AiFacePreparationService CreateService(
-        InMemoryFaceIdentityStateStore store,
+        InMemoryFaceIdentityStore store,
         AiFacesSettings? settings = null,
         AiFaceReferencePackStore? referencePackStore = null)
     {
@@ -1302,8 +1395,6 @@ public sealed class AiFacesPreparationServiceTests
         public Task<AiFacesSettings> LoadAsync(CancellationToken ct = default)
             => Task.FromResult(new AiFacesSettings
             {
-                MinimumPoseQuality = _settings.MinimumPoseQuality,
-                MinimumImageQuality = _settings.MinimumImageQuality,
                 IdentityMatchThreshold = _settings.IdentityMatchThreshold,
                 IdentityAmbiguityMargin = _settings.IdentityAmbiguityMargin,
                 AssetClusterSimilarityThreshold = _settings.AssetClusterSimilarityThreshold,
@@ -1329,7 +1420,10 @@ public sealed class AiFacesPreparationServiceTests
         }
     }
 
-    private sealed class InMemoryFaceIdentityStateStore : IFaceIdentityStateStore
+    // In-memory IFaceIdentityStore for unit tests. Loads the full snapshot into a deep-cloned working
+    // copy on Begin and writes it back on Commit (so a test fails if prep forgets to commit). LoadAsync/
+    // SaveAsync remain as test seed/assert helpers.
+    private sealed class InMemoryFaceIdentityStore : IFaceIdentityStore
     {
         private FaceIdentitySnapshot _snapshot = new();
 
@@ -1342,10 +1436,73 @@ public sealed class AiFacesPreparationServiceTests
             return Task.CompletedTask;
         }
 
-        public Task DeleteAsync(string faceKey, CancellationToken ct = default)
+        public Task<FaceIdentityTransaction> BeginIncrementalAsync(
+            IReadOnlyList<IReadOnlyList<float>> queryVectors,
+            IReadOnlyCollection<string> referenceExternalIds,
+            int candidateK,
+            CancellationToken ct = default)
+            => Begin();
+
+        public Task<FaceIdentityTransaction> BeginFullAsync(CancellationToken ct = default)
+            => Begin();
+
+        public Task DeleteByFaceKeyAsync(string faceKey, CancellationToken ct = default)
         {
             _snapshot.Identities.RemoveAll(identity => string.Equals(identity.FaceKey, faceKey, StringComparison.Ordinal));
             return Task.CompletedTask;
+        }
+
+        public Task ClearAllAsync(CancellationToken ct = default)
+        {
+            _snapshot = new FaceIdentitySnapshot();
+            return Task.CompletedTask;
+        }
+
+        private Task<FaceIdentityTransaction> Begin()
+            => Task.FromResult<FaceIdentityTransaction>(new InMemoryTransaction(Clone(_snapshot), committed => _snapshot = committed));
+
+        private static FaceIdentitySnapshot Clone(FaceIdentitySnapshot source)
+            => new()
+            {
+                NextIdentityOrdinal = source.NextIdentityOrdinal,
+                Identities = source.Identities.Select(static identity => new StoredFaceIdentity
+                {
+                    FaceKey = identity.FaceKey,
+                    Label = identity.Label,
+                    LifecycleStatus = identity.LifecycleStatus,
+                    PromotionReason = identity.PromotionReason,
+                    ReferenceExternalId = identity.ReferenceExternalId,
+                    ReferenceDisplayName = identity.ReferenceDisplayName,
+                    ReferencePackId = identity.ReferencePackId,
+                    ReferenceSuggestionId = identity.ReferenceSuggestionId,
+                    QualityScore = identity.QualityScore,
+                    CoverAssetId = identity.CoverAssetId,
+                    CoverBoundingBox = identity.CoverBoundingBox,
+                    CoverQualityScore = identity.CoverQualityScore,
+                    ObservationCount = identity.ObservationCount,
+                    AssetIds = [.. identity.AssetIds],
+                    Anchors = identity.Anchors.Select(static anchor => new StoredFaceAnchor
+                    {
+                        ModelKey = anchor.ModelKey,
+                        QualityScore = anchor.QualityScore,
+                        Vector = [.. anchor.Vector],
+                    }).ToList(),
+                }).ToList(),
+            };
+
+        private sealed class InMemoryTransaction(FaceIdentitySnapshot snapshot, Action<FaceIdentitySnapshot> commit) : FaceIdentityTransaction
+        {
+            private readonly Action<FaceIdentitySnapshot> _commit = commit;
+
+            public override FaceIdentitySnapshot Snapshot { get; } = snapshot;
+
+            public override Task CommitAsync(CancellationToken ct = default)
+            {
+                _commit(Snapshot);
+                return Task.CompletedTask;
+            }
+
+            public override ValueTask DisposeAsync() => ValueTask.CompletedTask;
         }
     }
 }

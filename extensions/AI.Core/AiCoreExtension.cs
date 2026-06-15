@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AI.Core;
 
@@ -34,13 +35,13 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
 
     public override string Name => "AI Core";
 
-    public override string Version => "0.0.2";
+    public override string Version => "0.1.0";
 
     public override string Description => "AI orchestration, model lifecycle management, and nsfw_ai_server v4 integration for Cove.";
 
     public override string Author => "Cove Team";
 
-    public override string Url => "https://github.com/yourcove/AI.Extensions";
+    public override string Url => "https://github.com/skier233/AI.Extensions";
 
     public override IReadOnlyList<string> Categories =>
     [
@@ -50,32 +51,50 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
         "ai",
     ];
 
-    public override string MinCoveVersion => "0.1.0";
+    public override string MinCoveVersion => "0.4.0";
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
     {
+        services.TryAddSingleton(TimeProvider.System);
+        services.TryAddSingleton<IAiModelCatalogCache, AiModelCatalogCache>();
         services.AddHttpClient<INsfwAiServerClient, NsfwAiServerClient>(static client =>
         {
             client.Timeout = Timeout.InfiniteTimeSpan;
         });
-        services.AddScoped<ITextEncoder, AiCoreSemanticTextEncoder>();
+        // Register the real encoder as a concrete scoped service, then expose it across the
+        // extension-isolation boundary as a singleton bridge that the host ITextEncoderRegistry
+        // consumes via the service exchange (see ExtensionSemanticTextEncoder and InitializeAsync's
+        // PublishContributions call). A bare scoped ITextEncoder registration is invisible to other
+        // extensions, which is why visual semantic search stopped reaching nsfw_ai_server.
+        services.AddScoped<AiCoreSemanticTextEncoder>();
+        services.AddSingleton<ITextEncoder, ExtensionSemanticTextEncoder>();
         services.AddScoped<IAiRunJournal, AiRunJournal>();
         services.AddScoped<IAiRunPlanner, AiRunPlanner>();
         services.AddScoped<IAiArtifactReplaceService, AiArtifactReplaceService>();
         services.AddScoped<IAiCoreOrchestrator, AiCoreOrchestrator>();
         services.AddScoped<IAiRunTargetResolver, AiRunTargetResolver>();
         services.AddScoped<IAiRunQueueService, AiRunQueueService>();
+        // AI.Core owns the ext:ai.core run history, so it (not the host) prunes face run evidence when a
+        // host's faces are deleted. Singleton because it is published across the extension-isolation
+        // boundary; it scopes IAiRunRepository per call internally.
+        services.AddSingleton<IFaceLifecycleParticipant, AiCoreFaceRunEvidenceParticipant>();
     }
 
     public override Task InitializeAsync(IServiceProvider services, CancellationToken ct = default)
     {
         _services = services;
+        // Publish the semantic text encoder onto the cross-extension exchange so the host
+        // ITextEncoderRegistry (and consumers like AI.Visual) can resolve it. Without this the
+        // registry finds no "semantic.v1" encoder and queries are never sent to nsfw_ai_server.
+        PublishContributions<ITextEncoder>(services);
+        // Consumed by the host (FacesController) through the cross-extension exchange; without publishing it
+        // the host can't notify AI.Core to prune run evidence after a host's faces are deleted.
+        PublishContributions<IFaceLifecycleParticipant>(services);
         return Task.CompletedTask;
     }
 
     public override UIManifest GetUIManifest()
         => ManifestBuilder()
-            .AddPage("ai", "AI", "AiCorePage", showInNav: true, navOrder: 95)
             .AddSettingsTab(
                 "extensions/ai",
                 "AI",

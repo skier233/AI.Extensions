@@ -717,34 +717,55 @@ public sealed class AiPersistenceServiceTests
         }
     }
 
+    // The DbFaceIdentityStore delete path uses ExecuteDelete, which the EF in-memory provider cannot
+    // translate, so the participant's branching logic is verified here against a recording store. The
+    // store's one-line key/clear deletes are covered by the relational provider itself.
     [Fact]
-    public async Task FaceDeleteParticipant_RemovesDeletedFaceFromIdentitySnapshot()
+    public async Task FaceDeleteParticipant_DeletesIdentityForDeletedFaceAndClearsOnEntireSourcePurge()
     {
-        await using var provider = CreateProvider(services =>
-        {
-            services.AddSingleton<StoreBackedFaceIdentityStateStore>();
-            services.AddSingleton<IFaceIdentityStateStore>(static services => services.GetRequiredService<StoreBackedFaceIdentityStateStore>());
-            services.AddSingleton<IFaceLifecycleParticipant, AiFacesDeleteParticipant>();
-        });
+        var store = new RecordingFaceIdentityStore();
+        var participant = new AiFacesDeleteParticipant(store);
 
-        var backingStore = new TestExtensionStore();
-        var store = provider.GetRequiredService<StoreBackedFaceIdentityStateStore>();
-        store.Attach(backingStore);
-        await store.SaveAsync(new FaceIdentitySnapshot
-        {
-            Identities =
-            [
-                new StoredFaceIdentity { FaceKey = "face-1", Label = "Primary" },
-                new StoredFaceIdentity { FaceKey = "face-2", Label = "Secondary" },
-            ],
-        });
-
-        var participant = provider.GetRequiredService<IFaceLifecycleParticipant>();
+        // A deleted Cove face removes its identity by key.
         await participant.OnDeletingAsync(new Face { Id = 1, PrimarySourceKey = "face-1" });
+        Assert.Equal("face-1", Assert.Single(store.DeletedFaceKeys));
 
-        var snapshot = await store.LoadAsync();
-        Assert.Single(snapshot.Identities);
-        Assert.Equal("face-2", snapshot.Identities[0].FaceKey);
+        // A face with no source key has no identity to remove.
+        await participant.OnDeletingAsync(new Face { Id = 2, PrimarySourceKey = null });
+        Assert.Single(store.DeletedFaceKeys);
+
+        // An entire-source purge for this extension clears the provisional identity graph.
+        await participant.OnFacesPurgedAsync(new FacePurgeScope("ext:ai.faces", null, null, true, []));
+        Assert.Equal(1, store.ClearAllCount);
+
+        // A narrowed purge leaves the identity graph intact.
+        await participant.OnFacesPurgedAsync(new FacePurgeScope("ext:ai.faces", "video", 5, false, [5]));
+        Assert.Equal(1, store.ClearAllCount);
+    }
+
+    private sealed class RecordingFaceIdentityStore : IFaceIdentityStore
+    {
+        public List<string> DeletedFaceKeys { get; } = [];
+
+        public int ClearAllCount { get; private set; }
+
+        public Task<FaceIdentityTransaction> BeginIncrementalAsync(IReadOnlyList<IReadOnlyList<float>> queryVectors, IReadOnlyCollection<string> referenceExternalIds, int candidateK, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task<FaceIdentityTransaction> BeginFullAsync(CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public Task DeleteByFaceKeyAsync(string faceKey, CancellationToken ct = default)
+        {
+            DeletedFaceKeys.Add(faceKey);
+            return Task.CompletedTask;
+        }
+
+        public Task ClearAllAsync(CancellationToken ct = default)
+        {
+            ClearAllCount++;
+            return Task.CompletedTask;
+        }
     }
 
     private static ServiceProvider CreateProvider(Action<ServiceCollection>? configure = null)

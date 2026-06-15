@@ -14,7 +14,8 @@ public sealed record AiRunPlannerModel(
     string? Category = null,
     int? Identifier = null,
     string? Version = null,
-    string? Name = null);
+    string? Name = null,
+    IReadOnlyList<string>? Categories = null);
 
 public sealed record AiRunPlannerWant(
     string ExtensionId,
@@ -51,20 +52,24 @@ public interface IAiRunPlanner
         CancellationToken ct = default);
 }
 
-internal sealed class AiRunPlanner(
-    IAiRunRepository runRepo,
-    IEmbeddingRepository embeddingRepo,
-    IDetectionRepository detectionRepo,
-    IFaceRepository faceRepo,
-    ITagApplicationRepository tagAppRepo,
-    ISegmentRepository segmentRepo) : IAiRunPlanner
+// Determines, per requested model, whether a prior AI run for the same Cove host
+// already satisfies it. The decision is based ONLY on what a previous run recorded
+// about its model — never on whether artifacts are currently present, since an AI run
+// producing zero faces/tags/etc. is a valid outcome we must not keep re-running.
+//
+// A requested model is paired with the most recent prior run that produced the same
+// model_category (the "slot"). Given that pair, we decide:
+//   * higher model_version wins (newer dataset) -> rerun to replace
+//   * same version, lower model_identifier wins (a lower id is a larger/more accurate
+//     variant) -> rerun to replace
+//   * exact same model -> only rerun if the prior run does not cover the requested run
+//     parameters (a different threshold, or a frame interval the prior run cannot be
+//     evenly subsampled into).
+internal sealed class AiRunPlanner(IAiRunRepository runRepo) : IAiRunPlanner
 {
     private readonly IAiRunRepository _runRepo = runRepo;
-    private readonly IEmbeddingRepository _embeddingRepo = embeddingRepo;
-    private readonly IDetectionRepository _detectionRepo = detectionRepo;
-    private readonly IFaceRepository _faceRepo = faceRepo;
-    private readonly ITagApplicationRepository _tagAppRepo = tagAppRepo;
-    private readonly ISegmentRepository _segmentRepo = segmentRepo;
+
+    private const double Tolerance = 1e-6;
 
     public async Task<IReadOnlyList<AiRunExecutionPlan>> PlanAsync(
         AiCoreConnectionSettings settings,
@@ -94,7 +99,6 @@ internal sealed class AiRunPlanner(
             .OrderByDescending(run => run.CompletedAt ?? run.StartedAt)
             .ToList();
 
-        var currentArtifactKeyCache = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         var results = new List<AiRunExecutionPlan>(wants.Count);
         foreach (var want in wants)
         {
@@ -104,8 +108,9 @@ internal sealed class AiRunPlanner(
                 .Where(run => HasAnyClaim(run, claimIds))
                 .ToArray();
 
-            var currentArtifactKeys = await GetCurrentArtifactKeysAsync(currentArtifactKeyCache, hostEntityType!, targetId, ResolveArtifactSourceKey(want.ExtensionId), ct);
-            var perModel = want.Models.Select(model => PlanModel(settings, want, model, relevantRuns, currentArtifactKeys, forced, frameIntervalSeconds, threshold)).ToArray();
+            var perModel = want.Models
+                .Select(model => PlanModel(model, relevantRuns, forced, frameIntervalSeconds, threshold))
+                .ToArray();
 
             if (!want.AllowPartialExecution && perModel.Any(static item => item.Decision != AiRunPlanDecision.Skip))
             {
@@ -131,7 +136,7 @@ internal sealed class AiRunPlanner(
                     executionModels,
                     replacementArtifactKeys,
                     replacementArtifactKeys.Length > 0 ? AiRunPlanDecision.Rerun : AiRunPlanDecision.Run,
-                    reasons.Length > 0 ? reasons : ["One or more required models are missing current artifacts for this host."],
+                    reasons.Length > 0 ? reasons : ["One or more required models are not satisfied by a prior AI run for this host."],
                     forced));
                 continue;
             }
@@ -165,8 +170,8 @@ internal sealed class AiRunPlanner(
                     ? AiRunPlanDecision.Skip
                     : replacements.Length > 0 ? AiRunPlanDecision.Rerun : AiRunPlanDecision.Run,
                 execution.Length == 0
-                    ? ["Existing AI run records or current artifacts already satisfy this request."]
-                    : reasonsForExecution.Length > 0 ? reasonsForExecution : ["One or more required models are not satisfied by historical AI runs or current artifacts for this host."],
+                    ? ["A prior AI run already satisfies this request."]
+                    : reasonsForExecution.Length > 0 ? reasonsForExecution : ["One or more required models are not satisfied by a prior AI run for this host."],
                 forced));
         }
 
@@ -187,407 +192,208 @@ internal sealed class AiRunPlanner(
             reasons,
             forced);
 
-    private PlannedModelDecision PlanModel(
-        AiCoreConnectionSettings settings,
-        AiRunPlannerWant want,
+    private static PlannedModelDecision PlanModel(
         AiRunPlannerModel desiredModel,
         IReadOnlyList<AiRun> relevantRuns,
-        IReadOnlySet<string> currentArtifactKeys,
         bool forced,
-        double? currentFrameIntervalSeconds,
-        double? currentThreshold)
+        double? requestedFrameIntervalSeconds,
+        double? requestedThreshold)
     {
-        var desiredArtifactKeys = NormalizeArtifactKeys(desiredModel.ArtifactKeys, desiredModel.ModelKey);
-        var exactArtifactsPresent = desiredArtifactKeys.All(currentArtifactKeys.Contains);
-        var exactRun = relevantRuns.FirstOrDefault(run => RunHasModel(run, desiredModel.ModelKey));
-        var modelKeyPresent = currentArtifactKeys.Contains(desiredModel.ModelKey);
-        var historicalMatch = FindBestHistoricalMatch(desiredModel, relevantRuns);
+        // Pair the requested model against the most recent prior run for each of its
+        // categories (the per-category slot for tagging, the face_detections /
+        // face_embeddings slot for faces, etc.).
+        var slotPrevious = GetSlotKeys(desiredModel)
+            .Select(slot => FindMostRecentPrevious(relevantRuns, slot))
+            .ToArray();
 
         if (forced)
         {
-            var shouldReplace = exactArtifactsPresent || historicalMatch is not null;
-            return new PlannedModelDecision(
-                desiredModel.ModelKey,
-                shouldReplace ? AiRunPlanDecision.Rerun : AiRunPlanDecision.Run,
-                exactArtifactsPresent ? desiredArtifactKeys : [],
-                [shouldReplace
-                    ? $"Force rerun requested for model '{desiredModel.ModelKey}'."
-                    : $"Force rerun requested and no historical run or current artifacts were found for model '{desiredModel.ModelKey}'."]);
-        }
-
-        if (historicalMatch is not null && HistoricalModelSatisfies(desiredModel, historicalMatch, currentFrameIntervalSeconds, currentThreshold))
-        {
-            return new PlannedModelDecision(desiredModel.ModelKey, AiRunPlanDecision.Skip, [], []);
-        }
-
-        if (exactArtifactsPresent && (modelKeyPresent || exactRun is not null))
-        {
-            return new PlannedModelDecision(desiredModel.ModelKey, AiRunPlanDecision.Skip, [], []);
-        }
-
-        var supersedingMatch = relevantRuns
-            .SelectMany(run => GetRunModels(run).Select(model => new { Run = run, Model = model }))
-            .FirstOrDefault(candidate => IsSupersedingCandidate(settings, want, desiredModel, candidate.Model, currentArtifactKeys));
-        if (supersedingMatch is not null)
-        {
-            return new PlannedModelDecision(
-                desiredModel.ModelKey,
-                AiRunPlanDecision.Skip,
-                [],
-                [$"Current artifacts from '{supersedingMatch.Model.ModelKey}' already supersede requested model '{desiredModel.ModelKey}'."]);
-        }
-
-        var staleMatch = relevantRuns
-            .SelectMany(run => GetRunModels(run).Select(model => new { Run = run, Model = model }))
-            .FirstOrDefault(candidate => IsReplacementCandidate(settings, want, desiredModel, candidate.Model, currentArtifactKeys));
-        if (staleMatch is not null)
-        {
-            var replacementArtifactKeys = staleMatch.Model.ArtifactKeys
-                .Where(currentArtifactKeys.Contains)
+            var forcedReplacements = slotPrevious
+                .Where(static previous => previous is not null)
+                .SelectMany(static previous => previous!.ReplacementKeys)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            var reason = desiredModel.Category is { Length: > 0 } category
-                ? $"Category '{category}' is currently backed by '{staleMatch.Model.ModelKey}' and should be rerun with '{desiredModel.ModelKey}'."
-                : $"Current artifacts were produced by '{staleMatch.Model.ModelKey}' and are superseded by '{desiredModel.ModelKey}'.";
+            return new PlannedModelDecision(
+                desiredModel.ModelKey,
+                forcedReplacements.Length > 0 ? AiRunPlanDecision.Rerun : AiRunPlanDecision.Run,
+                forcedReplacements,
+                [$"Force rerun requested for model '{desiredModel.ModelKey}'."]);
+        }
 
-            return new PlannedModelDecision(desiredModel.ModelKey, AiRunPlanDecision.Rerun, replacementArtifactKeys, [reason]);
+        var replacementKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var reasons = new List<string>();
+        var needsRun = false;
+
+        foreach (var previous in slotPrevious)
+        {
+            if (previous is null)
+            {
+                needsRun = true;
+                reasons.Add($"No prior AI run produced model '{desiredModel.ModelKey}' for this host.");
+                continue;
+            }
+
+            if (DecideAgainstPrevious(desiredModel, previous, requestedFrameIntervalSeconds, requestedThreshold, out var reason) == AiRunPlanDecision.Skip)
+            {
+                continue;
+            }
+
+            needsRun = true;
+            foreach (var key in previous.ReplacementKeys)
+            {
+                replacementKeys.Add(key);
+            }
+
+            reasons.Add(reason);
+        }
+
+        if (!needsRun)
+        {
+            return new PlannedModelDecision(desiredModel.ModelKey, AiRunPlanDecision.Skip, [], []);
         }
 
         return new PlannedModelDecision(
             desiredModel.ModelKey,
-            AiRunPlanDecision.Run,
-            [],
-            [$"No completed AI run record or current artifact was found for model '{desiredModel.ModelKey}'."]);
+            replacementKeys.Count > 0 ? AiRunPlanDecision.Rerun : AiRunPlanDecision.Run,
+            replacementKeys.ToArray(),
+            reasons.Count > 0 ? reasons : [$"Model '{desiredModel.ModelKey}' is not satisfied by a prior AI run for this host."]);
     }
 
-    private async Task<HashSet<string>> GetCurrentArtifactKeysAsync(
-        IDictionary<string, HashSet<string>> cache,
-        string hostEntityType,
-        int hostEntityId,
-        string sourceKey,
-        CancellationToken ct)
-    {
-        var cacheKey = $"{hostEntityType}{hostEntityId}{sourceKey}";
-        if (cache.TryGetValue(cacheKey, out var existing))
-        {
-            return existing;
-        }
-
-        var resolved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var normalizedHostType = hostEntityType.Trim().ToLowerInvariant();
-
-        if (normalizedHostType is "video" or "image")
-        {
-            var affinityHostType = normalizedHostType == "video" ? AffinityHostType.Video : AffinityHostType.Image;
-            var tagApps = await _tagAppRepo.FindAsync(new TagApplicationFilter
-            {
-                SourceKey = sourceKey,
-                HostType = affinityHostType,
-                HostId = hostEntityId,
-            }, ct);
-            foreach (var application in tagApps)
-            {
-                if (!string.IsNullOrWhiteSpace(application.ModelKey))
-                {
-                    resolved.Add(application.ModelKey.Trim());
-                }
-            }
-        }
-
-        if (normalizedHostType == "video")
-        {
-            var segments = await _segmentRepo.FindAsync(new SegmentFilter
-            {
-                SourceKey = sourceKey,
-                HostType = SegmentHostType.Video,
-                HostId = hostEntityId,
-            }, ct);
-            foreach (var segment in segments)
-            {
-                if (TryExtractModelKey(segment.Payload, out var modelKey))
-                {
-                    resolved.Add(modelKey);
-                }
-            }
-        }
-
-        if (TryResolveEmbeddingHostType(normalizedHostType, out var embeddingHostType))
-        {
-            var embeddings = await _embeddingRepo.FindAsync(new EmbeddingFilter
-            {
-                SourceKey = sourceKey,
-                HostType = embeddingHostType,
-                HostId = hostEntityId,
-            }, ct);
-            foreach (var embedding in embeddings)
-            {
-                if (TryExtractModelKey(embedding.Meta, out var modelKey))
-                {
-                    resolved.Add(modelKey);
-                }
-            }
-        }
-
-        if (TryResolveDetectionHostType(normalizedHostType, out var detectionHostType))
-        {
-            var detections = await _detectionRepo.FindAsync(new DetectionFilter
-            {
-                SourceKey = sourceKey,
-                HostType = detectionHostType,
-                HostId = hostEntityId,
-            }, ct);
-            foreach (var detection in detections)
-            {
-                if (TryExtractModelKey(detection.Extra, out var modelKey))
-                {
-                    resolved.Add(modelKey);
-                }
-            }
-        }
-
-        if (normalizedHostType is "video" or "image")
-        {
-            var appearanceHostType = normalizedHostType == "video" ? FaceAppearanceHostType.Video : FaceAppearanceHostType.Image;
-            var faceAppearances = await _faceRepo.FindAppearancesAsync(new FaceAppearanceFilter
-            {
-                SourceKey = sourceKey,
-                HostType = appearanceHostType,
-                HostId = hostEntityId,
-            }, ct);
-            foreach (var appearance in faceAppearances)
-            {
-                if (TryExtractModelKey(appearance.Payload, out var modelKey))
-                {
-                    resolved.Add(modelKey);
-                }
-            }
-
-            var faceIds = faceAppearances
-                .Select(static appearance => appearance.FaceId)
-                .Distinct()
-                .ToArray();
-            if (faceIds.Length > 0)
-            {
-                var faceEmbeddings = await _embeddingRepo.FindAsync(new EmbeddingFilter
-                {
-                    SourceKey = sourceKey,
-                    HostType = EmbeddingHostType.Face,
-                    HostIds = faceIds,
-                }, ct);
-                foreach (var embedding in faceEmbeddings)
-                {
-                    if (TryExtractModelKey(embedding.Meta, out var modelKey))
-                    {
-                        resolved.Add(modelKey);
-                    }
-                }
-            }
-        }
-
-        cache[cacheKey] = resolved;
-        return resolved;
-    }
-
-    private static IReadOnlyList<string> NormalizeArtifactKeys(IReadOnlyList<string> artifactKeys, string modelKey)
-    {
-        var resolved = artifactKeys
-            .Where(static key => !string.IsNullOrWhiteSpace(key))
-            .Select(static key => key.Trim())
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (resolved.Count == 0)
-        {
-            resolved.Add(modelKey);
-        }
-
-        return resolved;
-    }
-
-    private static HistoricalModelInfo? FindBestHistoricalMatch(AiRunPlannerModel desiredModel, IReadOnlyList<AiRun> relevantRuns)
-    {
-        var desiredArtifactKeys = NormalizeArtifactKeys(desiredModel.ArtifactKeys, desiredModel.ModelKey);
-        HistoricalModelInfo? best = null;
-
-        foreach (var run in relevantRuns)
-        {
-            foreach (var model in GetRunModels(run))
-            {
-                if (!model.ArtifactKeys.Any(desiredArtifactKeys.Contains))
-                {
-                    continue;
-                }
-
-                var candidate = new HistoricalModelInfo(model, run.FrameIntervalSec, ExtractThreshold(run));
-                if (best is null || !ShouldSkipComparison(best.ToComparison(), candidate.ToComparison()))
-                {
-                    best = candidate;
-                }
-            }
-        }
-
-        return best;
-    }
-
-    private static bool HistoricalModelSatisfies(
+    // Skip / Rerun verdict for a requested model against one prior run for the same slot.
+    private static AiRunPlanDecision DecideAgainstPrevious(
         AiRunPlannerModel desiredModel,
-        HistoricalModelInfo historical,
-        double? currentFrameIntervalSeconds,
-        double? currentThreshold)
-        => ShouldSkipComparison(
-            historical.ToComparison(),
-            new ModelComparison(
-                desiredModel.Name ?? desiredModel.ModelKey,
-                desiredModel.Identifier,
-                desiredModel.Version,
-                currentFrameIntervalSeconds,
-                currentThreshold));
-
-    private static bool ShouldSkipComparison(ModelComparison previous, ModelComparison current)
+        PreviousModel previous,
+        double? requestedFrameIntervalSeconds,
+        double? requestedThreshold,
+        out string reason)
     {
-        var previousThreshold = previous.Threshold ?? 0.5;
-        var currentThreshold = current.Threshold ?? 0.5;
-        if (!AreClose(previousThreshold, currentThreshold))
+        var quality = CompareModelQuality(desiredModel, previous);
+        if (quality > 0)
         {
-            return false;
+            reason = $"Requested model '{desiredModel.ModelKey}' supersedes prior model '{previous.ModelKey}' (newer version or larger variant).";
+            return AiRunPlanDecision.Rerun;
         }
 
-        var previousFrameInterval = previous.FrameIntervalSeconds ?? 2.0;
-        var currentFrameInterval = current.FrameIntervalSeconds ?? 2.0;
-        if (!AreClose(previousFrameInterval, currentFrameInterval)
-            && !IsCompatibleFrameInterval(previousFrameInterval, currentFrameInterval))
+        if (quality < 0)
         {
-            return false;
+            reason = string.Empty;
+            return AiRunPlanDecision.Skip;
         }
 
-        var versionComparison = CompareVersion(previous.Version, current.Version);
-        if (versionComparison > 0)
+        // Same model. Re-run only if the prior run does not cover the requested run parameters.
+        if (!ThresholdMatches(previous.Threshold, requestedThreshold))
         {
-            return true;
+            reason = $"Requested threshold differs from the prior run for model '{desiredModel.ModelKey}'.";
+            return AiRunPlanDecision.Rerun;
         }
 
-        if (versionComparison < 0)
+        if (!FrameIntervalCovers(previous.FrameIntervalSeconds, requestedFrameIntervalSeconds))
         {
-            return false;
+            reason = $"Requested frame interval is not covered by the prior run for model '{desiredModel.ModelKey}'.";
+            return AiRunPlanDecision.Rerun;
         }
 
-        if (string.Equals(previous.Name, current.Name, StringComparison.OrdinalIgnoreCase)
-            && previous.Identifier == current.Identifier)
-        {
-            return true;
-        }
-
-        return previous.Identifier.HasValue
-            && current.Identifier.HasValue
-            && current.Identifier.Value >= previous.Identifier.Value;
+        reason = string.Empty;
+        return AiRunPlanDecision.Skip;
     }
 
-    private static int CompareVersion(string? previousVersion, string? currentVersion)
+    // > 0 : the requested model is preferred (rerun)   < 0 : the prior model is preferred (skip)   0 : same model.
+    // Higher model_version wins; on a version tie the lower model_identifier wins
+    // (a lower identifier denotes a larger / more accurate model variant).
+    private static int CompareModelQuality(AiRunPlannerModel desired, PreviousModel previous)
     {
-        if (TryParseVersionNumber(previousVersion, out var previousNumeric)
-            && TryParseVersionNumber(currentVersion, out var currentNumeric))
+        var desiredVersion = ParseVersion(desired.Version);
+        var previousVersion = ParseVersion(previous.Version);
+        if (!AreClose(desiredVersion, previousVersion))
         {
-            return previousNumeric.CompareTo(currentNumeric);
+            return desiredVersion > previousVersion ? 1 : -1;
         }
 
-        if (!string.IsNullOrWhiteSpace(previousVersion)
-            && !string.IsNullOrWhiteSpace(currentVersion)
-            && string.Equals(previousVersion.Trim(), currentVersion.Trim(), StringComparison.OrdinalIgnoreCase))
+        var desiredIdentifier = desired.Identifier ?? int.MaxValue;
+        var previousIdentifier = previous.Identifier ?? int.MaxValue;
+        if (desiredIdentifier == previousIdentifier)
         {
             return 0;
         }
 
-        return 0;
+        return desiredIdentifier < previousIdentifier ? 1 : -1;
     }
 
-    private static bool TryParseVersionNumber(string? rawVersion, out double value)
-        => double.TryParse(rawVersion, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
-
-    private static bool AreClose(double left, double right)
-        => Math.Abs(left - right) < 0.000001d;
-
-    private static bool IsCompatibleFrameInterval(double previous, double current)
+    // The prior run's frame interval must evenly divide into the requested one, i.e. the
+    // requested sampling is a whole-number multiple of what we already have (e.g. a prior
+    // 1.1s run covers a 2.2s request, but not a 2.0s request). Equal intervals always cover.
+    private static bool FrameIntervalCovers(double? previousInterval, double? requestedInterval)
     {
-        if (current <= 0d)
+        var previous = previousInterval ?? 0d;
+        var requested = requestedInterval ?? 0d;
+
+        if (previous <= 0d || requested <= 0d)
         {
-            return false;
+            return AreClose(previous, requested);
         }
 
-        var multiple = previous / current;
-        return Math.Abs(multiple - Math.Round(multiple)) < 0.000001d;
+        var remainder = requested % previous;
+        return remainder < Tolerance || previous - remainder < Tolerance;
     }
 
-    private static bool IsReplacementCandidate(
-        AiCoreConnectionSettings settings,
-        AiRunPlannerWant want,
-        AiRunPlannerModel desiredModel,
-        RunModelInfo existingModel,
-        IReadOnlySet<string> currentArtifactKeys)
+    private static IReadOnlyList<string> GetSlotKeys(AiRunPlannerModel model)
     {
-        if (string.Equals(existingModel.ModelKey, desiredModel.ModelKey, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (!existingModel.ArtifactKeys.Any(currentArtifactKeys.Contains))
-        {
-            return false;
-        }
-
-        if (desiredModel.ArtifactKeys.Any(existingModel.ArtifactKeys.Contains))
-        {
-            return true;
-        }
-
-        var desiredIndex = FindSupersessionIndex(settings, want, desiredModel.ModelKey, desiredModel.Category);
-        var existingIndex = FindSupersessionIndex(settings, want, existingModel.ModelKey, desiredModel.Category);
-        return desiredIndex > existingIndex && existingIndex >= 0;
+        var categories = (model.Categories ?? [])
+            .Where(static category => !string.IsNullOrWhiteSpace(category))
+            .Select(static category => category.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return categories.Length > 0 ? categories : [model.ModelKey];
     }
 
-    private static bool IsSupersedingCandidate(
-        AiCoreConnectionSettings settings,
-        AiRunPlannerWant want,
-        AiRunPlannerModel desiredModel,
-        RunModelInfo existingModel,
-        IReadOnlySet<string> currentArtifactKeys)
+    private static PreviousModel? FindMostRecentPrevious(IReadOnlyList<AiRun> relevantRuns, string slot)
     {
-        if (string.Equals(existingModel.ModelKey, desiredModel.ModelKey, StringComparison.OrdinalIgnoreCase)
-            || !existingModel.ArtifactKeys.Any(currentArtifactKeys.Contains))
+        // relevantRuns is ordered most-recent first, so the first match reflects the
+        // model whose output currently occupies this slot.
+        foreach (var run in relevantRuns)
         {
-            return false;
-        }
-
-        var desiredIndex = FindSupersessionIndex(settings, want, desiredModel.ModelKey, desiredModel.Category);
-        var existingIndex = FindSupersessionIndex(settings, want, existingModel.ModelKey, desiredModel.Category);
-        return existingIndex > desiredIndex && desiredIndex >= 0;
-    }
-
-    private static int FindSupersessionIndex(AiCoreConnectionSettings settings, AiRunPlannerWant want, string modelKey, string? category)
-    {
-        foreach (var rule in settings.ModelSupersessions)
-        {
-            if (!string.Equals(rule.Capability, want.Capability, StringComparison.OrdinalIgnoreCase)
-                || !string.Equals(rule.Scope, want.Scope, StringComparison.OrdinalIgnoreCase))
+            foreach (var model in GetRunModels(run))
             {
-                continue;
-            }
-
-            if (!string.IsNullOrWhiteSpace(rule.Category)
-                && !string.Equals(rule.Category, category, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            for (var index = 0; index < rule.Models.Count; index++)
-            {
-                if (string.Equals(rule.Models[index], modelKey, StringComparison.OrdinalIgnoreCase))
+                var modelSlots = model.Categories.Count > 0 ? model.Categories : [model.ModelKey];
+                if (modelSlots.Contains(slot, StringComparer.OrdinalIgnoreCase))
                 {
-                    return index;
+                    return new PreviousModel(
+                        model.ModelKey,
+                        model.Identifier,
+                        model.Version,
+                        run.FrameIntervalSec,
+                        ExtractThreshold(run),
+                        BuildReplacementKeys(model));
                 }
             }
         }
 
-        return -1;
+        return null;
     }
+
+    // Keys the prior run's artifacts may be stored under, so a replacing run can clear them.
+    // Faces store the model config_name; tagging stores the category — include both.
+    private static IReadOnlyList<string> BuildReplacementKeys(RunModelInfo model)
+    {
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { model.ModelKey };
+        foreach (var category in model.Categories)
+        {
+            keys.Add(category);
+        }
+
+        return keys.ToArray();
+    }
+
+    // A different threshold means a re-run. If either side has no recorded threshold we
+    // can't claim a difference, so we treat it as a match rather than churn.
+    private static bool ThresholdMatches(double? previousThreshold, double? requestedThreshold)
+        => !previousThreshold.HasValue || !requestedThreshold.HasValue || AreClose(previousThreshold.Value, requestedThreshold.Value);
+
+    private static double ParseVersion(string? rawVersion)
+        => double.TryParse(rawVersion, NumberStyles.Float, CultureInfo.InvariantCulture, out var value) ? value : 0d;
+
+    private static bool AreClose(double left, double right)
+        => Math.Abs(left - right) < Tolerance;
 
     private static bool HasAnyClaim(AiRun run, IReadOnlySet<string> claimIds)
     {
@@ -602,9 +408,6 @@ internal sealed class AiRunPlanner(
             .Any(claimId => claimId is not null && claimIds.Contains(claimId));
     }
 
-    private static bool RunHasModel(AiRun run, string modelKey)
-        => GetRunModels(run).Any(model => string.Equals(model.ModelKey, modelKey, StringComparison.OrdinalIgnoreCase));
-
     private static IReadOnlyList<RunModelInfo> GetRunModels(AiRun run)
     {
         if (run.Models is null || run.Models.RootElement.ValueKind != JsonValueKind.Array)
@@ -616,7 +419,6 @@ internal sealed class AiRunPlanner(
             .Select(static model =>
             {
                 string? resolvedModelKey = null;
-                string? resolvedName = null;
                 int? resolvedIdentifier = null;
                 string? resolvedVersion = null;
                 if (model.ValueKind == JsonValueKind.Object)
@@ -629,11 +431,6 @@ internal sealed class AiRunPlanner(
                     if (string.IsNullOrWhiteSpace(resolvedModelKey) && model.TryGetProperty("name", out var nameElement))
                     {
                         resolvedModelKey = nameElement.GetString();
-                    }
-
-                    if (model.TryGetProperty("name", out var resolvedNameElement) && resolvedNameElement.ValueKind == JsonValueKind.String)
-                    {
-                        resolvedName = resolvedNameElement.GetString();
                     }
 
                     if (model.TryGetProperty("identifier", out var identifierElement))
@@ -655,12 +452,7 @@ internal sealed class AiRunPlanner(
                     }
                 }
 
-                var artifactKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                if (!string.IsNullOrWhiteSpace(resolvedModelKey))
-                {
-                    artifactKeys.Add(resolvedModelKey.Trim());
-                }
-
+                var categories = new List<string>();
                 if (model.ValueKind == JsonValueKind.Object
                     && model.TryGetProperty("categories", out var categoriesElement)
                     && categoriesElement.ValueKind == JsonValueKind.Array)
@@ -669,7 +461,7 @@ internal sealed class AiRunPlanner(
                     {
                         if (!string.IsNullOrWhiteSpace(category))
                         {
-                            artifactKeys.Add(category.Trim());
+                            categories.Add(category.Trim());
                         }
                     }
                 }
@@ -678,8 +470,7 @@ internal sealed class AiRunPlanner(
                     ? null
                     : new RunModelInfo(
                         resolvedModelKey.Trim(),
-                        artifactKeys.ToArray(),
-                        string.IsNullOrWhiteSpace(resolvedName) ? resolvedModelKey.Trim() : resolvedName.Trim(),
+                        categories,
                         resolvedIdentifier,
                         string.IsNullOrWhiteSpace(resolvedVersion) ? null : resolvedVersion.Trim());
             })
@@ -729,37 +520,6 @@ internal sealed class AiRunPlanner(
     private static bool OverlapsForce(AiRunPlannerWant want, IReadOnlySet<string> forceSet)
         => forceSet.Count > 0 && want.Claims.Select(static claim => claim.ClaimId).Any(forceSet.Contains);
 
-    private static bool TryExtractModelKey(JsonDocument? document, out string modelKey)
-    {
-        modelKey = string.Empty;
-        if (document is null || document.RootElement.ValueKind != JsonValueKind.Object || !document.RootElement.TryGetProperty("modelKey", out var element))
-        {
-            return false;
-        }
-
-        var raw = element.GetString();
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return false;
-        }
-
-        modelKey = raw.Trim();
-        return true;
-    }
-
-    private static string ResolveArtifactSourceKey(string extensionId)
-    {
-        var normalized = (extensionId ?? string.Empty).Trim();
-        if (normalized.StartsWith("ext:", StringComparison.OrdinalIgnoreCase))
-        {
-            return normalized;
-        }
-
-        return normalized.StartsWith("cove.community.ai.", StringComparison.OrdinalIgnoreCase)
-            ? $"ext:ai.{normalized["cove.community.ai.".Length..]}"
-            : normalized;
-    }
-
     private static bool TryResolveTarget(string? hostEntityType, int? hostEntityId, out AiRunTargetType targetType, out int targetId)
     {
         targetType = default;
@@ -792,41 +552,6 @@ internal sealed class AiRunPlanner(
         }
     }
 
-    private static bool TryResolveEmbeddingHostType(string hostEntityType, out EmbeddingHostType hostType)
-    {
-        switch (hostEntityType)
-        {
-            case "video":
-                hostType = EmbeddingHostType.Video;
-                return true;
-            case "image":
-                hostType = EmbeddingHostType.Image;
-                return true;
-            case "face":
-                hostType = EmbeddingHostType.Face;
-                return true;
-            default:
-                hostType = default;
-                return false;
-        }
-    }
-
-    private static bool TryResolveDetectionHostType(string hostEntityType, out DetectionHostType hostType)
-    {
-        switch (hostEntityType)
-        {
-            case "video":
-                hostType = DetectionHostType.Video;
-                return true;
-            case "image":
-                hostType = DetectionHostType.Image;
-                return true;
-            default:
-                hostType = default;
-                return false;
-        }
-    }
-
     private sealed record PlannedModelDecision(
         string ModelKey,
         AiRunPlanDecision Decision,
@@ -835,21 +560,15 @@ internal sealed class AiRunPlanner(
 
     private sealed record RunModelInfo(
         string ModelKey,
-        IReadOnlyList<string> ArtifactKeys,
-        string Name,
+        IReadOnlyList<string> Categories,
         int? Identifier,
         string? Version);
 
-    private sealed record HistoricalModelInfo(RunModelInfo Model, double? FrameIntervalSeconds, double? Threshold)
-    {
-        public ModelComparison ToComparison()
-            => new(Model.Name, Model.Identifier, Model.Version, FrameIntervalSeconds, Threshold);
-    }
-
-    private sealed record ModelComparison(
-        string Name,
+    private sealed record PreviousModel(
+        string ModelKey,
         int? Identifier,
         string? Version,
         double? FrameIntervalSeconds,
-        double? Threshold);
+        double? Threshold,
+        IReadOnlyList<string> ReplacementKeys);
 }

@@ -177,8 +177,18 @@ public sealed class AiRunQueueServiceTests
 
         public IReadOnlyList<AiCapabilityDescriptor> GetCapabilities() => [];
 
+        public int RunImageBatchCallCount { get; private set; }
+
         public Task<AiRunResponse> RunImagesAsync(AiCoreConnectionSettings settings, AiRunImagesRequest request, CancellationToken ct = default)
             => Task.FromResult(new AiRunResponse("images", AiMediaKinds.Image, [], EmptyJson(), [], []));
+
+        public Task<IReadOnlyList<AiRunResponse>> RunImageBatchAsync(AiCoreConnectionSettings settings, IReadOnlyList<AiRunImageTarget> targets, AiRunImagesRequest template, CancellationToken ct = default)
+        {
+            RunImageBatchCallCount++;
+            LastSettings = settings;
+            return Task.FromResult<IReadOnlyList<AiRunResponse>>(
+                targets.Select(_ => new AiRunResponse("image", AiMediaKinds.Image, [], EmptyJson(), [], [])).ToList());
+        }
 
         public Task<AiRunResponse> RunVideoAsync(AiCoreConnectionSettings settings, AiRunVideoRequest request, CancellationToken ct = default)
         {
