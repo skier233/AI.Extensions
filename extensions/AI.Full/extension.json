@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "kind": "bundle",
   "description": "Dependency bundle that activates the full Cove AI extension family.",
-  "author": "Cove Team",
+  "author": "skier233",
   "url": "https://github.com/skier233/AI.Extensions",
   "categories": [
     "ai",

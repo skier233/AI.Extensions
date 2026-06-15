@@ -24,7 +24,7 @@ public sealed class AiTaggingExtension : FullExtensionBase, IPermissionContribut
 
     public override string Description => "Contributes tagging claims for image and video AI workflows.";
 
-    public override string Author => "Cove Team";
+    public override string Author => "skier233";
 
     public override string Url => "https://github.com/skier233/AI.Extensions";
 

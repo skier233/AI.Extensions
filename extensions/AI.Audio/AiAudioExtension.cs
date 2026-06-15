@@ -21,7 +21,7 @@ public sealed class AiAudioExtension : FullExtensionBase
 
     public override string Description => "Contributes audio embedding and classification claims for AI workflows.";
 
-    public override string Author => "Cove Team";
+    public override string Author => "skier233";
 
     public override string Url => "https://github.com/skier233/AI.Extensions";
 

@@ -3,12 +3,13 @@
   "name": "AI Visual",
   "version": "0.1.0",
   "description": "Visual detection and region-analysis capability contributions for image and video AI runs.",
-  "author": "Cove Team",
+  "author": "skier233",
   "url": "https://github.com/skier233/AI.Extensions",
   "categories": [
     "ai",
     "metadata",
-    "automation"
+    "automation",
+    "visual"
   ],
   "tutorialTopics": [
     {

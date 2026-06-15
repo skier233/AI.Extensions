@@ -39,7 +39,7 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
 
     public override string Description => "AI orchestration, model lifecycle management, and nsfw_ai_server v4 integration for Cove.";
 
-    public override string Author => "Cove Team";
+    public override string Author => "skier233";
 
     public override string Url => "https://github.com/skier233/AI.Extensions";
 

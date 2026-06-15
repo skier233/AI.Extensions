@@ -13,7 +13,7 @@ public sealed class AiFullExtension : CoveExtensionBase
 
     public override string Description => "Dependency bundle for the full Cove AI extension family.";
 
-    public override string Author => "Cove Team";
+    public override string Author => "skier233";
 
     public override string Url => "https://github.com/skier233/AI.Extensions";
 

@@ -3,7 +3,7 @@
   "name": "AI Core",
   "version": "0.1.0",
   "description": "AI orchestration, model management, and nsfw_ai_server connectivity for Cove.",
-  "author": "Cove Team",
+  "author": "skier233",
   "url": "https://github.com/skier233/AI.Extensions",
   "categories": [
     "ai",

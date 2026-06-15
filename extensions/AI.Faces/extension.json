@@ -2,13 +2,14 @@
   "id": "cove.community.ai.faces",
   "name": "AI Faces",
   "version": "0.1.0",
-  "description": "Face-oriented AI capability contributions for image and video analysis.",
-  "author": "Cove Team",
+  "description": "Facial Recognition and Analysis for Image and Videos.",
+  "author": "skier233",
   "url": "https://github.com/skier233/AI.Extensions",
   "categories": [
     "ai",
     "metadata",
-    "automation"
+    "automation",
+    "faces"
   ],
   "tutorialTopics": [
     {
@@ -115,6 +116,6 @@
   "jsBundle": "dist/bundle.js",
   "cssBundle": "dist/bundle.css",
   "dependencies": {
-    "cove.community.ai.core": ">=2"
+    "cove.community.ai.core": ">=0.1.0"
   }
 }

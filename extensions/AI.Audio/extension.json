@@ -3,12 +3,13 @@
   "name": "AI Audio",
   "version": "0.1.0",
   "description": "Audio embedding and classification capability contributions for AI runs.",
-  "author": "Cove Team",
+  "author": "skier233",
   "url": "https://github.com/skier233/AI.Extensions",
   "categories": [
     "ai",
     "metadata",
-    "automation"
+    "automation",
+    "audio"
   ],
   "tutorialTopics": [
     {

@@ -24,7 +24,7 @@ public sealed class AiVisualExtension : FullExtensionBase
 
     public override string Description => "Contributes general visual detection claims for image and video AI similarity and recommendation systems.";
 
-    public override string Author => "Cove Team";
+    public override string Author => "skier233";
 
     public override string Url => "https://github.com/skier233/AI.Extensions";
 

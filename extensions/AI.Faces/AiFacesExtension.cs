@@ -32,7 +32,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
 
     public override string Description => "Contributes face-region and face-embedding claims for AI workflows.";
 
-    public override string Author => "Cove Team";
+    public override string Author => "skier233";
 
     public override string Url => "https://github.com/skier233/AI.Extensions";
 
