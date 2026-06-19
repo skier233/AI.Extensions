@@ -17,7 +17,7 @@ public sealed class AiFullExtension : CoveExtensionBase
 
     public override string Url => "https://github.com/skier233/AI.Extensions";
 
-    public override string MinCoveVersion => "0.4.2";
+    public override string MinCoveVersion => "0.6.0";
 
     public override IReadOnlyList<string> Categories =>
     [
