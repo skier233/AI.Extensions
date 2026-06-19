@@ -373,6 +373,21 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
 
             var coverDetection = ResolveCoverDetection(batch, preparedFace);
             var coverFace = ResolveCoverFace(hostEntityType, request, preparedFace);
+
+            // When the image cover source was substituted to the current host image (ResolveCoverFace,
+            // images only), the crop box must come from a detection on THIS image too. The stored
+            // CoverBoundingBox is the face's best-quality sample, which may belong to a *different* image
+            // the face also appears in — cropping the current image at those coordinates lands on the
+            // wrong region, the result is detected as blank, and the cover is silently skipped (leaving
+            // the fingerprint placeholder). Videos don't hit this: they keep asset+box+timestamp together
+            // with no substitution. Re-anchor the box to the current host's detection to keep them in sync.
+            if (hostEntityType == "image"
+                && coverDetection is not null
+                && !string.Equals(coverFace.CoverAssetId, preparedFace.CoverAssetId, StringComparison.Ordinal))
+            {
+                coverFace = coverFace with { CoverBoundingBox = coverDetection.BoundingBox };
+            }
+
             await using var coverStream = await AiFaceCoverGenerator.CreateAsync(hostEntityType, coverFace, coverDetection, configuration, ct);
             if (coverStream is null) continue;
 

@@ -1,7 +1,7 @@
 {
   "id": "cove.community.ai.visual",
   "name": "AI Visual",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Visual detection and region-analysis capability contributions for image and video AI runs.",
   "author": "skier233",
   "url": "https://github.com/skier233/AI.Extensions",
@@ -67,7 +67,7 @@
       ]
     }
   ],
-  "minCoveVersion": "0.4.2",
+  "minCoveVersion": "0.6.0",
   "entryDll": "AI.Visual.dll",
   "sharedAssemblies": [
     "AI.Extensions.Abstractions"

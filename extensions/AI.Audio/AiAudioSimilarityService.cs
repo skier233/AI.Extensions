@@ -213,7 +213,6 @@ internal sealed class AiAudioSimilarityService(
             video.StudioId,
             video.Studio?.Name,
             video.Captions,
-            video.InteractiveSpeed,
             video.Urls.Select(static u => u.Url).ToList(),
             video.VideoTags.Where(static vt => vt.Tag != null).Select(static vt => new TagDto(vt.Tag!.Id, vt.Tag.Name, vt.Tag.Description, vt.Tag.Favorite, [])).ToList(),
             video.VideoPerformers.Where(static vp => vp.Performer != null).Select(static vp => MapPerformer(vp.Performer!)).ToList(),
