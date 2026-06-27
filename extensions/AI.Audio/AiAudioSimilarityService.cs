@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 using Cove.Core.Auth;
 using Cove.Core.DTOs;
 using Cove.Core.Entities;
@@ -119,12 +121,38 @@ internal sealed class AiAudioSimilarityService(
             queries.Add(new AiAudioSimilarQuery(asset, TargetEmbeddingScope.Asset, AssetWeight));
         }
 
-        foreach (var section in SelectRepresentativeEmbeddings(sorted.Where(static e => e.SectionIndex > 0).ToArray(), MaxSectionQueries))
+        // Prefer voice-bearing windows for partial-match queries; fall back to all windows for assets
+        // processed before sound-type tagging (or with no voiced windows).
+        var sections = sorted.Where(static e => e.SectionIndex > 0).ToArray();
+        var voiceSections = sections.Where(IsVoiceWindow).ToArray();
+        var sectionPool = voiceSections.Length > 0 ? voiceSections : sections;
+
+        foreach (var section in SelectRepresentativeEmbeddings(sectionPool, MaxSectionQueries))
         {
             queries.Add(new AiAudioSimilarQuery(section, TargetEmbeddingScope.Section, SectionWeight));
         }
 
         return queries;
+    }
+
+    private static bool IsVoiceWindow(Embedding embedding)
+    {
+        if (embedding.Meta is null)
+        {
+            return false;
+        }
+
+        if (!embedding.Meta.RootElement.TryGetProperty("voice", out var voice))
+        {
+            return false;
+        }
+
+        return voice.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.String => string.Equals(voice.GetString(), "true", StringComparison.OrdinalIgnoreCase),
+            _ => false,
+        };
     }
 
     private async Task<IReadOnlyList<EmbeddingSearchResult>> SearchSimilarAsync(IReadOnlyList<AiAudioSimilarQuery> queries, int videoId, CancellationToken ct)

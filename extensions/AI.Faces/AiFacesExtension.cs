@@ -28,7 +28,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
 
     public override string Name => "AI Faces";
 
-    public override string Version => "0.1.0";
+    public override string Version => "0.3.0";
 
     public override string Description => "Contributes face-region and face-embedding claims for AI workflows.";
 
@@ -48,7 +48,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
 
     public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
     {
-        ["cove.community.ai.core"] = ">=0.1.0",
+        ["cove.community.ai.core"] = ">=0.3.0",
     };
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)

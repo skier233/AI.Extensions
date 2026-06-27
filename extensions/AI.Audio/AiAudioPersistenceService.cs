@@ -48,11 +48,10 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
         var videoId = request.Context.HostEntityId.Value;
 
         _logger.LogInformation(
-            "AI.Audio persistence starting for run {RunId} video {VideoId} with {EmbeddingCount} embedding(s) and {SegmentCount} segment(s).",
+            "AI.Audio persistence starting for run {RunId} video {VideoId} with {EmbeddingCount} embedding(s).",
             request.Context.RunId,
             videoId,
-            batch.Embeddings.Count,
-            batch.Segments.Count);
+            batch.Embeddings.Count);
 
         var existingEmbeddings = await embeddingRepo.FindAsync(new EmbeddingFilter
         {
@@ -61,7 +60,10 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
             SourceKey = AudioSourceKey,
         }, ct);
 
-        var existingSegments = await segmentRepo.FindAsync(new SegmentFilter
+        // AI.Audio no longer emits user-visible classification segments — its value is the speaker
+        // embeddings. We still sweep any segments left by older runs so re-processing a video purges
+        // the legacy short "moan/speech" rows from the timeline and segment library.
+        var legacySegments = await segmentRepo.FindAsync(new SegmentFilter
         {
             HostType = SegmentHostType.Video,
             HostId = videoId,
@@ -69,9 +71,9 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
         }, ct);
 
         _logger.LogInformation(
-            "AI.Audio found {ExistingEmbeddingCount} existing embedding row(s) and {ExistingSegmentCount} existing segment row(s) for video {VideoId}.",
+            "AI.Audio found {ExistingEmbeddingCount} existing embedding row(s) and {LegacySegmentCount} legacy segment row(s) for video {VideoId}.",
             existingEmbeddings.Count,
-            existingSegments.Count,
+            legacySegments.Count,
             videoId);
 
         if (existingEmbeddings.Count > 0)
@@ -79,9 +81,9 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
             embeddingRepo.RemoveRange(existingEmbeddings);
         }
 
-        if (existingSegments.Count > 0)
+        if (legacySegments.Count > 0)
         {
-            segmentRepo.RemoveRange(existingSegments);
+            segmentRepo.RemoveRange(legacySegments);
         }
 
         var insertedEmbeddings = 0;
@@ -113,32 +115,11 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
             insertedEmbeddings++;
         }
 
-        var insertedSegments = 0;
-        foreach (var segment in batch.Segments)
-        {
-            segmentRepo.Add(new Segment
-            {
-                HostType = SegmentHostType.Video,
-                HostId = videoId,
-                StartSec = segment.StartSeconds,
-                EndSec = segment.EndSeconds,
-                Kind = Clean(segment.Kind),
-                Payload = SerializeMetadata(segment.Metadata, new Dictionary<string, string?>
-                {
-                    ["assetId"] = segment.AssetId,
-                    ["tagName"] = segment.TagName,
-                    ["runId"] = request.Context.RunId,
-                }),
-                SourceKey = segment.SourceKey,
-                SourceRunId = request.Context.RunId,
-                Confidence = segment.Confidence is null ? null : (float)segment.Confidence.Value,
-                Title = Clean(segment.Title) ?? Clean(segment.TagName),
-            });
-            insertedSegments++;
-        }
-
         await embeddingRepo.SaveChangesAsync(ct);
-        EvictVideoSegmentSpans(scope.ServiceProvider, videoId);
+        if (legacySegments.Count > 0)
+        {
+            EvictVideoSegmentSpans(scope.ServiceProvider, videoId);
+        }
 
         var notes = new List<string>();
         if (insertedEmbeddings > 0)
@@ -146,24 +127,24 @@ internal sealed class AiAudioPersistenceService(IServiceScopeFactory scopeFactor
             notes.Add($"Persisted {insertedEmbeddings} AI-generated audio embedding(s) onto the video.");
         }
 
-        if (insertedSegments > 0)
+        if (legacySegments.Count > 0)
         {
-            notes.Add($"Persisted {insertedSegments} AI-generated audio classification segment(s) onto the video timeline.");
+            notes.Add($"Removed {legacySegments.Count} legacy audio classification segment(s) from the video timeline.");
         }
 
         if (notes.Count == 0)
         {
-            notes.Add(existingEmbeddings.Count + existingSegments.Count > 0
-                ? "AI.Audio cleared previously persisted rows for this video because the latest run did not emit any current audio artifacts."
+            notes.Add(existingEmbeddings.Count > 0
+                ? "AI.Audio cleared previously persisted embeddings for this video because the latest run did not emit any current audio artifacts."
                 : "AI.Audio found no new rows to persist for this video.");
         }
 
         _logger.LogInformation(
-            "AI.Audio persistence finished for run {RunId} video {VideoId}. Inserted embeddings={InsertedEmbeddingCount}, inserted segments={InsertedSegmentCount}. Notes: {Notes}",
+            "AI.Audio persistence finished for run {RunId} video {VideoId}. Inserted embeddings={InsertedEmbeddingCount}, removed legacy segments={LegacySegmentCount}. Notes: {Notes}",
             request.Context.RunId,
             videoId,
             insertedEmbeddings,
-            insertedSegments,
+            legacySegments.Count,
             string.Join(" | ", notes));
 
         return notes;

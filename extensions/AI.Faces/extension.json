@@ -1,7 +1,7 @@
 {
   "id": "cove.community.ai.faces",
   "name": "AI Faces",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Facial Recognition and Analysis for Image and Videos.",
   "author": "skier233",
   "url": "https://github.com/skier233/AI.Extensions",
@@ -116,6 +116,6 @@
   "jsBundle": "dist/bundle.js",
   "cssBundle": "dist/bundle.css",
   "dependencies": {
-    "cove.community.ai.core": ">=0.1.0"
+    "cove.community.ai.core": ">=0.3.0"
   }
 }

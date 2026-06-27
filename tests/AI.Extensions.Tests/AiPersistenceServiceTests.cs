@@ -205,15 +205,33 @@ public sealed class AiPersistenceServiceTests
     }
 
     [Fact]
-    public async Task PersistAudio_WritesVideoEmbeddingsAndTimelineSegments()
+    public async Task PersistAudio_WritesEmbeddingsAndClearsLegacySegments()
     {
         await using var provider = CreateProvider();
         var service = new AiAudioPersistenceService(
             provider.GetRequiredService<IServiceScopeFactory>(),
             NullLogger<AiAudioPersistenceService>.Instance);
         var request = CreateRequest(AiMediaKinds.Audio, "video-audio", "video", 9, "run-audio");
-        var batch = new AiPreparedArtifactBatch();
 
+        // Seed a leftover classification segment from an older AI.Audio run. Re-processing should
+        // sweep it away now that AI.Audio is embeddings-only.
+        await using (var seedScope = provider.CreateAsyncScope())
+        {
+            var seedDb = seedScope.ServiceProvider.GetRequiredService<CoveContext>();
+            seedDb.Segments.Add(new Segment
+            {
+                HostType = SegmentHostType.Video,
+                HostId = 9,
+                StartSec = 4.0,
+                EndSec = 7.0,
+                Kind = "audio-classification",
+                SourceKey = "ext:ai.audio",
+                Title = "speech",
+            });
+            await seedDb.SaveChangesAsync();
+        }
+
+        var batch = new AiPreparedArtifactBatch();
         batch.Embeddings.Add(new AiPreparedEmbedding(
             "video-audio",
             "ext:ai.audio",
@@ -226,23 +244,13 @@ public sealed class AiPersistenceServiceTests
             SectionIndex: 1,
             StartSeconds: 4.0,
             EndSeconds: 7.0,
-            ModelKey: "audioclass"));
-        batch.Segments.Add(new AiPreparedSegment(
-            "video-audio",
-            "ext:ai.audio",
-            Kind: "audio-classification",
-            StartSeconds: 4.0,
-            EndSeconds: 7.0,
-            TagName: "speech",
-            Title: "speech",
-            Confidence: 0.88));
+            ModelKey: "audioembed"));
 
         var notes = await service.PersistAsync(request, batch);
 
         await using var scope = provider.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
         var embedding = await db.Embeddings.SingleAsync();
-        var segment = await db.Segments.SingleAsync();
 
         Assert.Equal(EmbeddingHostType.Video, embedding.HostType);
         Assert.Equal(9, embedding.HostId);
@@ -250,14 +258,10 @@ public sealed class AiPersistenceServiceTests
         Assert.Equal("audio.v1", embedding.KindFamily);
         Assert.Equal("ext:ai.audio", embedding.SourceKey);
 
-        Assert.Equal(SegmentHostType.Video, segment.HostType);
-        Assert.Equal(9, segment.HostId);
-        Assert.Equal("audio-classification", segment.Kind);
-        Assert.Equal("speech", segment.Title);
-        Assert.Equal("ext:ai.audio", segment.SourceKey);
+        Assert.False(await db.Segments.AnyAsync());
 
         Assert.Contains(notes, note => note.Contains("Persisted 1 AI-generated audio embedding", StringComparison.Ordinal));
-        Assert.Contains(notes, note => note.Contains("Persisted 1 AI-generated audio classification segment", StringComparison.Ordinal));
+        Assert.Contains(notes, note => note.Contains("Removed 1 legacy audio classification segment", StringComparison.Ordinal));
     }
 
     [Fact]

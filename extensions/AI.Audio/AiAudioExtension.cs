@@ -17,9 +17,9 @@ public sealed class AiAudioExtension : FullExtensionBase
 
     public override string Name => "AI Audio";
 
-    public override string Version => "0.1.0";
+    public override string Version => "0.3.0";
 
-    public override string Description => "Contributes audio embedding and classification claims for AI workflows.";
+    public override string Description => "Contributes audio speaker embeddings (voice-filtered) for AI similarity workflows.";
 
     public override string Author => "skier233";
 
@@ -37,7 +37,7 @@ public sealed class AiAudioExtension : FullExtensionBase
 
     public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
     {
-        ["cove.community.ai.core"] = ">=0.1.0",
+        ["cove.community.ai.core"] = ">=0.3.0",
     };
 
     public override UIManifest GetUIManifest()
@@ -169,13 +169,12 @@ internal sealed class AiAudioContributor(
 
         var batch = _preparationService.Prepare(request);
         _logger.LogInformation(
-            "AI.Audio prepared {EmbeddingCount} embedding(s), {SegmentCount} segment(s), and {NoteCount} note(s) for run {RunId}.",
+            "AI.Audio prepared {EmbeddingCount} embedding(s) and {NoteCount} note(s) for run {RunId}.",
             batch.Embeddings.Count,
-            batch.Segments.Count,
             batch.Notes.Count,
             request.Context.RunId);
 
-        if (batch.Embeddings.Count == 0 || batch.Segments.Count == 0)
+        if (batch.Embeddings.Count == 0)
         {
             _logger.LogInformation(
                 "AI.Audio run {RunId} window summary: {WindowSummary}",

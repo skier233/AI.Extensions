@@ -1,3 +1,5 @@
+using System.Globalization;
+
 using AI.Extensions.Abstractions;
 
 namespace AI.Audio;
@@ -5,8 +7,19 @@ namespace AI.Audio;
 internal sealed class AiAudioPreparationService
 {
     private const string SourceKey = "ext:ai.audio";
-    private const double DefaultClassificationFloor = 0.45;
-    private const double DefaultWindowSpanSeconds = 3.0;
+
+    // Minimum classifier confidence for a window's sound-type label to be trusted when deciding
+    // whether the window is voice-bearing. Mirrors the floor the legacy segment path used.
+    private const double VoiceClassificationFloor = 0.45;
+
+    // Sound types that carry the performer's voice/vocalizations. ECAPA-TDNN speaker embeddings
+    // computed over these windows characterize the person; music/silence/breath windows mostly add
+    // noise to the speaker centroid, so they are excluded from it.
+    private static readonly HashSet<string> VoiceSoundTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "moan",
+        "speech",
+    };
 
     public AiPreparedArtifactBatch Prepare(AiDispatchRequest request)
     {
@@ -18,11 +31,10 @@ internal sealed class AiAudioPreparationService
         }
 
         PrepareEmbeddings(batch, request);
-        PrepareClassificationSegments(batch, request);
 
-        if (batch.Embeddings.Count == 0 && batch.Segments.Count == 0 && batch.Notes.Count == 0)
+        if (batch.Embeddings.Count == 0 && batch.Notes.Count == 0)
         {
-            batch.Notes.Add("No audio embeddings or classification windows were found.");
+            batch.Notes.Add("No audio embeddings were found.");
         }
 
         return batch;
@@ -30,19 +42,27 @@ internal sealed class AiAudioPreparationService
 
     private static void PrepareEmbeddings(AiPreparedArtifactBatch batch, AiDispatchRequest request)
     {
-        var byModel = new Dictionary<string, List<IReadOnlyList<float>>>(StringComparer.OrdinalIgnoreCase);
+        // Per embedding-model accumulation. `voiceByModel` feeds the asset-level speaker centroid;
+        // `allByModel` is the fallback for assets that have no confidently voiced windows so we never
+        // drop the asset embedding entirely (e.g. when the classifier was not run).
+        var voiceByModel = new Dictionary<string, List<IReadOnlyList<float>>>(StringComparer.OrdinalIgnoreCase);
+        var allByModel = new Dictionary<string, List<IReadOnlyList<float>>>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var window in request.Result.Windows.OrderBy(static window => window.StartSeconds ?? double.MinValue).ThenBy(static window => window.Index ?? int.MinValue))
+        foreach (var window in request.Result.Windows
+            .OrderBy(static window => window.StartSeconds ?? double.MinValue)
+            .ThenBy(static window => window.Index ?? int.MinValue))
         {
+            var soundType = ResolveWindowSoundType(window);
+            var isVoice = soundType is not null && VoiceSoundTypes.Contains(soundType);
+
             foreach (var embedding in window.Analysis.Embeddings)
             {
-                if (!byModel.TryGetValue(embedding.ModelKey, out var vectors))
+                Accumulate(allByModel, embedding.ModelKey, embedding.Vector);
+                if (isVoice)
                 {
-                    vectors = [];
-                    byModel[embedding.ModelKey] = vectors;
+                    Accumulate(voiceByModel, embedding.ModelKey, embedding.Vector);
                 }
 
-                vectors.Add(embedding.Vector);
                 batch.Embeddings.Add(new AiPreparedEmbedding(
                     request.Context.AssetId,
                     SourceKey,
@@ -60,13 +80,19 @@ internal sealed class AiAudioPreparationService
                     {
                         ["scope"] = "window",
                         ["runId"] = request.Context.RunId,
+                        // Persist the classifier verdict on the embedding itself so voice filtering and
+                        // future per-type aggregation can run without re-processing the audio.
+                        ["soundType"] = soundType ?? "unknown",
+                        ["voice"] = isVoice ? "true" : "false",
                     }));
             }
         }
 
-        foreach (var (modelKey, vectors) in byModel)
+        foreach (var modelKey in allByModel.Keys)
         {
-            var centroid = BuildCentroid(vectors);
+            var hasVoice = voiceByModel.TryGetValue(modelKey, out var voiceVectors) && voiceVectors.Count > 0;
+            var sourceVectors = hasVoice ? voiceVectors! : allByModel[modelKey];
+            var centroid = BuildCentroid(sourceVectors);
             if (centroid is null)
             {
                 continue;
@@ -87,46 +113,55 @@ internal sealed class AiAudioPreparationService
                 {
                     ["scope"] = "asset",
                     ["runId"] = request.Context.RunId,
+                    // "voice" = centroid over voice-bearing windows only; "all" = fallback over every
+                    // window because no confidently voiced windows existed for this model.
+                    ["basis"] = hasVoice ? "voice" : "all",
+                    ["voiceWindowCount"] = (hasVoice ? voiceVectors!.Count : 0).ToString(CultureInfo.InvariantCulture),
+                    ["windowCount"] = allByModel[modelKey].Count.ToString(CultureInfo.InvariantCulture),
                 }));
         }
     }
 
-    private static void PrepareClassificationSegments(AiPreparedArtifactBatch batch, AiDispatchRequest request)
+    private static void Accumulate(Dictionary<string, List<IReadOnlyList<float>>> byModel, string modelKey, IReadOnlyList<float> vector)
     {
-        foreach (var window in request.Result.Windows.OrderBy(static window => window.StartSeconds ?? double.MinValue).ThenBy(static window => window.Index ?? int.MinValue))
+        if (vector.Count == 0)
         {
-            var windowStart = window.StartSeconds ?? ((window.Index ?? 0) * DefaultWindowSpanSeconds);
-            var windowEnd = window.EndSeconds ?? (windowStart + DefaultWindowSpanSeconds);
-
-            foreach (var prediction in window.Analysis.Classifications)
-            {
-                if (prediction.Confidence is { } confidence && confidence < DefaultClassificationFloor)
-                {
-                    continue;
-                }
-
-                AddSegment(batch, request, prediction.ModelKey, prediction.Label, windowStart, windowEnd, prediction.Confidence);
-            }
+            return;
         }
+
+        if (!byModel.TryGetValue(modelKey, out var vectors))
+        {
+            vectors = [];
+            byModel[modelKey] = vectors;
+        }
+
+        vectors.Add(vector);
     }
 
-    private static void AddSegment(AiPreparedArtifactBatch batch, AiDispatchRequest request, string modelKey, string label, double startSeconds, double endSeconds, double? confidence)
+    // Highest-confidence classifier label for a window, or null when the window has no label clearing
+    // the floor. Labels without a confidence score are treated as confident (the classifier emitted
+    // them deliberately) to match the legacy segment behavior.
+    private static string? ResolveWindowSoundType(AiTemporalSlice window)
     {
-        batch.Segments.Add(new AiPreparedSegment(
-            request.Context.AssetId,
-            SourceKey,
-            Kind: "audio-classification",
-            StartSeconds: startSeconds,
-            EndSeconds: endSeconds,
-            TagName: label,
-            Title: label,
-            Confidence: confidence,
-            Metadata: new Dictionary<string, string>
+        string? best = null;
+        var bestRank = double.NegativeInfinity;
+
+        foreach (var prediction in window.Analysis.Classifications)
+        {
+            if (prediction.Confidence is { } confidence && confidence < VoiceClassificationFloor)
             {
-                ["modelKey"] = modelKey,
-                ["runId"] = request.Context.RunId,
-                ["observationCount"] = "1",
-            }));
+                continue;
+            }
+
+            var rank = prediction.Confidence ?? 1d;
+            if (rank > bestRank)
+            {
+                bestRank = rank;
+                best = prediction.Label?.Trim().ToLowerInvariant();
+            }
+        }
+
+        return string.IsNullOrWhiteSpace(best) ? null : best;
     }
 
     private static (IReadOnlyList<float> Vector, double Norm)? BuildCentroid(IEnumerable<IReadOnlyList<float>> vectors)
@@ -159,5 +194,4 @@ internal sealed class AiAudioPreparationService
 
         return (averaged, norm);
     }
-
 }
