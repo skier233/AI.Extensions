@@ -1110,7 +1110,6 @@ internal sealed class AiVisualSemanticSearchService(
             "rating" => OrderMatchesByKey(sortable, match => snapshots?.GetValueOrDefault(match.Embedding.HostId)?.Rating, desc, visualOrder),
             "play_count" => OrderMatchesByKey(sortable, match => snapshots?.GetValueOrDefault(match.Embedding.HostId)?.PlayCount, desc, visualOrder),
             "o_counter" or "like_counter" => OrderMatchesByKey(sortable, match => snapshots?.GetValueOrDefault(match.Embedding.HostId)?.LikeCount, desc, visualOrder),
-            "last_o_at" or "last_like_at" => OrderMatchesByKey(sortable, match => GetLastFavoriteAt(videos[match.Embedding.HostId]), desc, visualOrder),
             "organized" => OrderMatchesByKey(sortable, match => videos[match.Embedding.HostId].Organized, desc, visualOrder),
             "last_played_at" => OrderMatchesByKey(sortable, match => snapshots?.GetValueOrDefault(match.Embedding.HostId)?.LastPlayedAt, desc, visualOrder),
             "play_duration" => OrderMatchesByKey(sortable, match => snapshots?.GetValueOrDefault(match.Embedding.HostId)?.PlayDuration, desc, visualOrder),
@@ -1392,9 +1391,6 @@ internal sealed class AiVisualSemanticSearchService(
         => desc
             ? matches.OrderByDescending(match => GetSeededSortKey(match.Embedding.HostId, seed)).ThenByDescending(static match => match.Embedding.HostId).ToArray()
             : matches.OrderBy(match => GetSeededSortKey(match.Embedding.HostId, seed)).ThenBy(static match => match.Embedding.HostId).ToArray();
-
-    private static DateTime? GetLastFavoriteAt(Video video)
-        => video.LikeHistory.Select(static history => (DateTime?)history.OccurredAt).Max();
 
     private static string? GetVideoPhash(Video video, bool desc)
     {
