@@ -1127,6 +1127,12 @@ public sealed class AiCoreOrchestratorTests
 
         public Task RecordFailureAsync(string runKey, Exception exception, CancellationToken ct = default)
             => Task.CompletedTask;
+
+        public Task RecordStartsAsync(IReadOnlyList<AiRunJournalStart> entries, CancellationToken ct = default)
+            => Task.CompletedTask;
+
+        public Task RecordCompletionsAsync(IReadOnlyList<AiRunJournalCompletion> completions, CancellationToken ct = default)
+            => Task.CompletedTask;
     }
 
     private sealed class NoOpAiRunPlanner : IAiRunPlanner
@@ -1154,6 +1160,9 @@ public sealed class AiCoreOrchestratorTests
         public static NoOpAiArtifactReplaceService Instance { get; } = new();
 
         public Task ReplaceAsync(string? hostEntityType, int? hostEntityId, IReadOnlyList<AiRunExecutionPlan> plans, CancellationToken ct = default)
+            => Task.CompletedTask;
+
+        public Task ReplaceBatchAsync(IReadOnlyList<AiArtifactReplaceTarget> targets, CancellationToken ct = default)
             => Task.CompletedTask;
     }
 }

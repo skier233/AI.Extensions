@@ -16,32 +16,7 @@ public sealed class AiTaggingExtension : FullExtensionBase, IPermissionContribut
 {
     public const string WriteSettingsPermission = "cove.community.ai.tagging.settings.write";
 
-    public override string Id => "cove.community.ai.tagging";
-
-    public override string Name => "AI Tagging";
-
-    public override string Version => "0.3.0";
-
-    public override string Description => "Contributes tagging claims for image and video AI workflows.";
-
-    public override string Author => "skier233";
-
-    public override string Url => "https://github.com/skier233/AI.Extensions";
-
-    public override string MinCoveVersion => "0.6.0";
-
-    public override IReadOnlyList<string> Categories =>
-    [
-        ExtensionCategories.Metadata,
-        ExtensionCategories.Automation,
-        "ai",
-        "tagging",
-    ];
-
-    public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
-    {
-        ["cove.community.ai.core"] = ">=0.3.0",
-    };
+    // Id, Name, Version and other metadata are sourced from extension.json by FullExtensionBase.
 
     public override UIManifest GetUIManifest()
         => ManifestBuilder()
@@ -183,6 +158,36 @@ internal sealed class AiTaggingContributor(
             request.Claims.Count,
             batch.ToPreparedCounts(),
             notes);
+    }
+
+    // Persists a whole batch's tag artifacts in one scope/SaveChanges instead of one per image, so the host's
+    // per-save denormalized-count recompute runs once per batch rather than once per image.
+    public async Task<IReadOnlyList<AiDispatchResult>> DispatchBatchAsync(IReadOnlyList<AiDispatchRequest> requests, CancellationToken ct = default)
+    {
+        if (requests.Count == 0)
+        {
+            return [];
+        }
+
+        var prepared = requests.Select(request => (Request: request, Batch: _preparationService.Prepare(request))).ToList();
+        var persistNotes = await _persistenceService.PersistBatchAsync(
+            prepared.Select(static item => (item.Request, item.Batch)).ToList(),
+            ct);
+
+        var results = new List<AiDispatchResult>(requests.Count);
+        for (var i = 0; i < prepared.Count; i++)
+        {
+            var (request, batch) = prepared[i];
+            var notes = new List<string>(batch.Notes);
+            notes.AddRange(persistNotes[i]);
+            results.Add(new AiDispatchResult(
+                Descriptor.ExtensionId,
+                request.Claims.Count,
+                batch.ToPreparedCounts(),
+                notes));
+        }
+
+        return results;
     }
 }
 

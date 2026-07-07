@@ -87,4 +87,22 @@ public interface IAiCapabilityContributor
     AiCapabilityDescriptor Describe();
 
     Task<AiDispatchResult> DispatchAsync(AiDispatchRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// Dispatches a whole batch of per-entity results to this contributor. The default implementation simply
+    /// calls <see cref="DispatchAsync"/> for each request, so existing contributors keep working unchanged.
+    /// Contributors that persist to the database (embeddings, tags) should override this to write the whole
+    /// batch in a single unit of work — one scope, bulk queries, one SaveChanges — instead of one transaction
+    /// per entity, which is what made large image batches slow.
+    /// </summary>
+    async Task<IReadOnlyList<AiDispatchResult>> DispatchBatchAsync(IReadOnlyList<AiDispatchRequest> requests, CancellationToken ct = default)
+    {
+        var results = new List<AiDispatchResult>(requests.Count);
+        foreach (var request in requests)
+        {
+            results.Add(await DispatchAsync(request, ct));
+        }
+
+        return results;
+    }
 }

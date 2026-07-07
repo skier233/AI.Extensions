@@ -24,32 +24,8 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
     public const string DeleteReferencePermission = "cove.community.ai.faces.reference.delete";
     public const string ApplyReferencePermission = "cove.community.ai.faces.reference.apply";
 
-    public override string Id => "cove.community.ai.faces";
-
-    public override string Name => "AI Faces";
-
-    public override string Version => "0.3.0";
-
-    public override string Description => "Contributes face-region and face-embedding claims for AI workflows.";
-
-    public override string Author => "skier233";
-
-    public override string Url => "https://github.com/skier233/AI.Extensions";
-
-    public override string MinCoveVersion => "0.6.0";
-
-    public override IReadOnlyList<string> Categories =>
-    [
-        ExtensionCategories.Metadata,
-        ExtensionCategories.Automation,
-        "ai",
-        "faces",
-    ];
-
-    public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
-    {
-        ["cove.community.ai.core"] = ">=0.3.0",
-    };
+    // Id, Name, Version, Description, Author, Url, Categories, MinCoveVersion and Dependencies are
+    // sourced from extension.json by FullExtensionBase — not duplicated here.
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
     {
@@ -77,6 +53,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
         services.AddSingleton<AiFaceIdentityReconciler>();
         services.AddSingleton<AiFaceReferenceBackfillService>();
         services.AddSingleton<AiFacePreparationService>();
+        services.AddSingleton<IAiFaceCoverQueue, AiFaceCoverQueue>();
         services.AddSingleton<AiFacesPersistenceService>();
         services.AddSingleton<IAiCapabilityContributor, AiFacesContributor>();
         services.AddScoped<AiFaceReferencePerformerResolver>();

@@ -40,6 +40,9 @@ internal sealed class AiAudioSimilarityService(
     private const int DefaultSimilarPerPage = 12;
     private const int MaxSimilarPerPage = 48;
     private const int MaxSimilarResults = 500;
+    // Upper bound on candidates per KNN query. Unbounded (int.MaxValue) sorted/materialized the whole
+    // embeddings table; a bounded top-N is far cheaper and is what lets a matching HNSW index be used.
+    private const int MaxKnnCandidates = 2000;
     private const int MaxSectionQueries = 4;
     private const double AssetWeight = 1.0;
     private const double SectionWeight = 0.65;
@@ -121,17 +124,9 @@ internal sealed class AiAudioSimilarityService(
             queries.Add(new AiAudioSimilarQuery(asset, TargetEmbeddingScope.Asset, AssetWeight));
         }
 
-        // Prefer voice-bearing windows for partial-match queries; fall back to all windows for assets
-        // processed before sound-type tagging (or with no voiced windows).
-        var sections = sorted.Where(static e => e.SectionIndex > 0).ToArray();
-        var voiceSections = sections.Where(IsVoiceWindow).ToArray();
-        var sectionPool = voiceSections.Length > 0 ? voiceSections : sections;
-
-        foreach (var section in SelectRepresentativeEmbeddings(sectionPool, MaxSectionQueries))
-        {
-            queries.Add(new AiAudioSimilarQuery(section, TargetEmbeddingScope.Section, SectionWeight));
-        }
-
+        // Asset-level only (the voice-filtered speaker centroid at SectionIndex 0). This hits the audio asset
+        // HNSW index — the fast path the Recommended tab uses. Per-window ("partial") matching scanned every
+        // voice window with no usable index, which is exactly why the similar-audio tab was slow; omitted here.
         return queries;
     }
 
@@ -162,7 +157,7 @@ internal sealed class AiAudioSimilarityService(
         {
             var matches = await _embeddingService.KnnAsync(
                 query.Embedding.Vector,
-                int.MaxValue,
+                MaxKnnCandidates,
                 new EmbeddingSearchOptions
                 {
                     HostType = EmbeddingHostType.Video,
@@ -171,6 +166,7 @@ internal sealed class AiAudioSimilarityService(
                     Modality = EmbeddingModality.Audio,
                     IsSemantic = false,
                     SourceKey = AudioSourceKey,
+                    SectionIndex = 0,
                 },
                 ct);
 

@@ -70,6 +70,99 @@ internal sealed class AiTaggingPersistenceService(IServiceScopeFactory scopeFact
         return notes;
     }
 
+    // Persists a whole batch of host entities in one scope and one final SaveChanges. The host's
+    // SaveChangesAsync recomputes denormalized counts + id arrays on every call, so collapsing ~one save per
+    // image into one save per batch turns that (heavy) recompute from O(images) into O(1) per batch — the main
+    // reason large tagging runs ground Cove to a halt. Returns per-item notes aligned with the input order.
+    public async Task<IReadOnlyList<IReadOnlyList<string>>> PersistBatchAsync(
+        IReadOnlyList<(AiDispatchRequest Request, AiPreparedArtifactBatch Batch)> items,
+        CancellationToken ct = default)
+    {
+        var notes = new List<string>[items.Count];
+        for (var i = 0; i < items.Count; i++)
+        {
+            notes[i] = [];
+        }
+
+        var valid = new List<(int Index, string HostEntityType, int HostEntityId, double? HostDurationSeconds, string RunId, AiPreparedArtifactBatch EffectiveBatch)>();
+
+        await using var scope = _scopeFactory.CreateAsyncScope();
+        var tagRepo = scope.ServiceProvider.GetRequiredService<ITagRepository>();
+        var imageRepo = scope.ServiceProvider.GetRequiredService<IImageRepository>();
+        var segmentRepo = scope.ServiceProvider.GetRequiredService<ISegmentRepository>();
+        var tagProvenanceService = scope.ServiceProvider.GetRequiredService<ITagProvenanceService>();
+        var settings = await AiTaggingSettingsStore.LoadAsync(scope.ServiceProvider, ct);
+        var overrideMap = settings.ToOverrideMap();
+
+        for (var i = 0; i < items.Count; i++)
+        {
+            var request = items[i].Request;
+            if (request.Context.HostEntityId is null || string.IsNullOrWhiteSpace(request.Context.HostEntityType))
+            {
+                notes[i].Add("AI.Tagging prepared artifacts but skipped persistence because no Cove host entity identity was supplied.");
+                continue;
+            }
+
+            var hostEntityType = request.Context.HostEntityType.Trim().ToLowerInvariant();
+            if (hostEntityType is not ("video" or "image"))
+            {
+                notes[i].Add($"AI.Tagging persistence does not support host entity type '{request.Context.HostEntityType}'.");
+                continue;
+            }
+
+            valid.Add((
+                i,
+                hostEntityType,
+                request.Context.HostEntityId.Value,
+                request.Result.DurationSeconds ?? request.Context.DurationSeconds,
+                request.Context.RunId,
+                ApplyTagNameOverrides(items[i].Batch, overrideMap)));
+        }
+
+        if (valid.Count == 0)
+        {
+            return notes.Select(static n => (IReadOnlyList<string>)n).ToArray();
+        }
+
+        // Resolve every tag name across the whole batch in one round-trip (creates new tags once).
+        var allTagNames = valid.SelectMany(item => CollectTagNames(item.EffectiveBatch)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var tagsByName = await tagRepo.FindOrCreateByNamesAsync(allTagNames, ct);
+
+        foreach (var item in valid)
+        {
+            var persistedTagEvidenceCount = item.HostEntityType switch
+            {
+                "video" => await PersistVideoTagsAsync(item.HostEntityId, tagsByName, item.EffectiveBatch, tagProvenanceService, item.RunId, item.HostDurationSeconds, ct),
+                "image" => await PersistImageTagsAsync(imageRepo, item.HostEntityId, tagsByName, item.EffectiveBatch, tagProvenanceService, item.RunId, item.HostDurationSeconds, ct),
+                _ => 0,
+            };
+
+            var persistedSegmentCount = item.HostEntityType == "video"
+                ? await PersistVideoSegmentsAsync(segmentRepo, item.HostEntityId, tagsByName, item.EffectiveBatch, items[item.Index].Request, ct)
+                : 0;
+
+            if (persistedTagEvidenceCount > 0)
+            {
+                notes[item.Index].Add($"Persisted {persistedTagEvidenceCount} AI-generated tag evidence record(s) onto the {item.HostEntityType}.");
+            }
+
+            if (persistedSegmentCount > 0)
+            {
+                notes[item.Index].Add($"Persisted {persistedSegmentCount} AI-generated tagging segment(s) onto the video timeline.");
+            }
+
+            if (notes[item.Index].Count == 0)
+            {
+                notes[item.Index].Add("AI.Tagging found no new tag or segment rows to persist for this host entity.");
+            }
+        }
+
+        // One save for the whole batch → one denormalized-count/id-array recompute instead of one per image.
+        await segmentRepo.SaveChangesAsync(ct);
+
+        return notes.Select(static n => (IReadOnlyList<string>)n).ToArray();
+    }
+
     private static AiPreparedArtifactBatch ApplyTagNameOverrides(AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, string> tagNameOverrides)
     {
         if (tagNameOverrides.Count == 0)

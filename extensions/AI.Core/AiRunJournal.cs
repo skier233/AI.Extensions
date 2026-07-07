@@ -12,6 +12,13 @@ public interface IAiRunJournal
     Task RecordCompletionAsync(AiRunJournalCompletion completion, CancellationToken ct = default);
 
     Task RecordFailureAsync(string runKey, Exception exception, CancellationToken ct = default);
+
+    /// <summary>Batch form of <see cref="RecordStartAsync"/>: writes all of a batch's run-start rows in a
+    /// couple of round-trips instead of two per entity.</summary>
+    Task RecordStartsAsync(IReadOnlyList<AiRunJournalStart> entries, CancellationToken ct = default);
+
+    /// <summary>Batch form of <see cref="RecordCompletionAsync"/>.</summary>
+    Task RecordCompletionsAsync(IReadOnlyList<AiRunJournalCompletion> completions, CancellationToken ct = default);
 }
 
 public sealed record AiRunJournalStart(
@@ -80,6 +87,90 @@ internal sealed class AiRunJournal(IAiRunRepository runRepo) : IAiRunJournal
         run.Error = null;
 
         await _runRepo.UpdateAsync(run, ct);
+    }
+
+    public async Task RecordStartsAsync(IReadOnlyList<AiRunJournalStart> entries, CancellationToken ct = default)
+    {
+        var resolved = new List<(AiRunJournalStart Entry, AiRunTargetType Type, int Id)>(entries.Count);
+        foreach (var entry in entries)
+        {
+            if (TryResolveTarget(entry.HostEntityType, entry.HostEntityId, out var targetType, out var targetId))
+            {
+                resolved.Add((entry, targetType, targetId));
+            }
+        }
+
+        if (resolved.Count == 0)
+        {
+            return;
+        }
+
+        var runs = await _runRepo.FindOrCreateManyAsync(
+            resolved.Select(static item => (item.Entry.RunKey, item.Type, item.Id)).ToArray(),
+            SourceKey,
+            AiRunStatus.Running,
+            ct);
+
+        var now = DateTime.UtcNow;
+        var toUpdate = new List<AiRun>(resolved.Count);
+        foreach (var (entry, _, _) in resolved)
+        {
+            if (!runs.TryGetValue(entry.RunKey, out var run))
+            {
+                continue;
+            }
+
+            run.Trigger = entry.Trigger;
+            run.Status = AiRunStatus.Running;
+            run.LoadPolicy = entry.LoadPolicy;
+            run.FrameIntervalSec = entry.FrameIntervalSec;
+            run.Vr = entry.Vr;
+            run.Request = Serialize(entry.RequestPayload);
+            if (run.StartedAt == default)
+            {
+                run.StartedAt = now;
+            }
+
+            toUpdate.Add(run);
+        }
+
+        await _runRepo.UpdateManyAsync(toUpdate, ct);
+    }
+
+    public async Task RecordCompletionsAsync(IReadOnlyList<AiRunJournalCompletion> completions, CancellationToken ct = default)
+    {
+        var valid = completions
+            .Where(static completion => TryResolveRunKey(completion.RunKey, out _))
+            .ToArray();
+        if (valid.Length == 0)
+        {
+            return;
+        }
+
+        var runs = await _runRepo.FindOrCreateManyAsync(
+            valid.Select(static completion => (completion.RunKey, default(AiRunTargetType), 0)).ToArray(),
+            SourceKey,
+            AiRunStatus.Running,
+            ct);
+
+        var now = DateTime.UtcNow;
+        var toUpdate = new List<AiRun>(valid.Length);
+        foreach (var completion in valid)
+        {
+            if (!runs.TryGetValue(completion.RunKey, out var run))
+            {
+                continue;
+            }
+
+            run.Status = AiRunStatus.Completed;
+            run.CompletedAt = now;
+            run.Models = ExtractProperty(completion.Response, "models");
+            run.Summary = BuildSummary(completion);
+            run.Error = null;
+            toUpdate.Add(run);
+        }
+
+        await _runRepo.UpdateManyAsync(toUpdate, ct);
     }
 
     public async Task RecordFailureAsync(string runKey, Exception exception, CancellationToken ct = default)

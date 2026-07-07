@@ -132,8 +132,10 @@ public sealed class AiCoreOrchestrator(
 
     // Processes many images in a single AI-server call. Selection/claims/wants are resolved once (they are
     // run-level), planning is per entity, and targets are grouped by their resolved execution want-set so a
-    // homogeneous batch (the common case) becomes one server call. The batched response's per-image results
-    // are split back to each entity for the existing per-entity artifact replace, dispatch, and journaling.
+    // homogeneous batch (the common case) becomes one server call. Inference (the AI-server call) and
+    // persistence (the database writes) are split into two internal stages so the whole batch's results are
+    // written in a handful of bulk round-trips — one artifact-replace sweep, one batched dispatch per feature
+    // extension, one journal flush — instead of a transaction per image.
     public async Task<IReadOnlyList<AiRunResponse>> RunImageBatchAsync(
         AiCoreConnectionSettings settings,
         IReadOnlyList<AiRunImageTarget> targets,
@@ -143,6 +145,24 @@ public sealed class AiCoreOrchestrator(
         if (targets.Count == 0)
         {
             return [];
+        }
+
+        var inference = await InferImageBatchAsync(settings, targets, template, ct);
+        return await PersistImageBatchAsync(settings, inference, ct);
+    }
+
+    // Inference stage: resolve the run-level selection, plan each target, group homogeneous targets into a
+    // single AI-server call, record the journal "start" rows (in bulk), and capture every per-image result.
+    // A server-call failure records the journal failures and throws so the whole batch is marked failed.
+    private async Task<AiImageBatchInferenceResult> InferImageBatchAsync(
+        AiCoreConnectionSettings settings,
+        IReadOnlyList<AiRunImageTarget> targets,
+        AiRunImagesRequest template,
+        CancellationToken ct = default)
+    {
+        if (targets.Count == 0)
+        {
+            return new AiImageBatchInferenceResult([], [], template.DispatchResults);
         }
 
         var selection = ResolveRunSelection(settings, AiMediaKinds.Image, template.PresetId, template.CapabilityIds, template.ClaimIds, template.CategoriesToSkip, template.LoadPolicy, template.PipelineName);
@@ -168,43 +188,46 @@ public sealed class AiCoreOrchestrator(
             planned.Add(new PlannedImageTarget(target, mappedPath, plans, BuildExecution(wants, plans), BuildResponsePlan(plans)));
         }
 
-        var responses = new List<AiRunResponse>(targets.Count);
+        var members = new List<InferredImageMember>(targets.Count);
 
-        // Fully-satisfied targets need no server call.
+        // Fully-satisfied targets need no server call; they carry a synthesized "skipped" result.
         foreach (var item in planned.Where(static item => item.Execution.Wants.Count == 0))
         {
-            responses.Add(new AiRunResponse(
+            members.Add(new InferredImageMember(
                 Guid.NewGuid().ToString("n"),
-                AiMediaKinds.Image,
-                claimDescriptors,
-                CreateSkippedAnalysis(AiMediaKinds.Image, item.Target.Path),
+                item.Target,
+                item.Plans,
                 [],
-                item.ResponsePlan));
+                item.ResponsePlan,
+                CreateSkippedAnalysis(AiMediaKinds.Image, item.Target.Path),
+                Skipped: true,
+                Error: null));
         }
 
         foreach (var group in planned.Where(static item => item.Execution.Wants.Count > 0).GroupBy(static item => BuildWantSignature(item.Execution.Wants)))
         {
-            var members = group.ToArray();
+            var groupMembers = group.ToArray();
             var analyzeRequest = new ImageAnalyzeRequest
             {
-                Paths = members.Select(static item => item.MappedPath).ToList(),
+                Paths = groupMembers.Select(static item => item.MappedPath).ToList(),
                 Threshold = threshold,
                 ReturnConfidence = template.ReturnConfidence ?? true,
                 CategoriesToSkip = selection.CategoriesToSkip?.ToList(),
-                Want = members[0].Execution.Wants.ToList(),
+                Want = groupMembers[0].Execution.Wants.ToList(),
                 LoadPolicy = resolvedLoadPolicy,
                 PipelineName = selection.PipelineName,
             };
 
-            var runIds = new string[members.Length];
-            for (var index = 0; index < members.Length; index++)
+            var runIds = new string[groupMembers.Length];
+            var starts = new List<AiRunJournalStart>(groupMembers.Length);
+            for (var index = 0; index < groupMembers.Length; index++)
             {
-                var member = members[index];
+                var member = groupMembers[index];
                 runIds[index] = Guid.NewGuid().ToString("n");
-                await _aiRunJournal.RecordStartAsync(
-                    new AiRunJournalStart(runIds[index], member.Target.EntityType, member.Target.EntityId, "AI.Core", resolvedLoadPolicy, null, null, BuildTargetRequest(template, member.Target)),
-                    ct);
+                starts.Add(new AiRunJournalStart(runIds[index], member.Target.EntityType, member.Target.EntityId, "AI.Core", resolvedLoadPolicy, null, null, BuildTargetRequest(template, member.Target)));
             }
+
+            await _aiRunJournal.RecordStartsAsync(starts, ct);
 
             JsonElement response;
             try
@@ -221,47 +244,153 @@ public sealed class AiCoreOrchestrator(
                 throw;
             }
 
-            var perImageResults = ExtractImageResults(response, members.Length);
-            for (var index = 0; index < members.Length; index++)
+            var perImageResults = ExtractImageResults(response, groupMembers.Length);
+            for (var index = 0; index < groupMembers.Length; index++)
             {
-                var member = members[index];
+                var member = groupMembers[index];
                 var runId = runIds[index];
                 var perImage = perImageResults[index];
                 if (TryGetImageError(perImage, out var error))
                 {
                     await _aiRunJournal.RecordFailureAsync(runId, new InvalidOperationException($"AI server reported an error for '{member.Target.Path}': {error}"), ct);
-                    responses.Add(new AiRunResponse(runId, AiMediaKinds.Image, claimDescriptors, perImage, [], member.ResponsePlan));
+                    members.Add(new InferredImageMember(runId, member.Target, member.Plans, member.Execution.Claims, member.ResponsePlan, perImage, Skipped: false, Error: error));
                     continue;
                 }
 
-                try
-                {
-                    await _aiArtifactReplaceService.ReplaceAsync(member.Target.EntityType, member.Target.EntityId, member.Plans, ct);
-                    var dispatchResults = await MaybeDispatchAsync(
-                        settings,
-                        template.DispatchResults,
-                        AiMediaKinds.Image,
-                        member.Target.Path,
-                        runId,
-                        member.Target.EntityType,
-                        member.Target.EntityId,
-                        member.Execution.Claims,
-                        perImage,
-                        ct);
-                    await _aiRunJournal.RecordCompletionAsync(
-                        new AiRunJournalCompletion(runId, AiMediaKinds.Image, perImage, member.Execution.Claims.Select(static item => item.Claim.ClaimId).ToArray(), dispatchResults.Count),
-                        ct);
-                    responses.Add(new AiRunResponse(runId, AiMediaKinds.Image, claimDescriptors, perImage, dispatchResults, member.ResponsePlan));
-                }
-                catch (Exception ex)
-                {
-                    await _aiRunJournal.RecordFailureAsync(runId, ex, ct);
-                    throw;
-                }
+                members.Add(new InferredImageMember(runId, member.Target, member.Plans, member.Execution.Claims, member.ResponsePlan, perImage, Skipped: false, Error: null));
             }
         }
 
+        return new AiImageBatchInferenceResult(claimDescriptors, members, template.DispatchResults);
+    }
+
+    // Persistence stage: write the whole batch's inferred results to the database in bulk — one artifact
+    // replace sweep, one batched dispatch per feature extension, one journal completion flush — instead of a
+    // transaction per image. A persistence failure marks every executed run failed and rethrows so the batch
+    // is marked failed.
+    private async Task<IReadOnlyList<AiRunResponse>> PersistImageBatchAsync(
+        AiCoreConnectionSettings settings,
+        AiImageBatchInferenceResult inference,
+        CancellationToken ct = default)
+    {
+        var claimDescriptors = inference.ClaimDescriptorsInternal;
+        var executed = inference.MembersInternal.Where(static member => !member.Skipped && member.Error is null).ToArray();
+
+        IReadOnlyDictionary<string, IReadOnlyList<AiDispatchResult>> dispatchByRunId =
+            executed.ToDictionary(static member => member.RunId, static _ => (IReadOnlyList<AiDispatchResult>)[]);
+
+        if (executed.Length > 0)
+        {
+            try
+            {
+                await _aiArtifactReplaceService.ReplaceBatchAsync(
+                    executed.Select(static member => new AiArtifactReplaceTarget(member.Target.EntityType, member.Target.EntityId, member.Plans)).ToArray(),
+                    ct);
+
+                dispatchByRunId = await MaybeDispatchBatchAsync(settings, inference.DispatchResults, executed, ct);
+
+                await _aiRunJournal.RecordCompletionsAsync(
+                    executed.Select(member => new AiRunJournalCompletion(
+                        member.RunId,
+                        AiMediaKinds.Image,
+                        member.Result,
+                        member.ExecutionClaims.Select(static item => item.Claim.ClaimId).ToArray(),
+                        dispatchByRunId.TryGetValue(member.RunId, out var dispatched) ? dispatched.Count : 0)).ToArray(),
+                    ct);
+            }
+            catch (Exception ex)
+            {
+                foreach (var member in executed)
+                {
+                    await _aiRunJournal.RecordFailureAsync(member.RunId, ex, ct);
+                }
+
+                throw;
+            }
+        }
+
+        var responses = new List<AiRunResponse>(inference.MembersInternal.Count);
+        foreach (var member in inference.MembersInternal)
+        {
+            var dispatched = dispatchByRunId.TryGetValue(member.RunId, out var results) ? results : [];
+            responses.Add(new AiRunResponse(member.RunId, AiMediaKinds.Image, claimDescriptors, member.Result, dispatched, member.ResponsePlan));
+        }
+
         return responses;
+    }
+
+    // Batched form of MaybeDispatchAsync: builds one dispatch request per (member, feature extension), groups
+    // them by contributor, and hands each contributor its whole slice in a single DispatchBatchAsync call so
+    // the extension can persist the batch in one unit of work. Returns the dispatch results keyed by run id.
+    private async Task<IReadOnlyDictionary<string, IReadOnlyList<AiDispatchResult>>> MaybeDispatchBatchAsync(
+        AiCoreConnectionSettings settings,
+        bool? dispatchOverride,
+        IReadOnlyList<InferredImageMember> members,
+        CancellationToken ct)
+    {
+        var accumulator = members.ToDictionary(static member => member.RunId, static _ => new List<AiDispatchResult>());
+
+        var shouldDispatch = dispatchOverride ?? settings.DispatchResultsByDefault;
+        if (!shouldDispatch)
+        {
+            return accumulator.ToDictionary(static kv => kv.Key, static kv => (IReadOnlyList<AiDispatchResult>)kv.Value);
+        }
+
+        var perContributor = new Dictionary<IAiCapabilityContributor, List<(string RunId, AiDispatchRequest Request)>>();
+        foreach (var member in members)
+        {
+            var parsedResult = AiAnalyzeResultParser.Parse(AiMediaKinds.Image, member.Result);
+            var assetId = member.Result.ValueKind == JsonValueKind.Object && member.Result.TryGetProperty("asset_id", out var assetIdElement)
+                ? assetIdElement.GetString() ?? member.Target.Path
+                : member.Target.Path;
+            var runContext = new AiRunContext(
+                member.RunId,
+                AiMediaKinds.Image,
+                assetId,
+                member.Target.Path,
+                member.Target.EntityType,
+                member.Target.EntityId,
+                parsedResult.DurationSeconds,
+                parsedResult.FrameIntervalSeconds,
+                new Dictionary<string, string> { ["source"] = "cove.community.ai.core" });
+
+            foreach (var group in member.ExecutionClaims.GroupBy(static claim => claim.Descriptor.ExtensionId, StringComparer.OrdinalIgnoreCase))
+            {
+                var first = group.First();
+                var dispatchRequest = new AiDispatchRequest(
+                    runContext,
+                    group.Select(static item => item.Claim).ToArray(),
+                    parsedResult,
+                    new Dictionary<string, string>
+                    {
+                        ["source"] = "cove.community.ai.core",
+                        ["extensionId"] = first.Descriptor.ExtensionId,
+                    });
+
+                if (!perContributor.TryGetValue(first.Contributor, out var requests))
+                {
+                    requests = [];
+                    perContributor[first.Contributor] = requests;
+                }
+
+                requests.Add((member.RunId, dispatchRequest));
+            }
+        }
+
+        foreach (var (contributor, requests) in perContributor)
+        {
+            _logger.LogDebug(
+                "Dispatching {RequestCount} image result(s) to a contributor in one batch",
+                requests.Count);
+
+            var results = await contributor.DispatchBatchAsync(requests.Select(static item => item.Request).ToArray(), ct);
+            for (var index = 0; index < requests.Count && index < results.Count; index++)
+            {
+                accumulator[requests[index].RunId].Add(results[index]);
+            }
+        }
+
+        return accumulator.ToDictionary(static kv => kv.Key, static kv => (IReadOnlyList<AiDispatchResult>)kv.Value);
     }
 
     private static string BuildWantSignature(IReadOnlyList<AnalyzeWantRequest> wants)
@@ -1273,7 +1402,20 @@ public sealed class AiCoreOrchestrator(
 
     private readonly record struct ResolvedContributor(IAiCapabilityContributor Contributor, AiCapabilityDescriptor Descriptor);
 
-    private readonly record struct ResolvedClaim(IAiCapabilityContributor Contributor, AiCapabilityDescriptor Descriptor, AiCapabilityClaim Claim);
+    internal readonly record struct ResolvedClaim(IAiCapabilityContributor Contributor, AiCapabilityDescriptor Descriptor, AiCapabilityClaim Claim);
+
+    // One image's inferred result, carried from the inference stage to the persistence stage. Self-contained
+    // (cloned JsonElement, plan POCOs, resolved-claim value structs) so it can cross between two orchestrator
+    // instances/scopes safely.
+    internal sealed record InferredImageMember(
+        string RunId,
+        AiRunImageTarget Target,
+        IReadOnlyList<AiRunExecutionPlan> Plans,
+        IReadOnlyList<ResolvedClaim> ExecutionClaims,
+        IReadOnlyList<AiRunPlanItem> ResponsePlan,
+        JsonElement Result,
+        bool Skipped,
+        string? Error);
 
     private sealed record RunSelection(
         IReadOnlyList<string>? CapabilityIds,
@@ -1318,4 +1460,32 @@ public sealed class AiCoreOrchestrator(
         public AiRunPlannerWant ToPlannerWant()
             => new(ExtensionId, Capability, Scope, FromDetection, Claims.Select(static claim => claim.Claim).ToArray(), Models.Select(static model => model.ToPlannerModel()).ToArray(), AllowPartialExecution);
     }
+}
+
+/// <summary>
+/// The opaque output of <see cref="IAiCoreOrchestrator.RunImageBatchInferenceAsync"/>: every per-image result
+/// of a batch's AI-server call(s), ready to be handed to <see cref="IAiCoreOrchestrator.PersistImageBatchAsync"/>.
+/// Self-contained so it can be buffered and persisted on a different orchestrator instance/scope than the one
+/// that produced it.
+/// </summary>
+public sealed class AiImageBatchInferenceResult
+{
+    internal AiImageBatchInferenceResult(
+        IReadOnlyList<AiCapabilityClaim> claimDescriptors,
+        IReadOnlyList<AiCoreOrchestrator.InferredImageMember> members,
+        bool? dispatchResults)
+    {
+        ClaimDescriptorsInternal = claimDescriptors;
+        MembersInternal = members;
+        DispatchResults = dispatchResults;
+    }
+
+    internal IReadOnlyList<AiCapabilityClaim> ClaimDescriptorsInternal { get; }
+
+    internal IReadOnlyList<AiCoreOrchestrator.InferredImageMember> MembersInternal { get; }
+
+    internal bool? DispatchResults { get; }
+
+    /// <summary>Number of image results in this batch (executed, server-errored, and fully-satisfied/skipped).</summary>
+    public int MemberCount => MembersInternal.Count;
 }

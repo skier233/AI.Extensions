@@ -580,7 +580,7 @@ public sealed class AiPersistenceServiceTests
 
             Assert.False(string.IsNullOrWhiteSpace(face.CoverBlobId));
             Assert.True(blobService.StoredBlobs.ContainsKey(face.CoverBlobId!));
-            Assert.Contains(notes, note => note.Contains("Generated 1 face cover image", StringComparison.Ordinal));
+            Assert.Contains(notes, note => note.Contains("Queued 1 face cover image", StringComparison.Ordinal));
         }
         finally
         {
@@ -787,6 +787,9 @@ public sealed class AiPersistenceServiceTests
         services.AddScoped<ICustomFieldRepository, CustomFieldRepository>();
         services.AddScoped<ITagRepository, TagRepository>();
         services.AddScoped<ITagApplicationRepository, TagApplicationRepository>();
+        // Generate face covers synchronously in tests so assertions are deterministic (production runs them
+        // on a background pool).
+        services.AddSingleton<IAiFaceCoverQueue, InlineFaceCoverQueue>();
         configure?.Invoke(services);
         return services.BuildServiceProvider();
     }
@@ -802,6 +805,19 @@ public sealed class AiPersistenceServiceTests
                 AssetId = assetId,
                 DurationSeconds = durationSeconds,
             });
+    }
+
+    private sealed class InlineFaceCoverQueue : IAiFaceCoverQueue
+    {
+        public void Enqueue(IServiceProvider services, IReadOnlyList<FaceCoverWorkItem> items)
+        {
+            var scopeFactory = services.GetRequiredService<IServiceScopeFactory>();
+            foreach (var item in items)
+            {
+                using var scope = scopeFactory.CreateScope();
+                AiFacesPersistenceService.GenerateAndStoreCoverAsync(scope.ServiceProvider, item, CancellationToken.None).GetAwaiter().GetResult();
+            }
+        }
     }
 
     private sealed class TestBlobService : IBlobService

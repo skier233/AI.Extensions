@@ -3,36 +3,9 @@ using Cove.Sdk;
 
 namespace AI.Full;
 
+// AI Full is a dependency-only bundle (extension.json "kind": "bundle"); the host treats it as
+// manifest-only and never instantiates this class. All metadata — including the dependency set that
+// pulls in the rest of the AI family — lives solely in extension.json.
 public sealed class AiFullExtension : CoveExtensionBase
 {
-    public override string Id => "cove.community.ai.full";
-
-    public override string Name => "AI Full";
-
-    public override string Version => "0.3.0";
-
-    public override string Description => "Dependency bundle for the full Cove AI extension family.";
-
-    public override string Author => "skier233";
-
-    public override string Url => "https://github.com/skier233/AI.Extensions";
-
-    public override string MinCoveVersion => "0.6.0";
-
-    public override IReadOnlyList<string> Categories =>
-    [
-        ExtensionCategories.Tools,
-        ExtensionCategories.Automation,
-        "ai",
-        "bundle",
-    ];
-
-    public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
-    {
-        ["cove.community.ai.core"] = ">=0.3.0",
-        ["cove.community.ai.tagging"] = ">=0.3.0",
-        ["cove.community.ai.faces"] = ">=0.3.0",
-        ["cove.community.ai.visual"] = ">=0.3.0",
-        ["cove.community.ai.audio"] = ">=0.3.0",
-    };
 }

@@ -31,27 +31,7 @@ public sealed class AiCoreExtension : FullExtensionBase, IPermissionContributor
 
     private IServiceProvider? _services;
 
-    public override string Id => "cove.community.ai.core";
-
-    public override string Name => "AI Core";
-
-    public override string Version => "0.3.0";
-
-    public override string Description => "AI orchestration, model lifecycle management, and nsfw_ai_server v4 integration for Cove.";
-
-    public override string Author => "skier233";
-
-    public override string Url => "https://github.com/skier233/AI.Extensions";
-
-    public override IReadOnlyList<string> Categories =>
-    [
-        ExtensionCategories.Tools,
-        ExtensionCategories.Automation,
-        ExtensionCategories.Metadata,
-        "ai",
-    ];
-
-    public override string MinCoveVersion => "0.6.0";
+    // Id, Name, Version and other metadata are sourced from extension.json by FullExtensionBase.
 
     public override void ConfigureServices(IServiceCollection services, ExtensionContext context)
     {

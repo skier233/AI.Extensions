@@ -277,6 +277,11 @@ public sealed class AiRunQueueService(
         progress.Report(1d, batchResult.Summary);
     }
 
+    // Images are sent to the AI server in batches (one server call per ImageBatchSize images), each batch
+    // counting as a single in-flight unit. A worker runs a batch end to end: inference (the AI-server call)
+    // then persistence, which writes the whole batch's results in a few bulk round-trips (see
+    // AiCoreOrchestrator.RunImageBatchAsync). MaxInFlight batches run concurrently, so while one worker is
+    // briefly persisting, the others keep the server busy.
     private static async Task ExecuteImageBatchesAsync(
         IServiceScopeFactory scopeFactory,
         IJobService jobService,

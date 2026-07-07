@@ -8,7 +8,14 @@ namespace AI.Core;
 public interface IAiArtifactReplaceService
 {
     Task ReplaceAsync(string? hostEntityType, int? hostEntityId, IReadOnlyList<AiRunExecutionPlan> plans, CancellationToken ct = default);
+
+    /// <summary>Batch form of <see cref="ReplaceAsync"/>: queues the stale-artifact removals for every host in
+    /// the batch and flushes them in a single <c>SaveChanges</c> (plus one orphaned-tag-link sweep), instead
+    /// of a transaction per host. Used by batch image runs.</summary>
+    Task ReplaceBatchAsync(IReadOnlyList<AiArtifactReplaceTarget> targets, CancellationToken ct = default);
 }
+
+public sealed record AiArtifactReplaceTarget(string? HostEntityType, int? HostEntityId, IReadOnlyList<AiRunExecutionPlan> Plans);
 
 internal sealed class AiArtifactReplaceService(
     IEmbeddingRepository embeddingRepo,
@@ -19,13 +26,97 @@ internal sealed class AiArtifactReplaceService(
 {
     public async Task ReplaceAsync(string? hostEntityType, int? hostEntityId, IReadOnlyList<AiRunExecutionPlan> plans, CancellationToken ct = default)
     {
-        if (plans.Count == 0 || !hostEntityId.HasValue || string.IsNullOrWhiteSpace(hostEntityType))
+        var affectedTagEntityIds = new List<(AffinityHostType HostType, int HostId)>();
+        await QueueRemovalsAsync(hostEntityType, hostEntityId, plans, affectedTagEntityIds, preloadedEmbeddings: null, ct);
+
+        await embeddingRepo.SaveChangesAsync(ct);
+        await SweepOrphanedTagLinksAsync(affectedTagEntityIds, ct);
+    }
+
+    public async Task ReplaceBatchAsync(IReadOnlyList<AiArtifactReplaceTarget> targets, CancellationToken ct = default)
+    {
+        if (targets.Count == 0)
         {
             return;
         }
 
-        var normalizedHostType = hostEntityType.Trim().ToLowerInvariant();
-        var modelKeysBySource = plans
+        // The existing embeddings to remove are the heavy read (they carry vectors). Bulk-load them for every
+        // host in the batch in one query per (host-type, source) instead of one per host, then queue each
+        // host's removals and flush once. All repos here share one scoped CoveContext, so a single SaveChanges
+        // commits the whole batch's deletes.
+        var preloadedEmbeddings = await PreloadEmbeddingsAsync(targets, ct);
+
+        var affectedTagEntityIds = new List<(AffinityHostType HostType, int HostId)>();
+        foreach (var target in targets)
+        {
+            await QueueRemovalsAsync(target.HostEntityType, target.HostEntityId, target.Plans, affectedTagEntityIds, preloadedEmbeddings, ct);
+        }
+
+        await embeddingRepo.SaveChangesAsync(ct);
+        await SweepOrphanedTagLinksAsync(affectedTagEntityIds, ct);
+    }
+
+    // Bulk-loads, for the whole batch, the existing embeddings that might need removal — one query per
+    // (embedding host-type, source key) using a HostIds IN-list — keyed by (host-type, source, host id).
+    private async Task<IReadOnlyDictionary<(EmbeddingHostType HostType, string SourceKey, int HostId), List<Embedding>>> PreloadEmbeddingsAsync(
+        IReadOnlyList<AiArtifactReplaceTarget> targets,
+        CancellationToken ct)
+    {
+        var hostIdsByGroup = new Dictionary<(EmbeddingHostType HostType, string SourceKey), HashSet<int>>();
+        foreach (var target in targets)
+        {
+            if (!target.HostEntityId.HasValue || string.IsNullOrWhiteSpace(target.HostEntityType))
+            {
+                continue;
+            }
+
+            var normalizedHostType = target.HostEntityType.Trim().ToLowerInvariant();
+            if (!TryResolveEmbeddingHostType(normalizedHostType, out var embeddingHostType))
+            {
+                continue;
+            }
+
+            foreach (var sourceKey in BuildModelKeysBySource(target.Plans).Keys)
+            {
+                var key = (embeddingHostType, sourceKey);
+                if (!hostIdsByGroup.TryGetValue(key, out var hostIds))
+                {
+                    hostIds = [];
+                    hostIdsByGroup[key] = hostIds;
+                }
+
+                hostIds.Add(target.HostEntityId.Value);
+            }
+        }
+
+        var lookup = new Dictionary<(EmbeddingHostType, string, int), List<Embedding>>();
+        foreach (var ((embeddingHostType, sourceKey), hostIds) in hostIdsByGroup)
+        {
+            var embeddings = await embeddingRepo.FindAsync(new EmbeddingFilter
+            {
+                SourceKey = sourceKey,
+                HostType = embeddingHostType,
+                HostIds = hostIds.ToArray(),
+            }, ct);
+
+            foreach (var embedding in embeddings)
+            {
+                var key = (embeddingHostType, sourceKey, embedding.HostId);
+                if (!lookup.TryGetValue(key, out var list))
+                {
+                    list = [];
+                    lookup[key] = list;
+                }
+
+                list.Add(embedding);
+            }
+        }
+
+        return lookup;
+    }
+
+    private static Dictionary<string, string[]> BuildModelKeysBySource(IReadOnlyList<AiRunExecutionPlan> plans)
+        => plans
             .Where(static plan => plan.Decision == AiRunPlanDecision.Rerun && plan.ReplacementArtifactKeys.Count > 0)
             .GroupBy(static plan => ResolveArtifactSourceKey(plan.ExtensionId), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
@@ -33,23 +124,59 @@ internal sealed class AiArtifactReplaceService(
                 static group => group.SelectMany(plan => plan.ReplacementArtifactKeys).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
                 StringComparer.OrdinalIgnoreCase);
 
+    private async Task SweepOrphanedTagLinksAsync(List<(AffinityHostType HostType, int HostId)> affectedTagEntityIds, CancellationToken ct)
+    {
+        foreach (var group in affectedTagEntityIds.Distinct().GroupBy(static item => item.HostType))
+        {
+            await tagAppRepo.RemoveOrphanedTagLinksAsync(group.Key, group.Select(static item => item.HostId).ToArray(), string.Empty, ct);
+        }
+    }
+
+    // Queues (does not save) the removal of stale artifacts for one host that this run is about to re-create.
+    // When <paramref name="preloadedEmbeddings"/> is supplied (batch path), existing embeddings are read from
+    // it instead of issuing a per-host query.
+    private async Task QueueRemovalsAsync(
+        string? hostEntityType,
+        int? hostEntityId,
+        IReadOnlyList<AiRunExecutionPlan> plans,
+        List<(AffinityHostType HostType, int HostId)> affectedTagEntityIds,
+        IReadOnlyDictionary<(EmbeddingHostType HostType, string SourceKey, int HostId), List<Embedding>>? preloadedEmbeddings,
+        CancellationToken ct)
+    {
+        if (plans.Count == 0 || !hostEntityId.HasValue || string.IsNullOrWhiteSpace(hostEntityType))
+        {
+            return;
+        }
+
+        var normalizedHostType = hostEntityType.Trim().ToLowerInvariant();
+        var modelKeysBySource = BuildModelKeysBySource(plans);
+
         if (modelKeysBySource.Count == 0)
         {
             return;
         }
 
-        var affectedTagEntityIds = new List<(AffinityHostType HostType, int HostId)>();
-
         foreach (var (sourceKey, modelKeys) in modelKeysBySource)
         {
             if (TryResolveEmbeddingHostType(normalizedHostType, out var embeddingHostType))
             {
-                var embeddings = await embeddingRepo.FindAsync(new EmbeddingFilter
+                IReadOnlyList<Embedding> embeddings;
+                if (preloadedEmbeddings is not null)
                 {
-                    SourceKey = sourceKey,
-                    HostType = embeddingHostType,
-                    HostId = hostEntityId.Value,
-                }, ct);
+                    embeddings = preloadedEmbeddings.TryGetValue((embeddingHostType, sourceKey, hostEntityId.Value), out var preloaded)
+                        ? preloaded
+                        : [];
+                }
+                else
+                {
+                    embeddings = await embeddingRepo.FindAsync(new EmbeddingFilter
+                    {
+                        SourceKey = sourceKey,
+                        HostType = embeddingHostType,
+                        HostId = hostEntityId.Value,
+                    }, ct);
+                }
+
                 var toRemove = embeddings.Where(e => MatchesModelKey(e.Meta, modelKeys)).ToArray();
                 if (toRemove.Length > 0)
                 {
@@ -116,13 +243,6 @@ internal sealed class AiArtifactReplaceService(
                     affectedTagEntityIds.Add((affinityHostType, hostEntityId.Value));
                 }
             }
-        }
-
-        await embeddingRepo.SaveChangesAsync(ct);
-
-        foreach (var (hostType, entityId) in affectedTagEntityIds.Distinct())
-        {
-            await tagAppRepo.RemoveOrphanedTagLinksAsync(hostType, [entityId], string.Empty, ct);
         }
     }
 

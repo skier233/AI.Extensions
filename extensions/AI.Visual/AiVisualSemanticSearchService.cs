@@ -272,18 +272,11 @@ internal sealed class AiVisualSemanticSearchService(
             queries.Add(new AiVisualSimilarQuery(ToQueryEmbedding(semantic), overallTargetScope, OverallSemanticWeight, SimilarQueryRole.OverallSemantic));
         }
 
-        if (includeSourceSections && hostType == EmbeddingHostType.Video)
-        {
-            foreach (var section in await LoadRepresentativeSectionEmbeddingsAsync(hostId, VisualFeatureKind, FeatureKindFamily, isSemantic: false, ct))
-            {
-                queries.Add(new AiVisualSimilarQuery(ToQueryEmbedding(section), TargetEmbeddingScope.Section, PartVisualWeight, SimilarQueryRole.PartVisual));
-            }
-
-            foreach (var section in await LoadRepresentativeSectionEmbeddingsAsync(hostId, VisualSemanticKind, SemanticKindFamily, isSemantic: true, ct))
-            {
-                queries.Add(new AiVisualSimilarQuery(ToQueryEmbedding(section), TargetEmbeddingScope.Section, PartSemanticWeight, SimilarQueryRole.PartSemantic));
-            }
-        }
+        // Asset-level only. Matching whole-video feature + semantic embeddings (SectionIndex 0) hits the asset
+        // HNSW index — the same fast path the Recommended tab uses. Per-section ("scene") matching scanned
+        // every section row with no usable index, which is exactly why the similar tabs were slow; it's
+        // omitted here and can return later as a refinement over the asset-retrieved candidate set.
+        _ = includeSourceSections;
 
         return queries;
     }
@@ -432,6 +425,7 @@ internal sealed class AiVisualSemanticSearchService(
                     Modality = query.Query.Modality,
                     IsSemantic = query.Query.IsSemantic,
                     SourceKey = VisualSourceKey,
+                    SectionIndex = 0,
                 },
                 ct);
 

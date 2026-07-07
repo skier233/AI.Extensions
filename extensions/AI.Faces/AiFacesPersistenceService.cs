@@ -109,7 +109,9 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         var persistedDetections = PersistDetections(detectionRepo, hostEntityId, detectionHostType, batch, facesByKey, request);
         var persistedSegments = hostEntityType == "video" ? PersistSegments(segmentRepo, hostEntityId, batch, facesByKey, request) : 0;
         var persistedEmbeddings = PersistEmbeddings(embeddingRepo, batch, facesByKey, request);
-        var persistedFaceCovers = await PersistFaceCoversAsync(scope.ServiceProvider, customFieldRepo, faceRepo, hostEntityType, request, batch, facesByKey, ct);
+        // Resolve which faces need a cover crop now (cheap, no image work). The actual decode/crop/encode runs
+        // on a background pool (see enqueue below) so it doesn't hold this AI-request worker.
+        var coverWorkItems = BuildFaceCoverWorkItems(hostEntityType, request, batch, facesByKey);
 
         await faceRepo.SaveChangesAsync(ct);
 
@@ -186,13 +188,20 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
             }
         }
 
+        if (coverWorkItems.Count > 0)
+        {
+            // Hand the CPU-bound cover crops to the background pool so this worker's in-flight slot frees
+            // immediately for the next AI-server request; covers fill in asynchronously.
+            scope.ServiceProvider.GetRequiredService<IAiFaceCoverQueue>().Enqueue(scope.ServiceProvider, coverWorkItems);
+        }
+
         if (batch.Faces.Count > 0) notes.Add($"Resolved {batch.Faces.Count} AI face identity candidate(s) into Cove face cluster(s).");
         if (mergeResult is { MergedPersistedFaceCount: > 0 }) notes.Add($"Merged {mergeResult.MergedPersistedFaceCount} duplicate face row(s) into their reconciled targets.");
         if (persistedAppearances > 0) notes.Add($"Persisted {persistedAppearances} AI-generated face appearance(s) onto the {hostEntityType}.");
         if (persistedDetections > 0) notes.Add($"Persisted {persistedDetections} retained AI-generated face spatial sample(s) onto the {hostEntityType}.");
         if (persistedSegments > 0) notes.Add($"Persisted {persistedSegments} AI-generated face segment(s) onto the video timeline.");
         if (persistedEmbeddings > 0) notes.Add($"Persisted {persistedEmbeddings} face embedding(s) for similarity and clustering workflows.");
-        if (persistedFaceCovers > 0) notes.Add($"Generated {persistedFaceCovers} face cover image(s) for face detail pages.");
+        if (coverWorkItems.Count > 0) notes.Add($"Queued {coverWorkItems.Count} face cover image(s) for background generation.");
 
         if (notes.Count == 0)
         {
@@ -355,22 +364,17 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         return inserted;
     }
 
-    private static async Task<int> PersistFaceCoversAsync(IServiceProvider services, ICustomFieldRepository customFieldRepo, IFaceRepository faceRepo, string hostEntityType, AiDispatchRequest request, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, CancellationToken ct)
+    // Resolves the cover crops to generate for this run (cheap: no image decode, no DB). The expensive
+    // decode/crop/encode is done later by AiFaceCoverQueue on a background pool. The ShouldGenerateCover gate
+    // and the current-quality read are deferred to GenerateAndStoreCoverAsync (background), so this stays pure.
+    private static List<FaceCoverWorkItem> BuildFaceCoverWorkItems(string hostEntityType, AiDispatchRequest request, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey)
     {
-        var blobService = services.GetService<IBlobService>();
-        if (blobService is null || batch.Faces.Count == 0) return 0;
-
-        var configuration = services.GetService<CoveConfiguration>();
-        var generated = 0;
-
+        var items = new List<FaceCoverWorkItem>(batch.Faces.Count);
         foreach (var preparedFace in batch.Faces)
         {
-            if (!facesByKey.TryGetValue(preparedFace.FaceKey, out var face)) continue;
+            if (!facesByKey.TryGetValue(preparedFace.FaceKey, out var face) || face.Id <= 0) continue;
 
             var incomingCoverQuality = ReadPreparedCoverQuality(preparedFace);
-            var currentCoverQuality = await customFieldRepo.FindNumberValueAsync(CustomFieldEntityTypes.Face, face.Id, CoverBlobQualityScoreField, ct);
-            if (!ShouldGenerateCover(face, incomingCoverQuality, currentCoverQuality is null ? null : (double?)currentCoverQuality)) continue;
-
             var coverDetection = ResolveCoverDetection(batch, preparedFace);
             var coverFace = ResolveCoverFace(hostEntityType, request, preparedFace);
 
@@ -388,31 +392,54 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
                 coverFace = coverFace with { CoverBoundingBox = coverDetection.BoundingBox };
             }
 
-            await using var coverStream = await AiFaceCoverGenerator.CreateAsync(hostEntityType, coverFace, coverDetection, configuration, ct);
-            if (coverStream is null) continue;
-
-            var previousBlobId = face.CoverBlobId;
-            face.CoverBlobId = await blobService.StoreBlobAsync(coverStream, "image/jpeg", ct);
-            face.CustomFields = SetCoverBlobQuality(face.CustomFields, incomingCoverQuality);
-
-            if (incomingCoverQuality.HasValue)
-            {
-                var definition = await customFieldRepo.FindOrCreateDefinitionAsync(new CustomFieldDefinition
-                {
-                    Key = CoverBlobQualityScoreField, Label = "AI Faces Cover Quality",
-                    Type = CustomFieldTypes.Number, EntityTypes = [CustomFieldEntityTypes.Face],
-                    Filterable = false, Sortable = false, DisplayOrder = -1000,
-                }, ct);
-                await customFieldRepo.UpsertNumberValueAsync(CustomFieldEntityTypes.Face, face.Id, definition.Id, Convert.ToDecimal(incomingCoverQuality.Value, CultureInfo.InvariantCulture), ct);
-            }
-
-            if (!string.IsNullOrWhiteSpace(previousBlobId) && !string.Equals(previousBlobId, face.CoverBlobId, StringComparison.Ordinal))
-                await blobService.DeleteBlobAsync(previousBlobId, ct);
-
-            generated++;
+            items.Add(new FaceCoverWorkItem(hostEntityType, face.Id, coverFace, coverDetection, incomingCoverQuality));
         }
 
-        return generated;
+        return items;
+    }
+
+    // Background worker entry point (called by AiFaceCoverQueue on its own scope/thread): decode the source
+    // image, crop the face, encode the cover JPEG, store it, and stamp the face — loading the face fresh so it
+    // is independent of the AI-request scope that enqueued the work.
+    internal static async Task<bool> GenerateAndStoreCoverAsync(IServiceProvider services, FaceCoverWorkItem item, CancellationToken ct)
+    {
+        var blobService = services.GetService<IBlobService>();
+        if (blobService is null) return false;
+
+        var faceRepo = services.GetRequiredService<IFaceRepository>();
+        var customFieldRepo = services.GetRequiredService<ICustomFieldRepository>();
+        var configuration = services.GetService<CoveConfiguration>();
+
+        var face = await faceRepo.GetFaceAsync(item.FaceId, tracking: true, ct);
+        if (face is null) return false;
+
+        var currentCoverQuality = await customFieldRepo.FindNumberValueAsync(CustomFieldEntityTypes.Face, face.Id, CoverBlobQualityScoreField, ct);
+        if (!ShouldGenerateCover(face, item.IncomingCoverQuality, currentCoverQuality is null ? null : (double?)currentCoverQuality)) return false;
+
+        await using var coverStream = await AiFaceCoverGenerator.CreateAsync(item.HostEntityType, item.CoverFace, item.CoverDetection, configuration, ct);
+        if (coverStream is null) return false;
+
+        var previousBlobId = face.CoverBlobId;
+        face.CoverBlobId = await blobService.StoreBlobAsync(coverStream, "image/jpeg", ct);
+        face.CustomFields = SetCoverBlobQuality(face.CustomFields, item.IncomingCoverQuality);
+
+        if (item.IncomingCoverQuality.HasValue)
+        {
+            var definition = await customFieldRepo.FindOrCreateDefinitionAsync(new CustomFieldDefinition
+            {
+                Key = CoverBlobQualityScoreField, Label = "AI Faces Cover Quality",
+                Type = CustomFieldTypes.Number, EntityTypes = [CustomFieldEntityTypes.Face],
+                Filterable = false, Sortable = false, DisplayOrder = -1000,
+            }, ct);
+            await customFieldRepo.UpsertNumberValueAsync(CustomFieldEntityTypes.Face, face.Id, definition.Id, Convert.ToDecimal(item.IncomingCoverQuality.Value, CultureInfo.InvariantCulture), ct);
+        }
+
+        await faceRepo.SaveChangesAsync(ct);
+
+        if (!string.IsNullOrWhiteSpace(previousBlobId) && !string.Equals(previousBlobId, face.CoverBlobId, StringComparison.Ordinal))
+            await blobService.DeleteBlobAsync(previousBlobId, ct);
+
+        return true;
     }
 
     internal static async Task RefreshFaceStatsAsync(IFaceRepository faceRepo, IDetectionRepository detectionRepo, IReadOnlyCollection<int> faceIds, CancellationToken ct)

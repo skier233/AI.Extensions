@@ -1,7 +1,7 @@
 {
   "id": "cove.community.ai.audio",
   "name": "AI Audio",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Audio embedding and classification capability contributions for AI runs.",
   "author": "skier233",
   "url": "https://github.com/skier233/AI.Extensions",
@@ -51,12 +51,12 @@
       ]
     }
   ],
-  "minCoveVersion": "0.6.0",
+  "minCoveVersion": "0.9.0",
   "entryDll": "AI.Audio.dll",
   "sharedAssemblies": [
     "AI.Extensions.Abstractions"
   ],
   "dependencies": {
-    "cove.community.ai.core": ">=0.3.0"
+    "cove.community.ai.core": ">=0.4.0"
   }
 }

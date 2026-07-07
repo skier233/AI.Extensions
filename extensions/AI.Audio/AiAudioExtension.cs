@@ -13,32 +13,7 @@ namespace AI.Audio;
 
 public sealed class AiAudioExtension : FullExtensionBase
 {
-    public override string Id => "cove.community.ai.audio";
-
-    public override string Name => "AI Audio";
-
-    public override string Version => "0.3.0";
-
-    public override string Description => "Contributes audio speaker embeddings (voice-filtered) for AI similarity workflows.";
-
-    public override string Author => "skier233";
-
-    public override string Url => "https://github.com/skier233/AI.Extensions";
-
-    public override string MinCoveVersion => "0.6.0";
-
-    public override IReadOnlyList<string> Categories =>
-    [
-        ExtensionCategories.Metadata,
-        ExtensionCategories.Automation,
-        "ai",
-        "audio",
-    ];
-
-    public override IReadOnlyDictionary<string, string> Dependencies => new Dictionary<string, string>
-    {
-        ["cove.community.ai.core"] = ">=0.3.0",
-    };
+    // Id, Name, Version and other metadata are sourced from extension.json by FullExtensionBase.
 
     public override UIManifest GetUIManifest()
         => ManifestBuilder()
