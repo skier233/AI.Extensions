@@ -18,6 +18,10 @@ Most of the models and their development are funded through Patreon, but **facia
 
 **Free vs. paid, plainly:** AI Faces is free. AI Tagging ships with one free model; its main tagging models, plus AI Visual and AI Audio, are part of the Patreon that funds ongoing model development. The extensions themselves are free to install. The extensions as well as the AI server are open source.
 
+# SubscribeStar
+
+You can support me and gain access to premium models on my SubscribeStar profile: https://subscribestar.adult/skier
+
 ---
 
 ## Getting started
