@@ -1,7 +1,7 @@
 {
   "id": "cove.community.ai.faces",
   "name": "AI Faces",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Facial Recognition and Analysis for Image and Videos.",
   "author": "skier233",
   "url": "https://github.com/skier233/AI.Extensions",
@@ -108,7 +108,7 @@
       ]
     }
   ],
-  "minCoveVersion": "0.9.0",
+  "minCoveVersion": "1.0.0",
   "entryDll": "AI.Faces.dll",
   "sharedAssemblies": [
     "AI.Extensions.Abstractions"

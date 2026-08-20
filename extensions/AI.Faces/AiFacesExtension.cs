@@ -47,12 +47,19 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
         services.AddSingleton(services => new AiFaceReferencePackStore(referenceRoot, services.GetRequiredService<SaieArchiveReader>(), legacyReferenceRoot));
         services.AddSingleton<AiFaceReferenceSuggestionDecisionStore>();
         services.AddSingleton<AiFacePresenceSuppressionStore>();
+        services.AddSingleton<AiFaceIdentityExclusionStore>();
         services.AddSingleton<AiFaceNotPresentService>();
+        services.AddSingleton<AiFaceSplitService>();
         services.AddSingleton<IFaceLifecycleParticipant, AiFacesDeleteParticipant>();
         services.AddSingleton<AiAssetFaceClusterer>();
         services.AddSingleton<AiFaceIdentityReconciler>();
         services.AddSingleton<AiFaceReferenceBackfillService>();
-        services.AddSingleton<AiFacePreparationService>();
+        services.AddSingleton(static services => new AiFacePreparationService(
+            services.GetRequiredService<IFaceIdentityStore>(),
+            services.GetRequiredService<AiAssetFaceClusterer>(),
+            services.GetRequiredService<AiFaceIdentityReconciler>(),
+            services.GetRequiredService<AiFaceReferencePackStore>(),
+            services.GetRequiredService<AiFaceIdentityExclusionStore>()));
         services.AddSingleton<IAiFaceCoverQueue, AiFaceCoverQueue>();
         services.AddSingleton<AiFacesPersistenceService>();
         services.AddSingleton<IAiCapabilityContributor, AiFacesContributor>();
@@ -64,6 +71,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
         services.AddSingleton<IFaceSuggestionDecisionHandler, ExtensionFaceSuggestionDecisionHandler>();
         services.AddScoped<AiFaceSuggester>();
         services.AddSingleton<IFaceSuggester, ExtensionFaceSuggester>();
+        services.AddSingleton<IFaceOccurrenceEditor, ExtensionFaceOccurrenceEditor>();
     }
 
     public override Task InitializeAsync(IServiceProvider services, CancellationToken ct = default)
@@ -76,12 +84,16 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
         PublishContributions<IFaceSuggester>(services);
         PublishContributions<IFaceSuggestionDecisionHandler>(services);
         PublishContributions<IFaceLifecycleParticipant>(services);
+        // Face occurrence editing (host-tracks / split / not-present) is surfaced by the host's own
+        // FacesController at /api/faces/..., so its UI never has to know which extension provides it.
+        PublishContributions<IFaceOccurrenceEditor>(services);
         services.GetRequiredService<StoreBackedFaceIdentityStateStore>().Attach(Store);
         services.GetRequiredService<StoreBackedAiFacesSettingsStore>().Attach(Store);
         AiFacesSettingsRuntime.Attach(services.GetRequiredService<IAiFacesSettingsStore>());
         services.GetRequiredService<AiFaceReferencePackStore>().Attach(Store);
         services.GetRequiredService<AiFaceReferenceSuggestionDecisionStore>().Attach(Store);
         services.GetRequiredService<AiFacePresenceSuppressionStore>().Attach(Store);
+        services.GetRequiredService<AiFaceIdentityExclusionStore>().Attach(Store);
         return Task.CompletedTask;
     }
 
@@ -212,29 +224,11 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
                 new RequestSizeLimitAttribute(512L * 1024 * 1024),
                 new RequestFormLimitsAttribute { MultipartBodyLengthLimit = 512L * 1024 * 1024 });
 
-        // Mark a face as not actually present on a video/image. Splits the wrong-person occurrences off
-        // the face (re-homing them to a matching or new face) and records a durable suppression.
-        group.MapPost("/faces/{faceId:int}/not-present", async (
-            int faceId,
-            AiFaceNotPresentRequest body,
-            AiFaceNotPresentService notPresentService,
-            ICurrentPrincipalAccessor principalAccessor,
-            CancellationToken ct) =>
-        {
-            if (RequirePermission(principalAccessor, Cove.Core.Auth.Permissions.FacesWrite) is { } denied)
-                return denied;
-
-            if (body is null || string.IsNullOrWhiteSpace(body.HostType) || body.HostId <= 0)
-                return Results.BadRequest(new { error = "hostType and a positive hostId are required." });
-
-            var result = await notPresentService.MarkNotPresentAsync(faceId, body.HostType, body.HostId, ct);
-            if (!result.FaceFound)
-                return Results.NotFound(new { error = "Face was not found." });
-            if (!result.HostHadFace)
-                return Results.BadRequest(new { error = "That face is not present on the specified host." });
-
-            return Results.Ok(result);
-        });
+        // Face occurrence editing (this face's tracks on a host, separating one out, marking it not
+        // present) is NOT exposed here. Those are host concerns with a host UI, so they live on
+        // Cove's own /api/faces/{id}/... routes and reach this extension through IFaceOccurrenceEditor
+        // (see ExtensionFaceOccurrenceEditor). Routing them through an ai-faces-specific path would
+        // force Cove's UI to hardcode this extension's id and lock out any alternative provider.
     }
 
     // Extension-owned identity graph schema. Maps the persistence entities into the host CoveContext

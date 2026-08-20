@@ -40,6 +40,7 @@ internal sealed class AiFacePreparationService
     private readonly AiAssetFaceClusterer _assetClusterer;
     private readonly AiFaceIdentityReconciler _identityReconciler;
     private readonly AiFaceReferencePackStore? _referencePackStore;
+    private readonly AiFaceIdentityExclusionStore? _exclusionStore;
 
     public AiFacePreparationService(IFaceIdentityStore store)
         : this(store, new AiAssetFaceClusterer(), new AiFaceIdentityReconciler(), null)
@@ -50,12 +51,14 @@ internal sealed class AiFacePreparationService
         IFaceIdentityStore store,
         AiAssetFaceClusterer assetClusterer,
         AiFaceIdentityReconciler? identityReconciler = null,
-        AiFaceReferencePackStore? referencePackStore = null)
+        AiFaceReferencePackStore? referencePackStore = null,
+        AiFaceIdentityExclusionStore? exclusionStore = null)
     {
         _store = store;
         _assetClusterer = assetClusterer;
         _identityReconciler = identityReconciler ?? new AiFaceIdentityReconciler();
         _referencePackStore = referencePackStore;
+        _exclusionStore = exclusionStore;
     }
 
     public async Task<AiPreparedArtifactBatch> PrepareAsync(AiDispatchRequest request, CancellationToken ct = default)
@@ -96,12 +99,20 @@ internal sealed class AiFacePreparationService
         // reconcile/match logic below operates unchanged on this bounded working snapshot; the
         // transaction persists only the resulting deltas.
         var (candidateVectors, candidateReferenceIds) = CollectCandidateKeys(tracks, referencePack, settings);
+        var userExclusions = _exclusionStore is null
+            ? AiFaceIdentityExclusions.Empty
+            : await _exclusionStore.LoadAsync(ct);
         await using var transaction = await _store.BeginIncrementalAsync(candidateVectors, candidateReferenceIds, CandidateK, ct);
         var snapshot = transaction.Snapshot;
         // Per-asset: skip whole-snapshot reference re-matching (the dominant cost with a large pack). The
         // assignment loop below reference-matches this image's own faces; loaded candidates are already
         // settled. Pack-import backfill still does the full re-match.
-        var initialReconciliation = _identityReconciler.Reconcile(snapshot, referencePack, settings, applyReferenceMatches: false);
+        var initialReconciliation = _identityReconciler.Reconcile(
+            snapshot,
+            referencePack,
+            settings,
+            applyReferenceMatches: false,
+            new AiFaceReconciliationContext(userExclusions, request.Context.AssetId));
 
         var emittedFaces = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var unresolvedTracks = 0;
@@ -111,10 +122,32 @@ internal sealed class AiFacePreparationService
         var promotedIdentityCount = 0;
         var seededMatchCount = 0;
         var conflictingReferenceCount = 0;
+        var concurrencyBlockedMatches = 0;
         var preparedTracks = new List<PreparedFaceAssignment>();
+
+        // Which frames of this asset each identity has already been claimed in, so a cluster that shares
+        // frames with an identity's existing claim (i.e. is demonstrably a different person) can never be
+        // matched onto it. Persisted user splits ride along in the same veto.
+        var coOccurrence = AiAssetFaceCoOccurrence.Build(tracks);
+        var footprintByFaceKey = new Dictionary<string, FaceTrackFootprint>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var track in tracks.OrderByDescending(static track => track.TrackQuality))
         {
+            var trackFootprint = AiAssetFaceCoOccurrence.FootprintOf(track);
+            var concurrentFaceKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var overlappingFaceKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (claimedFaceKey, claimedFrames) in footprintByFaceKey)
+            {
+                if (coOccurrence.AreConcurrent(claimedFrames, trackFootprint))
+                {
+                    concurrentFaceKeys.Add(claimedFaceKey);
+                }
+                else if (AiAssetFaceCoOccurrence.Overlap(claimedFrames, trackFootprint))
+                {
+                    overlappingFaceKeys.Add(claimedFaceKey);
+                }
+            }
+
             var representativeEmbeddings = SelectRepresentativeEmbeddings(track, settings);
             var hardPassEmbeddings = representativeEmbeddings.Where(static embedding => embedding.PassesHardFloor).ToArray();
             var identityPassEmbeddings = representativeEmbeddings.Where(static embedding => embedding.PassesIdentityFloor).ToArray();
@@ -136,8 +169,28 @@ internal sealed class AiFacePreparationService
 
             var referenceApplied = false;
             var wasCreated = false;
-            var identity = TryFindReferenceIdentity(snapshot, referenceMatch)
-                ?? TryMatchIdentity(identityEmbeddings, snapshot.Identities, settings, request.Context.AssetId);
+
+            // A reference-pack hit that resolves onto an identity already claimed in these very frames
+            // would put two people on one performer. The pack match is the weaker of the two signals —
+            // co-occurrence is geometric fact — so it is dropped for this cluster rather than applied.
+            var referenceIdentity = TryFindReferenceIdentity(snapshot, referenceMatch);
+            if (referenceIdentity is not null && concurrentFaceKeys.Contains(referenceIdentity.FaceKey))
+            {
+                referenceIdentity = null;
+                referenceMatch = null;
+                concurrencyBlockedMatches++;
+            }
+
+            var identity = referenceIdentity
+                ?? TryMatchIdentity(
+                    identityEmbeddings,
+                    snapshot.Identities,
+                    settings,
+                    request.Context.AssetId,
+                    concurrentFaceKeys,
+                    overlappingFaceKeys,
+                    ResolveKnownExclusions(coOccurrence, footprintByFaceKey, userExclusions),
+                    ref concurrencyBlockedMatches);
 
             if (identity is not null && HasConflictingReference(identity, referenceMatch))
             {
@@ -171,9 +224,25 @@ internal sealed class AiFacePreparationService
             }
 
             preparedTracks.Add(new PreparedFaceAssignment(track, identity, identityEmbeddings, wasCreated));
+            if (!footprintByFaceKey.TryGetValue(identity.FaceKey, out var claimedFootprint))
+            {
+                claimedFootprint = new FaceTrackFootprint([]);
+                footprintByFaceKey[identity.FaceKey] = claimedFootprint;
+            }
+
+            claimedFootprint.Add(trackFootprint);
         }
 
-        var finalReconciliation = _identityReconciler.Reconcile(snapshot, referencePack, settings, applyReferenceMatches: false);
+        // Two identities holding detections from the same frames of this asset are two people, whatever
+        // their embeddings say. Hand that to reconciliation so it cannot merge them, and so the relaxed
+        // same-asset floors — which exist for one performer fragmented across clusters — cannot fire on
+        // a pair that is provably not that.
+        var assetExclusions = AiFaceIdentityExclusions.FromPairs(BuildConcurrentIdentityPairs(coOccurrence, footprintByFaceKey));
+        var reconciliationContext = new AiFaceReconciliationContext(
+            userExclusions.IsEmpty ? assetExclusions : assetExclusions.With(userExclusions.Pairs),
+            request.Context.AssetId);
+        var finalReconciliation = _identityReconciler.Reconcile(
+            snapshot, referencePack, settings, applyReferenceMatches: false, reconciliationContext);
 
         var briefPresenceFaceKeys = ResolveBriefPresenceFaceKeys(request, preparedTracks, snapshot, finalReconciliation, settings);
         var briefPresenceSuppressions = 0;
@@ -212,6 +281,20 @@ internal sealed class AiFacePreparationService
         }
 
         await transaction.CommitAsync(ct);
+
+        // Keep user split decisions pointing at surviving identities after reconciliation folded any of
+        // them away, otherwise the correction silently stops applying.
+        if (_exclusionStore is not null && !userExclusions.IsEmpty)
+        {
+            var mergedFaceKeyMap = CombineMergedFaceKeyMaps(
+                initialReconciliation.MergedFaceKeyMap, finalReconciliation.MergedFaceKeyMap);
+            await _exclusionStore.RemapAsync(mergedFaceKeyMap, ct);
+        }
+
+        if (concurrencyBlockedMatches > 0)
+        {
+            batch.Notes.Add($"Kept {concurrencyBlockedMatches} face cluster(s) off an identity already detected in the same frames.");
+        }
 
         if (newIdentityCount > 0)
         {
@@ -255,7 +338,8 @@ internal sealed class AiFacePreparationService
             conflictingReferenceCount,
             unresolvedTracks,
             lowQualityCreationSkips,
-            provisionalClusters);
+            provisionalClusters,
+            concurrencyBlockedMatches);
 
         return new AiFacePreparationOutcome(
             batch,
@@ -608,7 +692,15 @@ internal sealed class AiFacePreparationService
         return selected;
     }
 
-    private static StoredFaceIdentity? TryMatchIdentity(IReadOnlyList<RepresentativeFaceEmbedding> anchors, IReadOnlyList<StoredFaceIdentity> identities, AiFacesSettings settings, string? assetId)
+    private static StoredFaceIdentity? TryMatchIdentity(
+        IReadOnlyList<RepresentativeFaceEmbedding> anchors,
+        IReadOnlyList<StoredFaceIdentity> identities,
+        AiFacesSettings settings,
+        string? assetId,
+        IReadOnlySet<string> concurrentFaceKeys,
+        IReadOnlySet<string> overlappingFaceKeys,
+        AiFaceIdentityExclusions exclusions,
+        ref int concurrencyBlockedMatches)
     {
         var ranked = identities
             .Select(identity => new
@@ -620,6 +712,19 @@ internal sealed class AiFacePreparationService
             .OrderByDescending(static candidate => candidate.Score)
             .ToArray();
 
+        // Identities already holding detections from the same frames as this cluster are, by
+        // construction, other people in the shot. Drop them before ranking rather than out-scoring them:
+        // no similarity is high enough to make two faces in one frame the same person.
+        if (concurrentFaceKeys.Count > 0)
+        {
+            var admissible = ranked.Where(candidate => !concurrentFaceKeys.Contains(candidate.Identity.FaceKey)).ToArray();
+            if (admissible.Length != ranked.Length)
+            {
+                concurrencyBlockedMatches++;
+                ranked = admissible;
+            }
+        }
+
         if (ranked.Length == 0)
         {
             return null;
@@ -627,7 +732,10 @@ internal sealed class AiFacePreparationService
 
         var best = ranked[0];
         var secondBest = ranked.Length > 1 ? ranked[1].Score : 0.0;
-        var matchThreshold = IsObservedInAsset(best.Identity, assetId)
+        // The same-asset relaxation is there to re-attach a performer this asset has already contributed
+        // — a re-run, or a later fragment of a track that dropped out. An identity whose frames interleave
+        // with this cluster's without ever sharing one is not that shape, so it is held to the full floor.
+        var matchThreshold = IsObservedInAsset(best.Identity, assetId) && !overlappingFaceKeys.Contains(best.Identity.FaceKey)
             ? Math.Max(0.0, settings.IdentityMatchThreshold - SameAssetIdentityMatchRelaxation)
             : settings.IdentityMatchThreshold;
         if (best.Score < matchThreshold)
@@ -644,7 +752,7 @@ internal sealed class AiFacePreparationService
             var rivalsAreDuplicatesOfBest = ranked
                 .Skip(1)
                 .TakeWhile(candidate => (best.Score - candidate.Score) < settings.IdentityAmbiguityMargin)
-                .All(candidate => AreLikelyDuplicateIdentities(best.Identity, candidate.Identity, settings));
+                .All(candidate => AreLikelyDuplicateIdentities(best.Identity, candidate.Identity, settings, exclusions));
             if (!rivalsAreDuplicatesOfBest)
             {
                 return null;
@@ -654,13 +762,61 @@ internal sealed class AiFacePreparationService
         return best.Identity;
     }
 
-    private static bool AreLikelyDuplicateIdentities(StoredFaceIdentity left, StoredFaceIdentity right, AiFacesSettings settings)
+    // Union of what this asset's own frames prove and what the user has separated by hand, evaluated
+    // against the identities claimed so far in this run.
+    private static AiFaceIdentityExclusions ResolveKnownExclusions(
+        AiAssetFaceCoOccurrence coOccurrence,
+        Dictionary<string, FaceTrackFootprint> footprintByFaceKey,
+        AiFaceIdentityExclusions userExclusions)
+    {
+        if (footprintByFaceKey.Count < 2)
+        {
+            return userExclusions;
+        }
+
+        var assetPairs = BuildConcurrentIdentityPairs(coOccurrence, footprintByFaceKey);
+        return userExclusions.IsEmpty
+            ? AiFaceIdentityExclusions.FromPairs(assetPairs)
+            : userExclusions.With(assetPairs);
+    }
+
+    private static bool AreLikelyDuplicateIdentities(
+        StoredFaceIdentity left,
+        StoredFaceIdentity right,
+        AiFacesSettings settings,
+        AiFaceIdentityExclusions exclusions)
     {
         var conflictingReferences = !string.IsNullOrWhiteSpace(left.ReferenceExternalId)
             && !string.IsNullOrWhiteSpace(right.ReferenceExternalId)
             && !string.Equals(left.ReferenceExternalId, right.ReferenceExternalId, StringComparison.OrdinalIgnoreCase);
         return !conflictingReferences
+            && !exclusions.Excludes(left.FaceKey, right.FaceKey)
             && AiFaceIdentityReconciler.ScoreIdentityPair(left, right) >= settings.ConsolidationSimilarityThreshold;
+    }
+
+    // Identity pairs whose claimed frames within this asset overlap enough to be two people. Quadratic in
+    // the number of identities the asset touched (a handful), not in detections.
+    private static IEnumerable<AiFaceIdentityExclusionPair> BuildConcurrentIdentityPairs(
+        AiAssetFaceCoOccurrence coOccurrence,
+        Dictionary<string, FaceTrackFootprint> footprintByFaceKey)
+    {
+        var entries = footprintByFaceKey.ToArray();
+        for (var left = 0; left < entries.Length; left++)
+        {
+            for (var right = left + 1; right < entries.Length; right++)
+            {
+                if (!coOccurrence.AreConcurrent(entries[left].Value, entries[right].Value))
+                {
+                    continue;
+                }
+
+                var pair = AiFaceIdentityExclusionPair.TryCreate(entries[left].Key, entries[right].Key);
+                if (pair.HasValue)
+                {
+                    yield return pair.Value;
+                }
+            }
+        }
     }
 
     private static bool IsObservedInAsset(StoredFaceIdentity identity, string? assetId)
@@ -1596,11 +1752,12 @@ internal sealed class AiFacePreparationService
         int conflictingReferenceCount,
         int unresolvedTracks,
         int lowQualityCreationSkips,
-        int provisionalClusters)
+        int provisionalClusters,
+        int concurrencyBlockedMatches)
     {
         batch.Notes.Add(string.Create(
             CultureInfo.InvariantCulture,
-            $"AI.Faces telemetry: rawTracks={clusterDiagnostics.InputTrackCount}; assetClusters={clusterDiagnostics.ClusterCount}; clusterMerges={clusterDiagnostics.MergedTrackCount}; clusterRejectedConcurrency={clusterDiagnostics.RejectedByConcurrencyCount}; clusterRejectedThreshold={clusterDiagnostics.RejectedByThresholdCount}; clusterRejectedAmbiguous={clusterDiagnostics.RejectedByAmbiguityCount}; createdIdentities={newIdentityCount}; promotedThisRun={promotedIdentityCount}; provisionalClusters={provisionalClusters}; seededMatches={seededMatchCount}; conflictingReferences={conflictingReferenceCount}; unresolvedTracks={unresolvedTracks}; lowQualityCreationSkips={lowQualityCreationSkips}; faces={batch.Faces.Count}; detections={batch.Detections.Count}; reconciliationMerges={initialReconciliation.MergedIdentityCount + finalReconciliation.MergedIdentityCount}; reconciliationReferencePromotions={initialReconciliation.ReferencePromotedIdentityCount + finalReconciliation.ReferencePromotedIdentityCount}; reconciliationEvidencePromotions={initialReconciliation.EvidencePromotedIdentityCount + finalReconciliation.EvidencePromotedIdentityCount}"));
+            $"AI.Faces telemetry: rawTracks={clusterDiagnostics.InputTrackCount}; assetClusters={clusterDiagnostics.ClusterCount}; clusterMerges={clusterDiagnostics.MergedTrackCount}; clusterRejectedConcurrency={clusterDiagnostics.RejectedByConcurrencyCount}; clusterRejectedThreshold={clusterDiagnostics.RejectedByThresholdCount}; clusterRejectedAmbiguous={clusterDiagnostics.RejectedByAmbiguityCount}; identityConcurrencyBlocks={concurrencyBlockedMatches}; createdIdentities={newIdentityCount}; promotedThisRun={promotedIdentityCount}; provisionalClusters={provisionalClusters}; seededMatches={seededMatchCount}; conflictingReferences={conflictingReferenceCount}; unresolvedTracks={unresolvedTracks}; lowQualityCreationSkips={lowQualityCreationSkips}; faces={batch.Faces.Count}; detections={batch.Detections.Count}; reconciliationMerges={initialReconciliation.MergedIdentityCount + finalReconciliation.MergedIdentityCount}; reconciliationReferencePromotions={initialReconciliation.ReferencePromotedIdentityCount + finalReconciliation.ReferencePromotedIdentityCount}; reconciliationEvidencePromotions={initialReconciliation.EvidencePromotedIdentityCount + finalReconciliation.EvidencePromotedIdentityCount}"));
         batch.Notes.Add(string.Create(
             CultureInfo.InvariantCulture,
                 $"AI.Faces thresholds: identity={settings.IdentityMatchThreshold:R}/{settings.IdentityAmbiguityMargin:R}; assetCluster={settings.AssetClusterSimilarityThreshold:R}/{settings.AssetClusterAmbiguityMargin:R}; reference={settings.ReferenceMatchThreshold:R}/{settings.ReferenceAmbiguityMargin:R}; consolidation={settings.ConsolidationSimilarityThreshold:R}/{settings.ConsolidationAmbiguityMargin:R}; sameAssetConsolidation={settings.ConsolidationSameAssetSimilarityThreshold:R}; videoPromotionSamples={settings.PromotionMinimumVideoSamples}; videoPromotionEvidenceSeconds={settings.PromotionMinimumVideoEvidenceSeconds:R}; sparseVideoPromotionSamples={settings.PromotionMinimumSparseVideoSamples}; sparseVideoPromotionFrameInterval={settings.SparseVideoPromotionFrameIntervalSeconds:R}; sparseVideoPromotionCoverageRatio={settings.PromotionMinimumSparseVideoSampleCoverageRatio:R}; detectionKeyframeIoU={settings.DetectionKeyframeIoUThreshold:R}; detectionKeyframeMaxGap={settings.DetectionKeyframeMaxGapSeconds:R}; maxDetectionKeyframes={settings.MaxDetectionKeyframesPerTrack}"));

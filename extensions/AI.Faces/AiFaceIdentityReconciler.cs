@@ -12,11 +12,17 @@ internal sealed class AiFaceIdentityReconciler
     // loaded candidates were already reference-matched when created, and this image's own faces are
     // reference-matched in the assignment loop), so the caller disables it there. Bulk re-matching
     // (e.g. on pack import) still passes true via the backfill path.
-    public AiFaceIdentityReconciliationReport Reconcile(FaceIdentitySnapshot snapshot, SaieReferencePack? referencePack, AiFacesSettings settings, bool applyReferenceMatches = true)
+    public AiFaceIdentityReconciliationReport Reconcile(
+        FaceIdentitySnapshot snapshot,
+        SaieReferencePack? referencePack,
+        AiFacesSettings settings,
+        bool applyReferenceMatches = true,
+        AiFaceReconciliationContext? context = null)
     {
+        var resolvedContext = context ?? AiFaceReconciliationContext.Unscoped;
         var referencePromotions = applyReferenceMatches ? ApplyReferenceMatches(snapshot, referencePack, settings) : 0;
         var mergedFaceKeyMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var merges = MergeSimilarIdentities(snapshot, settings, mergedFaceKeyMap);
+        var merges = MergeSimilarIdentities(snapshot, settings, resolvedContext, mergedFaceKeyMap);
         var evidencePromotions = PromoteEvidenceBackedIdentities(snapshot);
 
         return new AiFaceIdentityReconciliationReport(
@@ -67,7 +73,11 @@ internal sealed class AiFaceIdentityReconciler
         return promoted;
     }
 
-    private static int MergeSimilarIdentities(FaceIdentitySnapshot snapshot, AiFacesSettings settings, Dictionary<string, string> mergedFaceKeyMap)
+    private static int MergeSimilarIdentities(
+        FaceIdentitySnapshot snapshot,
+        AiFacesSettings settings,
+        AiFaceReconciliationContext context,
+        Dictionary<string, string> mergedFaceKeyMap)
     {
         var mergeCount = 0;
         var merged = true;
@@ -82,12 +92,12 @@ internal sealed class AiFaceIdentityReconciler
                 }
 
                 var ranked = snapshot.Identities
-                    .Where(candidate => !ReferenceEquals(candidate, source) && CanConsiderMerge(source, candidate))
+                    .Where(candidate => !ReferenceEquals(candidate, source) && CanConsiderMerge(source, candidate, context))
                     .Select(candidate => new
                     {
                         Identity = candidate,
                         Score = ScoreIdentityPair(source, candidate),
-                        Threshold = ResolveMergeThreshold(source, candidate, settings),
+                        Threshold = ResolveMergeThreshold(source, candidate, settings, context),
                     })
                     .Where(static candidate => candidate.Score > 0.0)
                     .OrderByDescending(static candidate => candidate.Score)
@@ -114,8 +124,8 @@ internal sealed class AiFaceIdentityReconciler
                     var rivalsAreDuplicatesOfBest = ranked
                         .Skip(1)
                         .TakeWhile(candidate => (best.Score - candidate.Score) < settings.ConsolidationAmbiguityMargin)
-                        .All(candidate => !HasConflictingReference(best.Identity, candidate.Identity)
-                            && ScoreIdentityPair(best.Identity, candidate.Identity) >= ResolveMergeThreshold(best.Identity, candidate.Identity, settings));
+                        .All(candidate => CanConsiderMerge(best.Identity, candidate.Identity, context)
+                            && ScoreIdentityPair(best.Identity, candidate.Identity) >= ResolveMergeThreshold(best.Identity, candidate.Identity, settings, context));
                     if (!rivalsAreDuplicatesOfBest)
                     {
                         continue;
@@ -173,11 +183,13 @@ internal sealed class AiFaceIdentityReconciler
         return promoted;
     }
 
-    // Conflicting references are the only hard veto. Promoted+promoted pairs without a shared asset
-    // are considered too — the same performer split across disjoint videos is exactly that shape —
-    // but ResolveMergeThreshold holds them to the stricter promoted floor.
-    private static bool CanConsiderMerge(StoredFaceIdentity left, StoredFaceIdentity right)
-        => !HasConflictingReference(left, right);
+    // Two hard vetoes: conflicting reference identities, and identities proven to be different people
+    // (detected in the same frame, or split apart by the user). Everything else is left to the
+    // similarity floors — promoted+promoted pairs without a shared asset are considered too, since the
+    // same performer split across disjoint videos is exactly that shape, but ResolveMergeThreshold holds
+    // them to the stricter promoted floor.
+    private static bool CanConsiderMerge(StoredFaceIdentity left, StoredFaceIdentity right, AiFaceReconciliationContext context)
+        => !HasConflictingReference(left, right) && !context.Excludes(left, right);
 
     private static StoredFaceIdentity ChooseMergeTarget(StoredFaceIdentity left, StoredFaceIdentity right)
     {
@@ -281,7 +293,11 @@ internal sealed class AiFaceIdentityReconciler
         => !string.IsNullOrWhiteSpace(left.ReferenceExternalId)
            && string.Equals(left.ReferenceExternalId, right.ReferenceExternalId, StringComparison.OrdinalIgnoreCase);
 
-    private static double ResolveMergeThreshold(StoredFaceIdentity left, StoredFaceIdentity right, AiFacesSettings settings)
+    private static double ResolveMergeThreshold(
+        StoredFaceIdentity left,
+        StoredFaceIdentity right,
+        AiFacesSettings settings,
+        AiFaceReconciliationContext context)
     {
         var sharedAsset = HaveSharedAsset(left, right);
         var threshold = sharedAsset
@@ -295,6 +311,16 @@ internal sealed class AiFaceIdentityReconciler
                 return Math.Max(threshold, settings.ConsolidationPromotedSimilarityThreshold);
             }
 
+            return threshold;
+        }
+
+        // The relaxed same-asset floors below exist to reunite one performer who was fragmented into
+        // several clusters of the video being analysed. Two co-performers in that same video match the
+        // same description, so the relaxation only applies while that video is the one being processed —
+        // where asset-local co-occurrence is available to veto the co-performer case outright. On every
+        // later run the pair falls back to the strict same-asset floor.
+        if (!context.AllowsSameAssetRelaxation(left, right))
+        {
             return threshold;
         }
 

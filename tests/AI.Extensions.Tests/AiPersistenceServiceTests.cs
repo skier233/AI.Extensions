@@ -891,6 +891,8 @@ public sealed class AiPersistenceServiceTests
 
     private sealed class TestTagProvenanceService(CoveContext db) : ITagProvenanceService
     {
+        public Task RemoveHostSourceApplicationsExceptAsync(AffinityHostType hostType, int hostId, string sourceKey, IReadOnlyCollection<int> keepTagIds, CancellationToken cancellationToken = default) => Task.CompletedTask;
+
         public Task RecordAsync(AffinityHostType hostType, int hostId, int tagId, string sourceKey, string? sourceRunId = null, string? modelKey = null, float? confidence = null, string? contextType = null, int? contextId = null, double? totalDurationSec = null, double? hostDurationSec = null, CancellationToken cancellationToken = default)
         {
             db.TagApplications.Add(new TagApplication

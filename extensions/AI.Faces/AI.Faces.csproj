@@ -18,7 +18,7 @@
        that Pgvector.EntityFrameworkCore would otherwise pull in transitively (which conflicts with the
        host's EF Core 10). -->
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.5">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10">
       <ExcludeAssets>runtime</ExcludeAssets>
       <Private>false</Private>
     </PackageReference>

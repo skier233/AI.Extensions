@@ -46,3 +46,73 @@ internal sealed class ExtensionFaceSuggestionDecisionHandler(IServiceScopeFactor
         return await scope.ServiceProvider.GetRequiredService<AiFaceReferenceSuggestionDecisionHandler>().TryHandleAsync(request, cancellationToken);
     }
 }
+
+/// <summary>
+/// Supplies the host's face occurrence-editing capability from this extension's track-level evidence.
+/// The host owns the routes, the UI and the permission checks (FacesController); this only translates
+/// between its contract and the services that hold the embeddings and identity graph.
+/// </summary>
+internal sealed class ExtensionFaceOccurrenceEditor(
+    AiFaceSplitService splitService,
+    AiFaceNotPresentService notPresentService) : IFaceOccurrenceEditor
+{
+    public async Task<IReadOnlyList<FaceHostTrackDto>> GetHostTracksAsync(
+        int faceId,
+        string hostType,
+        int hostId,
+        CancellationToken cancellationToken = default)
+    {
+        var tracks = await splitService.GetHostTracksAsync(faceId, hostType, hostId, cancellationToken);
+        return tracks
+            .Select(static track => new FaceHostTrackDto(
+                track.GroupKey,
+                track.FirstSeenSeconds,
+                track.LastSeenSeconds,
+                track.SampleCount,
+                track.DetectionCount,
+                track.RepresentativeFrameSeconds,
+                track.TopConfidence is null ? null : (float)track.TopConfidence.Value,
+                track.RepresentativeDetectionId,
+                track.SuggestedGroup))
+            .ToArray();
+    }
+
+    public async Task<FaceOccurrenceSplitResultDto> SplitAsync(
+        int faceId,
+        string hostType,
+        int hostId,
+        IReadOnlyList<string> groupKeys,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await splitService.SplitAsync(faceId, hostType, hostId, groupKeys, cancellationToken);
+        return new FaceOccurrenceSplitResultDto(
+            result.FaceFound,
+            result.HostHadFace,
+            result.GroupKeysMatched,
+            result.WouldEmptyFace,
+            result.MovedAppearanceCount,
+            result.MovedDetectionCount,
+            result.MovedSegmentCount,
+            result.MovedEmbeddingCount,
+            result.TargetFaceId,
+            result.CreatedNewFace,
+            result.MergedIntoExistingFace);
+    }
+
+    public async Task<FaceNotPresentResultDto> MarkNotPresentAsync(
+        int faceId,
+        string hostType,
+        int hostId,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await notPresentService.MarkNotPresentAsync(faceId, hostType, hostId, cancellationToken);
+        return new FaceNotPresentResultDto(
+            result.FaceFound,
+            result.HostHadFace,
+            result.MovedHostCount,
+            result.TargetFaceId,
+            result.CreatedNewFace,
+            result.MergedIntoTarget,
+            result.SourceFaceEmptied);
+    }
+}

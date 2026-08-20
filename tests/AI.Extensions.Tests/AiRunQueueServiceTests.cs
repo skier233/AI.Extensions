@@ -323,6 +323,8 @@ public sealed class AiRunQueueServiceTests
             return Task.FromResult<(IReadOnlyList<Video> Items, int TotalCount)>((items, ids.Count));
         }
 
+        public Task<VideoAggregate> AggregateAsync(VideoFilter? filter, FindFilter? findFilter, CancellationToken ct = default) => throw new NotSupportedException();
+
         public Task<Video?> GetByIdWithRelationsAsync(int id, CancellationToken ct = default) => throw new NotSupportedException();
 
         public Task<IReadOnlyList<VideoPerformer>> GetVideoPerformersAsync(IReadOnlyList<int> videoIds, CancellationToken ct = default) => throw new NotSupportedException();
@@ -343,6 +345,8 @@ public sealed class AiRunQueueServiceTests
     private sealed class ThrowingImageRepository : IImageRepository
     {
         public Task<(IReadOnlyList<Image> Items, int TotalCount)> FindAsync(ImageFilter? filter, FindFilter? findFilter, CancellationToken ct = default) => throw new NotSupportedException();
+
+        public Task<ImageAggregate> AggregateAsync(ImageFilter? filter, FindFilter? findFilter, CancellationToken ct = default) => throw new NotSupportedException();
 
         public Task<Image?> GetByIdWithRelationsAsync(int id, CancellationToken ct = default) => throw new NotSupportedException();
 

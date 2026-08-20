@@ -191,6 +191,76 @@ public sealed class AiFaceIdentityReconcilerTests
         Assert.Equal("face-0001", report.MergedFaceKeyMap["face-0002"]);
     }
 
+    [Fact]
+    public void Reconcile_DoesNotMergeIdentitiesProvenToBeDifferentPeople()
+    {
+        // Same shape as the same-asset fragment merge above, except co-occurrence in the asset's frames
+        // proves these are two performers. The relaxed floor must not reach them.
+        var snapshot = new FaceIdentitySnapshot
+        {
+            NextIdentityOrdinal = 3,
+            Identities =
+            [
+                CreatePromotedIdentity("face-0001", [1f, 0f], "video-5634"),
+                CreatePromotedIdentity("face-0002", [0.999f, 0.001f], "video-5634"),
+            ],
+        };
+
+        var context = new AiFaceReconciliationContext(
+            AiFaceIdentityExclusions.FromPairs([new AiFaceIdentityExclusionPair("face-0001", "face-0002")]),
+            "video-5634");
+        var report = new AiFaceIdentityReconciler().Reconcile(
+            snapshot, referencePack: null, new AiFacesSettings(), applyReferenceMatches: true, context);
+
+        Assert.Equal(2, snapshot.Identities.Count);
+        Assert.Equal(0, report.MergedIdentityCount);
+    }
+
+    [Fact]
+    public void Reconcile_DoesNotApplyRelaxedSameAssetFloorWhenProcessingADifferentAsset()
+    {
+        // The relaxed same-asset floors exist to reunite fragments of the asset being processed. Once
+        // that run is over the evidence is gone, so a later asset's run must hold the pair to the strict
+        // same-asset floor rather than merging two co-performers it knows nothing about.
+        var snapshot = new FaceIdentitySnapshot
+        {
+            NextIdentityOrdinal = 3,
+            Identities =
+            [
+                CreatePromotedIdentity("face-0001", [1f, 0f], "video-5634"),
+                CreatePromotedIdentity("face-0002", [0.55f, 0.8351647f], "video-5634"),
+            ],
+        };
+
+        var context = new AiFaceReconciliationContext(AiFaceIdentityExclusions.Empty, "video-9001");
+        var report = new AiFaceIdentityReconciler().Reconcile(
+            snapshot, referencePack: null, new AiFacesSettings(), applyReferenceMatches: true, context);
+
+        Assert.Equal(2, snapshot.Identities.Count);
+        Assert.Equal(0, report.MergedIdentityCount);
+    }
+
+    [Fact]
+    public void Reconcile_StillRelaxesSameAssetFloorWhileProcessingThatAsset()
+    {
+        var snapshot = new FaceIdentitySnapshot
+        {
+            NextIdentityOrdinal = 3,
+            Identities =
+            [
+                CreatePromotedIdentity("face-0001", [1f, 0f], "video-5634"),
+                CreatePromotedIdentity("face-0002", [0.55f, 0.8351647f], "video-5634"),
+            ],
+        };
+
+        var context = new AiFaceReconciliationContext(AiFaceIdentityExclusions.Empty, "video-5634");
+        var report = new AiFaceIdentityReconciler().Reconcile(
+            snapshot, referencePack: null, new AiFacesSettings(), applyReferenceMatches: true, context);
+
+        Assert.Single(snapshot.Identities);
+        Assert.Equal(1, report.MergedIdentityCount);
+    }
+
     private static StoredFaceIdentity CreatePromotedIdentity(
         string faceKey,
         IReadOnlyList<float> vector,

@@ -536,6 +536,105 @@ public sealed class AiFacesPreparationServiceTests
     }
 
     [Fact]
+    public async Task Prepare_KeepsSimilarLookingCoPerformersSeparateWhenTheyShareFrames()
+    {
+        // Two performers on screen together whose embeddings sit in the range that the same-asset
+        // relaxations were built for (0.55 cosine — a plausible score for two people of similar
+        // appearance). Being detected in the same frames is proof they are two people, so neither the
+        // match loop nor reconciliation may fold them together, however close the vectors are.
+        var store = new InMemoryFaceIdentityStore();
+        var service = CreateService(store, ShortVideoPromotionSettings());
+        IReadOnlyList<AiCapabilityClaim> claims =
+        [
+            new AiCapabilityClaim("faces.video.detection", "Video Face Detection", AiMediaKinds.Video, "detection", "frame", "frames"),
+            new AiCapabilityClaim("faces.video.embedding", "Video Face Identity Embeddings", AiMediaKinds.Video, "embedding", "region", "regions", FromDetection: "face_detector_torchexport"),
+        ];
+
+        var result = new AiAnalyzeResult
+        {
+            MediaKind = AiMediaKinds.Video,
+            AssetId = "co-performers",
+            FrameIntervalSeconds = 1,
+            Frames =
+            [
+                CreateVideoFrame(
+                    1,
+                    1,
+                    [
+                        (new AiBoundingBox(0.10, 0.10, 0.30, 0.32), (IReadOnlyList<float>)new float[] { 1f, 0f }),
+                        (new AiBoundingBox(0.55, 0.10, 0.75, 0.32), (IReadOnlyList<float>)new float[] { 0.55f, 0.8351647f }),
+                    ]),
+                CreateVideoFrame(
+                    2,
+                    2,
+                    [
+                        (new AiBoundingBox(0.12, 0.10, 0.32, 0.32), (IReadOnlyList<float>)new float[] { 1f, 0f }),
+                        (new AiBoundingBox(0.57, 0.10, 0.77, 0.32), (IReadOnlyList<float>)new float[] { 0.55f, 0.8351647f }),
+                    ]),
+            ],
+        };
+
+        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, "co-performers"));
+        var snapshot = await store.LoadAsync();
+
+        Assert.Equal(2, snapshot.Identities.Count);
+        Assert.Equal(2, batch.Faces.Count);
+        Assert.Equal(2, batch.FaceAppearances.Count);
+        Assert.Contains(batch.Notes, note => note.Contains("identityConcurrencyBlocks=1", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Prepare_KeepsTwoFacesInOneImageSeparateWhenTheyLookAlike()
+    {
+        // An image is a single moment, so two detections in it are always two people — one shared frame
+        // is all the evidence there will ever be, and it is enough.
+        var store = new InMemoryFaceIdentityStore();
+        var service = CreateService(store);
+        IReadOnlyList<AiCapabilityClaim> claims =
+        [
+            new AiCapabilityClaim("faces.image.detection", "Image Face Detection", AiMediaKinds.Image, "detection", "asset", "regions"),
+            new AiCapabilityClaim("faces.image.embedding", "Image Face Identity Embeddings", AiMediaKinds.Image, "embedding", "region", "regions", FromDetection: "face_detector_torchexport"),
+        ];
+
+        var result = new AiAnalyzeResult
+        {
+            MediaKind = AiMediaKinds.Image,
+            AssetId = "two-similar-faces",
+            AssetAnalysis = new AiAnalysisNode
+            {
+                Detections =
+                [
+                    new AiDetectionObservation("face_detector_torchexport", 0, "face", 0.96, new AiBoundingBox(0.05, 0.10, 0.35, 0.45)),
+                    new AiDetectionObservation("face_detector_torchexport", 1, "face", 0.95, new AiBoundingBox(0.55, 0.10, 0.85, 0.45)),
+                ],
+                RegionBranches =
+                [
+                    new AiRegionBranch(
+                        "regions__face_detector_torchexport",
+                        0,
+                        new AiAnalysisNode
+                        {
+                            Embeddings = [new AiEmbeddingObservation("face_embedding_torchexport", "region", [1f, 0f], 24.0, 0)],
+                        }),
+                    new AiRegionBranch(
+                        "regions__face_detector_torchexport",
+                        1,
+                        new AiAnalysisNode
+                        {
+                            Embeddings = [new AiEmbeddingObservation("face_embedding_torchexport", "region", [0.55f, 0.8351647f], 24.0, 1)],
+                        }),
+                ],
+            },
+        };
+
+        var batch = await service.PrepareAsync(AiTestData.CreateRequest(AiMediaKinds.Image, claims, result, "two-similar-faces"));
+        var snapshot = await store.LoadAsync();
+
+        Assert.Equal(2, snapshot.Identities.Count);
+        Assert.Equal(2, batch.Faces.Count);
+    }
+
+    [Fact]
     public async Task Prepare_DoesNotMarkBrieflyPresentFaceAsPresentInVideo()
     {
         // A long video with a main face (present for the majority) and a second, different face that

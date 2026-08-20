@@ -7,8 +7,6 @@ using Pgvector;
 
 namespace AI.Faces;
 
-internal sealed record AiFaceNotPresentRequest(string HostType, int HostId);
-
 internal sealed record AiFaceNotPresentResult(
     bool FaceFound,
     bool HostHadFace,
