@@ -309,8 +309,13 @@ public sealed class AiRunQueueServiceTests
     {
         public FindFilter? LastFindFilter { get; private set; }
 
-        public Task<(IReadOnlyList<Video> Items, int TotalCount)> FindAsync(VideoFilter? filter, FindFilter? findFilter, CancellationToken ct = default)
+        public Task<(IReadOnlyList<Video> Items, int TotalCount)> FindAsync(VideoFilter? filter, FindFilter? findFilter, CancellationToken ct = default, FilterExpression<VideoFilter>? expression = null)
         {
+            // This fake only understands flat filters. Fail loudly rather than silently returning
+            // unfiltered results if a test ever starts exercising expression trees.
+            if (expression is not null)
+                throw new NotSupportedException($"{nameof(PagingVideoRepository)} does not evaluate filter expressions.");
+
             LastFindFilter = findFilter;
             var ids = filter?.Ids ?? [];
             var page = findFilter?.Page ?? 1;
@@ -323,7 +328,7 @@ public sealed class AiRunQueueServiceTests
             return Task.FromResult<(IReadOnlyList<Video> Items, int TotalCount)>((items, ids.Count));
         }
 
-        public Task<VideoAggregate> AggregateAsync(VideoFilter? filter, FindFilter? findFilter, CancellationToken ct = default) => throw new NotSupportedException();
+        public Task<VideoAggregate> AggregateAsync(VideoFilter? filter, FindFilter? findFilter, CancellationToken ct = default, FilterExpression<VideoFilter>? expression = null) => throw new NotSupportedException();
 
         public Task<Video?> GetByIdWithRelationsAsync(int id, CancellationToken ct = default) => throw new NotSupportedException();
 
