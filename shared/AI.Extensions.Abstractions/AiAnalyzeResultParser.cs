@@ -54,6 +54,11 @@ public static class AiAnalyzeResultParser
             Frames = content.TryGetProperty("frames", out var frames)
                 ? ParseTemporalSlices(frames, "frame")
                 : [],
+            // Asset-scope models (e.g. temporal segmentation) produce one result
+            // for the whole video rather than per-frame output.
+            AssetAnalysis = content.TryGetProperty("analysis", out var assetAnalysis)
+                ? ParseAnalysisNode(assetAnalysis)
+                : new AiAnalysisNode(),
             Metrics = ParseMetricsWithFallback(payload, content),
         };
     }
