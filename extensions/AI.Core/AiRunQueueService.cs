@@ -84,9 +84,11 @@ public sealed class AiRunTargetResolver(IVideoRepository videoRepository, IImage
                 continue;
             }
 
+            // Prefer the video's primary file; fall back to the longest file if it has none.
             var file = video.Files
                 .Where(static file => !string.IsNullOrWhiteSpace(file.Path))
-                .OrderByDescending(static file => file.Duration)
+                .OrderByDescending(file => file.Id == video.PrimaryFileId)
+                .ThenByDescending(static file => file.Duration)
                 .ThenBy(static file => file.Path, StringComparer.OrdinalIgnoreCase)
                 .FirstOrDefault();
 

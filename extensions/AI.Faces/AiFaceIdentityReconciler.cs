@@ -73,6 +73,11 @@ internal sealed class AiFaceIdentityReconciler
         return promoted;
     }
 
+    // Semantically this is "scan the identities in order, apply the first merge found, start over" until
+    // a full scan finds nothing. Starting over literally re-scored every pair after every merge, which made
+    // a run cost (merges + 1) full O(n^2) passes. A merge only changes the surviving identity, so a source
+    // that was scanned and found nothing to merge stays settled until the merge touches something its
+    // verdict depended on (see SettledSource); only unsettled sources are re-scored on the next scan.
     private static int MergeSimilarIdentities(
         FaceIdentitySnapshot snapshot,
         AiFacesSettings settings,
@@ -80,60 +85,97 @@ internal sealed class AiFaceIdentityReconciler
         Dictionary<string, string> mergedFaceKeyMap)
     {
         var mergeCount = 0;
+        var margin = settings.ConsolidationAmbiguityMargin;
+        var vectors = new FaceAnchorVectorCache();
+        var settled = new Dictionary<StoredFaceIdentity, SettledSource>(ReferenceEqualityComparer.Instance);
+        var scored = new List<(StoredFaceIdentity Identity, double Score)>();
         var merged = true;
         while (merged)
         {
             merged = false;
             foreach (var source in snapshot.Identities.ToArray())
             {
-                if (!snapshot.Identities.Contains(source) || source.Anchors.Count == 0)
+                if (source.Anchors.Count == 0 || settled.ContainsKey(source))
                 {
                     continue;
                 }
 
-                var ranked = snapshot.Identities
-                    .Where(candidate => !ReferenceEquals(candidate, source) && CanConsiderMerge(source, candidate, context))
-                    .Select(candidate => new
+                // Best candidate is the first highest-scoring one in snapshot order; the runner-up is the
+                // highest score among the rest (equal to the best on a tie).
+                var sourceVectors = vectors.Get(source);
+                StoredFaceIdentity? best = null;
+                var bestScore = 0.0;
+                var secondBestScore = 0.0;
+                scored.Clear();
+                foreach (var candidate in snapshot.Identities)
+                {
+                    if (ReferenceEquals(candidate, source) || !CanConsiderMerge(source, candidate, context))
                     {
-                        Identity = candidate,
-                        Score = ScoreIdentityPair(source, candidate),
-                        Threshold = ResolveMergeThreshold(source, candidate, settings, context),
-                    })
-                    .Where(static candidate => candidate.Score > 0.0)
-                    .OrderByDescending(static candidate => candidate.Score)
-                    .ToArray();
-                if (ranked.Length == 0)
-                {
-                    continue;
+                        continue;
+                    }
+
+                    var score = ScoreAnchors(sourceVectors, vectors.Get(candidate));
+                    if (score <= 0.0)
+                    {
+                        continue;
+                    }
+
+                    scored.Add((candidate, score));
+                    if (best is null || score > bestScore)
+                    {
+                        secondBestScore = best is null ? 0.0 : bestScore;
+                        best = candidate;
+                        bestScore = score;
+                    }
+                    else if (score > secondBestScore)
+                    {
+                        secondBestScore = score;
+                    }
                 }
 
-                var best = ranked[0];
-                var secondBestScore = ranked.Length > 1 ? ranked[1].Score : 0.0;
-                if (best.Score < best.Threshold)
-                {
-                    continue;
-                }
-
-                if ((best.Score - secondBestScore) < settings.ConsolidationAmbiguityMargin)
+                var mergeable = best is not null
+                    && bestScore >= ResolveMergeThreshold(source, best, settings, context);
+                if (mergeable && (bestScore - secondBestScore) < margin)
                 {
                     // With three or more identities of the same person, every candidate scores within
                     // the margin of every other — a plain margin check deadlocks all merges exactly
                     // when duplicates are most numerous. Ambiguity only blocks when an in-margin rival
                     // is plausibly a *different* person from the best candidate, i.e. not itself
                     // mergeable with it.
-                    var rivalsAreDuplicatesOfBest = ranked
-                        .Skip(1)
-                        .TakeWhile(candidate => (best.Score - candidate.Score) < settings.ConsolidationAmbiguityMargin)
-                        .All(candidate => CanConsiderMerge(best.Identity, candidate.Identity, context)
-                            && ScoreIdentityPair(best.Identity, candidate.Identity) >= ResolveMergeThreshold(best.Identity, candidate.Identity, settings, context));
-                    if (!rivalsAreDuplicatesOfBest)
+                    var bestVectors = vectors.Get(best!);
+                    foreach (var rival in scored)
                     {
-                        continue;
+                        if (ReferenceEquals(rival.Identity, best) || (bestScore - rival.Score) >= margin)
+                        {
+                            continue;
+                        }
+
+                        if (!CanConsiderMerge(best!, rival.Identity, context)
+                            || ScoreAnchors(bestVectors, vectors.Get(rival.Identity)) < ResolveMergeThreshold(best!, rival.Identity, settings, context))
+                        {
+                            mergeable = false;
+                            break;
+                        }
                     }
                 }
 
-                var target = ChooseMergeTarget(source, best.Identity);
-                var duplicate = ReferenceEquals(target, source) ? best.Identity : source;
+                if (!mergeable)
+                {
+                    var contenders = new List<StoredFaceIdentity>();
+                    foreach (var candidate in scored)
+                    {
+                        if ((bestScore - candidate.Score) <= margin)
+                        {
+                            contenders.Add(candidate.Identity);
+                        }
+                    }
+
+                    settled[source] = new SettledSource(bestScore, contenders);
+                    continue;
+                }
+
+                var target = ChooseMergeTarget(source, best!);
+                var duplicate = ReferenceEquals(target, source) ? best! : source;
                 MergeInto(target, duplicate);
                 snapshot.Identities.Remove(duplicate);
                 mergedFaceKeyMap[duplicate.FaceKey] = target.FaceKey;
@@ -142,6 +184,27 @@ internal sealed class AiFaceIdentityReconciler
                     if (string.Equals(mergedFaceKeyMap[key], duplicate.FaceKey, StringComparison.OrdinalIgnoreCase))
                     {
                         mergedFaceKeyMap[key] = target.FaceKey;
+                    }
+                }
+
+                // The merge changed the target and removed the duplicate; nothing else moved. Unsettle
+                // exactly the sources whose verdict could read differently now: the pair itself, anyone
+                // whose contenders included either of them, and anyone the changed target now scores
+                // high enough against to become a contender.
+                vectors.Forget(target);
+                vectors.Forget(duplicate);
+                settled.Remove(target);
+                settled.Remove(duplicate);
+                var targetVectors = vectors.Get(target);
+                foreach (var (identity, verdict) in settled.ToArray())
+                {
+                    if (verdict.Contenders.Contains(target)
+                        || verdict.Contenders.Contains(duplicate)
+                        || (CanConsiderMerge(identity, target, context)
+                            && ScoreAnchors(vectors.Get(identity), targetVectors) is > 0.0 and var score
+                            && (verdict.BestScore - score) <= margin))
+                    {
+                        settled.Remove(identity);
                     }
                 }
 
@@ -359,23 +422,51 @@ internal sealed class AiFaceIdentityReconciler
     // Identity-vs-identity similarity, shared with the preparation service's duplicate-aware
     // ambiguity check so "are these two stored identities the same person" means one thing.
     internal static double ScoreIdentityPair(StoredFaceIdentity left, StoredFaceIdentity right)
+        => ScoreAnchors(FaceAnchorVectorCache.Normalize(left), FaceAnchorVectorCache.Normalize(right));
+
+    // For each left anchor, its best cosine against the right anchors; the score is the mean of the two
+    // strongest of those (or the single one). Inputs are unit vectors, so cosine is a plain dot product.
+    private static double ScoreAnchors(float[]?[] left, float[]?[] right)
     {
-        if (left.Anchors.Count == 0 || right.Anchors.Count == 0)
+        if (left.Length == 0 || right.Length == 0)
         {
             return 0.0;
         }
 
-        var scores = new List<double>();
-        foreach (var leftAnchor in left.Anchors)
+        var best = 0.0;
+        var second = 0.0;
+        foreach (var leftVector in left)
         {
-            var bestSimilarity = right.Anchors
-                .Select(rightAnchor => CosineSimilarity(leftAnchor.Vector, rightAnchor.Vector))
-                .DefaultIfEmpty(0.0)
-                .Max();
-            scores.Add(bestSimilarity);
+            var bestSimilarity = 0.0;
+            if (leftVector is not null)
+            {
+                foreach (var rightVector in right)
+                {
+                    if (rightVector is null || rightVector.Length != leftVector.Length)
+                    {
+                        continue;
+                    }
+
+                    var similarity = Math.Clamp((double)SaieReferencePack.Dot(leftVector, rightVector), 0.0, 1.0);
+                    if (similarity > bestSimilarity)
+                    {
+                        bestSimilarity = similarity;
+                    }
+                }
+            }
+
+            if (bestSimilarity > best)
+            {
+                second = best;
+                best = bestSimilarity;
+            }
+            else if (bestSimilarity > second)
+            {
+                second = bestSimilarity;
+            }
         }
 
-        return scores.OrderByDescending(static score => score).Take(Math.Min(2, scores.Count)).Average();
+        return left.Length >= 2 ? (best + second) / 2.0 : best;
     }
 
     private static FaceReferenceMatch? TryMatchReference(StoredFaceIdentity identity, SaieReferencePack referencePack, AiFacesSettings settings)
@@ -428,6 +519,71 @@ internal sealed class AiFaceIdentityReconciler
         int SuggestionId,
         double Score
     );
+
+    // A source that was scanned and found nothing to merge. The verdict read only the source, its best
+    // score, and the contenders (candidates within the ambiguity margin of the best, the best included),
+    // so it stands until one of those changes or a changed identity scores its way into that band.
+    private sealed record SettledSource(double BestScore, List<StoredFaceIdentity> Contenders);
+
+    // Unit-length copies of each identity's anchor vectors, built once per identity instead of
+    // re-deriving both norms on every pair. A null entry is an anchor with no usable vector (empty or
+    // zero-length), which scores 0 against everything. Callers Forget an identity whose anchors changed.
+    private sealed class FaceAnchorVectorCache
+    {
+        private readonly Dictionary<StoredFaceIdentity, float[]?[]> _byIdentity = new(ReferenceEqualityComparer.Instance);
+
+        public float[]?[] Get(StoredFaceIdentity identity)
+        {
+            if (!_byIdentity.TryGetValue(identity, out var vectors))
+            {
+                vectors = Normalize(identity);
+                _byIdentity[identity] = vectors;
+            }
+
+            return vectors;
+        }
+
+        public void Forget(StoredFaceIdentity identity) => _byIdentity.Remove(identity);
+
+        public static float[]?[] Normalize(StoredFaceIdentity identity)
+        {
+            var vectors = new float[]?[identity.Anchors.Count];
+            for (var index = 0; index < vectors.Length; index++)
+            {
+                vectors[index] = Normalize(identity.Anchors[index].Vector);
+            }
+
+            return vectors;
+        }
+
+        private static float[]? Normalize(List<float> vector)
+        {
+            if (vector.Count == 0)
+            {
+                return null;
+            }
+
+            var normSquared = 0.0;
+            foreach (var value in vector)
+            {
+                normSquared += (double)value * value;
+            }
+
+            if (normSquared <= 0.0)
+            {
+                return null;
+            }
+
+            var norm = Math.Sqrt(normSquared);
+            var unit = new float[vector.Count];
+            for (var index = 0; index < unit.Length; index++)
+            {
+                unit[index] = (float)(vector[index] / norm);
+            }
+
+            return unit;
+        }
+    }
 }
 
 internal sealed record AiFaceIdentityReconciliationReport(

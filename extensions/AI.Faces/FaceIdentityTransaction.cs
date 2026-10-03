@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -52,14 +54,25 @@ internal sealed class DbFaceIdentityTransaction(
 
             if (baselineByKey.TryGetValue(stored.FaceKey, out var entity))
             {
+                // Most of the loaded working set is candidates the reconcile only looked at. Writing the
+                // same values back is a no-op for the change tracker, so only identities that actually
+                // changed are stamped and have their anchors rewritten.
                 DbFaceIdentityStore.ApplyFields(entity, stored);
-                entity.UpdatedAt = now;
-                // Replace anchors on the tracked collection: cleared rows are deleted as orphans (the FK
-                // is required + cascade), and the re-added rows are inserted (≤12 per identity).
-                entity.Anchors.Clear();
-                foreach (var anchor in stored.Anchors)
+                var anchorsChanged = !AnchorsMatch(entity.Anchors, stored.Anchors);
+                if (anchorsChanged)
                 {
-                    entity.Anchors.Add(DbFaceIdentityStore.MapAnchor(anchor));
+                    // Replace anchors on the tracked collection: cleared rows are deleted as orphans (the
+                    // FK is required + cascade), and the re-added rows are inserted (≤12 per identity).
+                    entity.Anchors.Clear();
+                    foreach (var anchor in stored.Anchors)
+                    {
+                        entity.Anchors.Add(DbFaceIdentityStore.MapAnchor(anchor));
+                    }
+                }
+
+                if (anchorsChanged || _db.Entry(entity).State == EntityState.Modified)
+                {
+                    entity.UpdatedAt = now;
                 }
             }
             else
@@ -79,6 +92,26 @@ internal sealed class DbFaceIdentityTransaction(
 
         await _db.SaveChangesAsync(ct);
         _committed = true;
+    }
+
+    private static bool AnchorsMatch(List<ExtAiFacesIdentityAnchorEntity> persisted, List<StoredFaceAnchor> stored)
+    {
+        if (persisted.Count != stored.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < persisted.Count; index++)
+        {
+            if (!string.Equals(persisted[index].ModelKey, stored[index].ModelKey, StringComparison.Ordinal)
+                || persisted[index].QualityScore != stored[index].QualityScore
+                || !persisted[index].Vector.ToArray().AsSpan().SequenceEqual(CollectionsMarshal.AsSpan(stored[index].Vector)))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public override async ValueTask DisposeAsync()
