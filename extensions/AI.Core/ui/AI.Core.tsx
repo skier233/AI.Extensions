@@ -1,6 +1,8 @@
 import React from "react";
 import ReactDOMClient from "react-dom/client";
 
+import { defaultCapabilityIds, rememberedCapabilityIds } from "./runDialogSelection.js";
+
 const { useEffect, useRef, useState } = React;
 const { createRoot } = ReactDOMClient;
 const h = React.createElement;
@@ -1834,7 +1836,7 @@ function RunComposer({ capabilities, catalog, settings, busy, message, onQueue, 
   const initialFeatures = collectCapabilityFeatures(capabilities, initialMediaKind, settings?.customPipelines || [], catalog);
   const initialAvailableTaggingCategories = collectTaggingCategories(catalog, initialMediaKind);
   const savedTaggingCategories = hasSavedTaggingCategories ? savedDefaults.taggingCategories.filter((category) => typeof category === "string") : [];
-  const initialFeatureIds = initialFeatures.map((feature) => feature.capabilityId);
+  const initialFeatureIds = defaultCapabilityIds(initialFeatures);
   const matchingSavedTaggingCategories = initialAvailableTaggingCategories.length > 0
     ? savedTaggingCategories.filter((category) => initialAvailableTaggingCategories.includes(category))
     : savedTaggingCategories;
@@ -1846,7 +1848,7 @@ function RunComposer({ capabilities, catalog, settings, busy, message, onQueue, 
     pathsText: "",
     presetId: typeof savedDefaults.presetId === "string" ? savedDefaults.presetId : "",
     capabilityIds: hasSavedCapabilityIds
-      ? savedDefaults.capabilityIds.filter((capabilityId) => typeof capabilityId === "string" && initialFeatureIds.includes(capabilityId))
+      ? rememberedCapabilityIds(savedDefaults.capabilityIds, initialFeatures)
       : initialFeatureIds,
     frameInterval: typeof savedDefaults.frameInterval === "string" ? savedDefaults.frameInterval : initialMediaKind === "video" ? defaultVideoFrameInterval : "",
     taggingCategories: initialTaggingCategories,
@@ -1907,7 +1909,7 @@ function RunComposer({ capabilities, catalog, settings, busy, message, onQueue, 
     setForm((current) => {
       const currentIds = current.capabilityIds.filter((capabilityId) => availableIds.includes(capabilityId));
       const resolvedCapabilityIds = !capabilityDefaultsApplied.current && currentIds.length === 0
-        ? availableIds
+        ? defaultCapabilityIds(features)
         : currentIds;
       if (resolvedCapabilityIds.length === current.capabilityIds.length
         && resolvedCapabilityIds.every((capabilityId, index) => capabilityId === current.capabilityIds[index])) {
@@ -1967,7 +1969,7 @@ function RunComposer({ capabilities, catalog, settings, busy, message, onQueue, 
     patch({
       mediaKind,
       presetId: "",
-      capabilityIds: nextFeatures.map((feature) => feature.capabilityId),
+      capabilityIds: defaultCapabilityIds(nextFeatures),
       frameInterval: mediaKind === "video" ? (form.frameInterval || defaultVideoFrameInterval) : "",
       taggingCategories: nextTaggingCategories,
     });
@@ -1976,7 +1978,7 @@ function RunComposer({ capabilities, catalog, settings, busy, message, onQueue, 
   function selectPreset(presetId) {
     const preset = runPresets.find((item) => item.presetId === presetId);
     if (!preset) {
-      patch({ presetId: "", capabilityIds: features.map((feature) => feature.capabilityId) });
+      patch({ presetId: "", capabilityIds: defaultCapabilityIds(features) });
       return;
     }
 
