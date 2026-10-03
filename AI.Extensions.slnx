@@ -12,5 +12,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AI.Extensions.Tests/AI.Extensions.Tests.csproj" />
+    <Project Path="tests/PrePlanningAbstractions/PrePlanningAbstractions.csproj" />
   </Folder>
 </Solution>
