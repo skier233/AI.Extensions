@@ -4,6 +4,7 @@
     <Project Path="extensions/AI.Core/AI.Core.csproj" />
     <Project Path="extensions/AI.Faces/AI.Faces.csproj" />
     <Project Path="extensions/AI.Full/AI.Full.csproj" />
+    <Project Path="extensions/AI.Shots/AI.Shots.csproj" />
     <Project Path="extensions/AI.Tagging/AI.Tagging.csproj" />
     <Project Path="extensions/AI.Visual/AI.Visual.csproj" />
   </Folder>
@@ -12,6 +13,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AI.Extensions.Tests/AI.Extensions.Tests.csproj" />
+    <Project Path="tests/AI.Shots.Tests/AI.Shots.Tests.csproj" />
     <Project Path="tests/PrePlanningAbstractions/PrePlanningAbstractions.csproj" />
   </Folder>
 </Solution>

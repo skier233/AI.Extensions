@@ -27,6 +27,12 @@
       "manifestOnly": true
     },
     {
+      "name": "AI.Shots",
+      "id": "cove.community.ai.shots",
+      "path": "extensions/AI.Shots",
+      "tagPrefix": "ai-shots/"
+    },
+    {
       "name": "AI.Tagging",
       "id": "cove.community.ai.tagging",
       "path": "extensions/AI.Tagging",

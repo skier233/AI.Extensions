@@ -7,6 +7,13 @@
     <CoveMinVersion Condition="'$(CoveMinVersion)' == ''">1.5.0</CoveMinVersion>
     <CoveSdkVersion Condition="'$(CoveSdkVersion)' == ''">$(CoveMinVersion)</CoveSdkVersion>
     <CoveCoreVersion Condition="'$(CoveCoreVersion)' == ''">$(CoveMinVersion)</CoveCoreVersion>
+    <!--
+      AI Shots compiles against Cove's shot-boundary API (IVideoShotService), which Cove first ships in 1.6.0, so it
+      builds against that version instead of CoveMinVersion. extensions/AI.Shots/extension.json minCoveVersion matches.
+      To build against an unreleased Cove, pass -p:AiShotsCoveVersion=<version> and the folder holding its packages
+      as -p:RestoreAdditionalProjectSources=<folder>.
+    -->
+    <AiShotsCoveVersion Condition="'$(AiShotsCoveVersion)' == ''">1.6.0</AiShotsCoveVersion>
     <UseLocalCoveSource Condition="'$(UseLocalCoveSource)' == '' and Exists('$(MSBuildThisFileDirectory)..\cove\src\Cove.Sdk\Cove.Sdk.csproj')">true</UseLocalCoveSource>
     <UseLocalCoveSource Condition="'$(UseLocalCoveSource)' == ''">false</UseLocalCoveSource>
     <UseLocalCoveCore Condition="'$(UseLocalCoveCore)' == '' and Exists('$(MSBuildThisFileDirectory)..\cove\src\Cove.Core\Cove.Core.csproj')">true</UseLocalCoveCore>

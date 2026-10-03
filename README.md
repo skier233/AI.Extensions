@@ -15,6 +15,7 @@ Most of the models and their development are funded through Patreon, but **facia
 | **AI Tagging** | Automatically tags your content, with timing so tags can show as segments on the player bar. | Free model included; main models on Patreon |
 | **AI Visual** | Search your library by meaning ("sunset on a beach") and find look-alike videos and images. | Patreon |
 | **AI Audio** | Finds other videos that sound like the one you're watching. | Patreon |
+| **AI Shots** | Splits each video file into its shots and stores them in Cove, where other extensions can read and edit them. | Free; needs a `shot_boundary` model on your AI server |
 
 **Free vs. paid, plainly:** AI Faces is free. AI Tagging ships with one free model; its main tagging models, plus AI Visual and AI Audio, are part of the Patreon that funds ongoing model development. The extensions themselves are free to install. The extensions as well as the AI server are open source.
 
