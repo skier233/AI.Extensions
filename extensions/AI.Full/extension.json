@@ -1,7 +1,7 @@
 {
   "id": "cove.community.ai.full",
   "name": "AI Full",
-  "version": "0.6.0",
+  "version": "0.8.0",
   "kind": "bundle",
   "description": "Dependency bundle that activates the full Cove AI extension family.",
   "author": "skier233",
@@ -13,10 +13,10 @@
   ],
   "minCoveVersion": "1.5.0",
   "dependencies": {
-    "cove.community.ai.core": ">=0.6.0",
-    "cove.community.ai.tagging": ">=0.6.0",
-    "cove.community.ai.faces": ">=0.6.0",
-    "cove.community.ai.visual": ">=0.6.0",
-    "cove.community.ai.audio": ">=0.6.0"
+    "cove.community.ai.core": ">=0.8.0",
+    "cove.community.ai.tagging": ">=0.8.0",
+    "cove.community.ai.faces": ">=0.8.0",
+    "cove.community.ai.visual": ">=0.8.0",
+    "cove.community.ai.audio": ">=0.8.0"
   }
 }
