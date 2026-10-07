@@ -38,6 +38,38 @@ public sealed class AiTaggingPreparationServiceTests
         Assert.Equal(4.0, batch.Segments[1].EndSeconds);
     }
 
+    [Fact]
+    public void Prepare_IgnoresAssetLevelAnalysisForVideo()
+    {
+        var service = new AiTaggingPreparationService();
+        var claim = new AiCapabilityClaim("tagging.video.frame", "Video Tags", AiMediaKinds.Video, "tagging", "frame", "frames");
+        using var document = JsonDocument.Parse(
+            """
+            {
+              "asset_id": "video-1",
+              "frame_interval_seconds": 1.0,
+              "frames": [
+                {
+                  "time_seconds": 0.0,
+                  "analysis": { "capabilities": { "tagging": { "nsfw_v3": [["tag-a", 0.9]] } } }
+                }
+              ],
+              "analysis": {
+                "capabilities": { "tagging": { "nsfw_v3": [["tag-b", 0.9]] } },
+                "other": { "shot_boundaries": { "boundaries": [] } }
+              }
+            }
+            """);
+
+        var result = AiAnalyzeResultParser.Parse(AiMediaKinds.Video, document.RootElement);
+
+        var batch = service.Prepare(AiTestData.CreateRequest(AiMediaKinds.Video, [claim], result, "video-1"));
+
+        var segment = Assert.Single(batch.Segments);
+        Assert.Equal("tag-a", segment.TagName);
+        Assert.Empty(batch.TagLinks);
+    }
+
         [Fact]
         public void Prepare_UsesLegacyFrameIntervalFieldForSingleFrameSegments()
         {
