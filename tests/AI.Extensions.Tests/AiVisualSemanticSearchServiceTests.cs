@@ -152,6 +152,94 @@ public sealed class AiVisualSemanticSearchServiceTests
     }
 
     [Fact]
+    public async Task SearchAsync_TreatsRelevanceSortAsVisualMatch()
+    {
+        await using var provider = CreateProvider();
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            var closeVideo = new Video { Title = "Zulu" };
+            var laterVideo = new Video { Title = "Alpha" };
+            db.Videos.AddRange(closeVideo, laterVideo);
+            await db.SaveChangesAsync();
+
+            db.Embeddings.AddRange(
+                CreateVisualEmbedding(EmbeddingHostType.Video, closeVideo.Id, [1f, 0f], sectionIndex: 0),
+                CreateVisualEmbedding(EmbeddingHostType.Video, laterVideo.Id, [0.9f, 0.1f], sectionIndex: 0));
+            await db.SaveChangesAsync();
+        }
+
+        await using var searchScope = provider.CreateAsyncScope();
+        var service = searchScope.ServiceProvider.GetRequiredService<AiVisualSemanticSearchService>();
+
+        var response = await service.SearchVideosAsync(new AiVisualSemanticSearchRequest<VideoFilter>
+        {
+            FindFilter = new FindFilter { Q = "blue room", Page = 1, PerPage = 10, Sort = "relevance", Direction = SortDirection.Desc },
+        });
+
+        Assert.Equal(["Zulu", "Alpha"], response.Items.Select(static video => video.Title ?? string.Empty).ToArray());
+    }
+
+    [Fact]
+    public async Task SearchAsync_SortsEveryVideoMatchWhenMoreThanTheRepositoryDefaultPage()
+    {
+        // The host repository pages at 25 when no FindFilter is given; a metadata sort must load every match.
+        const int videoCount = 30;
+        await using var provider = CreateProvider();
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            var videos = Enumerable.Range(1, videoCount).Select(static index => new Video { Title = $"Video {index:D2}" }).ToList();
+            db.Videos.AddRange(videos);
+            await db.SaveChangesAsync();
+
+            db.Embeddings.AddRange(videos.Select(static video => CreateVisualEmbedding(EmbeddingHostType.Video, video.Id, [1f, 0f], sectionIndex: 0)));
+            await db.SaveChangesAsync();
+        }
+
+        await using var searchScope = provider.CreateAsyncScope();
+        var service = searchScope.ServiceProvider.GetRequiredService<AiVisualSemanticSearchService>();
+
+        var response = await service.SearchVideosAsync(new AiVisualSemanticSearchRequest<VideoFilter>
+        {
+            FindFilter = new FindFilter { Q = "blue room", Page = 1, PerPage = 100, Sort = "title", Direction = SortDirection.Asc },
+        });
+
+        Assert.Equal(videoCount, response.TotalCount);
+        Assert.Equal(videoCount, response.Items.Count);
+        Assert.Equal("Video 01", response.Items[0].Title);
+        Assert.Equal("Video 30", response.Items[^1].Title);
+    }
+
+    [Fact]
+    public async Task SearchAsync_SortsEveryImageMatchWhenMoreThanTheRepositoryDefaultPage()
+    {
+        const int imageCount = 30;
+        await using var provider = CreateProvider();
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            var images = Enumerable.Range(1, imageCount).Select(static index => new Image { Title = $"Image {index:D2}" }).ToList();
+            db.Images.AddRange(images);
+            await db.SaveChangesAsync();
+
+            db.Embeddings.AddRange(images.Select(static image => CreateVisualEmbedding(EmbeddingHostType.Image, image.Id, [1f, 0f], sectionIndex: 0)));
+            await db.SaveChangesAsync();
+        }
+
+        await using var searchScope = provider.CreateAsyncScope();
+        var service = searchScope.ServiceProvider.GetRequiredService<AiVisualSemanticSearchService>();
+
+        var response = await service.SearchImagesAsync(new AiVisualSemanticSearchRequest<ImageFilter>
+        {
+            FindFilter = new FindFilter { Q = "blue room", Page = 1, PerPage = 100, Sort = "title", Direction = SortDirection.Asc },
+        });
+
+        Assert.Equal(imageCount, response.TotalCount);
+        Assert.Equal(imageCount, response.Items.Count);
+    }
+
+    [Fact]
     public async Task SearchAsync_ReturnsEmptyWhenTextEncoderTimesOutAndLocalEncoderUnavailable()
     {
         await using var provider = CreateProvider(new SlowTextEncoder());

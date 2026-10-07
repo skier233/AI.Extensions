@@ -89,6 +89,7 @@ internal sealed class AiVisualSemanticSearchService(
     private const string VisualSemanticKind = "visual.semantic.v1";
     private const string SemanticKindFamily = "semantic.v1";
     private const string VisualMatchSort = "visual_match";
+    private const string RelevanceSort = "relevance";
     private const float VisualMatchDistanceWindow = 0.03f;
     private const int MinimumVisualMatchResults = 5;
     private const int MaxVisualMatchResults = 500;
@@ -1092,7 +1093,7 @@ internal sealed class AiVisualSemanticSearchService(
         }
 
         var ids = matches.Select(static match => match.Embedding.HostId).Distinct().ToList();
-        var (videoItems, _) = await _videoRepository.FindAsync(new VideoFilter { Ids = ids }, null, ct);
+        var (videoItems, _) = await _videoRepository.FindAsync(new VideoFilter { Ids = ids }, new FindFilter { Page = 1, PerPage = Math.Max(ids.Count, 1) }, ct);
         var videos = videoItems.ToDictionary(static v => v.Id);
 
         var visualOrder = BuildVisualOrder(matches);
@@ -1142,7 +1143,7 @@ internal sealed class AiVisualSemanticSearchService(
         }
 
         var ids = matches.Select(static match => match.Embedding.HostId).Distinct().ToList();
-        var (imageItems, _) = await _imageRepository.FindAsync(new ImageFilter { Ids = ids }, null, ct);
+        var (imageItems, _) = await _imageRepository.FindAsync(new ImageFilter { Ids = ids }, new FindFilter { Page = 1, PerPage = Math.Max(ids.Count, 1) }, ct);
         var images = imageItems.ToDictionary(static i => i.Id);
 
         var visualOrder = BuildVisualOrder(matches);
@@ -1450,8 +1451,13 @@ internal sealed class AiVisualSemanticSearchService(
         }
     }
 
+    // "relevance" is what the host list pages and CLI send for a scored text search. For a visual
+    // search the score is the visual distance, so it orders like visual_match rather than falling
+    // through to the updated_at default (and the per-host lookup that path needs).
     private static bool IsVisualMatchSort(string? sort)
-        => string.IsNullOrWhiteSpace(sort) || string.Equals(sort, VisualMatchSort, StringComparison.OrdinalIgnoreCase);
+        => string.IsNullOrWhiteSpace(sort)
+           || string.Equals(sort, VisualMatchSort, StringComparison.OrdinalIgnoreCase)
+           || string.Equals(sort, RelevanceSort, StringComparison.OrdinalIgnoreCase);
 
     private static bool ShouldSortVisualMatchDescending(FindFilter findFilter)
         => string.IsNullOrWhiteSpace(findFilter.Sort) || findFilter.Direction == SortDirection.Desc;
