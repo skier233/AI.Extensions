@@ -28,6 +28,15 @@
     <ProjectReference Include="..\..\extensions\AI.Faces\AI.Faces.csproj" />
   </ItemGroup>
 
+  <!-- The pre-planning Abstractions is built, not referenced, and copied to pre-planning/ for AiCoreSharedAbstractionsTests. -->
+  <ItemGroup>
+    <ProjectReference Include="..\PrePlanningAbstractions\PrePlanningAbstractions.csproj" ReferenceOutputAssembly="false" OutputItemType="PrePlanningAbstractionsAssembly" />
+  </ItemGroup>
+
+  <Target Name="CopyPrePlanningAbstractions" AfterTargets="Build">
+    <Copy SourceFiles="@(PrePlanningAbstractionsAssembly)" DestinationFolder="$(OutDir)pre-planning" SkipUnchangedFiles="true" />
+  </Target>
+
   <ItemGroup Condition="'$(UseLocalCoveCore)' == 'true' and Exists('$(MSBuildThisFileDirectory)..\..\..\cove\src\Cove.Core\Cove.Core.csproj')">
     <ProjectReference Include="..\..\..\cove\src\Cove.Core\Cove.Core.csproj" />
     <ProjectReference Include="..\..\..\cove\src\Cove.Data\Cove.Data.csproj" />

@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 
 using AI.Extensions.Abstractions;
@@ -42,7 +44,7 @@ public sealed class AiCoreOrchestrator(
     // exchange on initialize; the host withdraws it on disable/uninstall.
     private IReadOnlyList<ResolvedContributor> ResolveContributors()
         => _exchange.GetAll<IAiCapabilityContributor>()
-            .Select(static contributor => new ResolvedContributor(contributor, contributor.Describe()))
+            .Select(static contributor => new ResolvedContributor(contributor, contributor.Describe(), IsPlanningContributor(contributor)))
             .OrderBy(static item => item.Descriptor.ExtensionId, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
@@ -59,18 +61,25 @@ public sealed class AiCoreOrchestrator(
         var runId = Guid.NewGuid().ToString("n");
         var mappedPaths = AiPathMapper.MapPaths(settings.PathMappings, request.Paths);
         var selection = ResolveRunSelection(settings, AiMediaKinds.Image, request.PresetId, request.CapabilityIds, request.ClaimIds, request.CategoriesToSkip, request.LoadPolicy, request.PipelineName);
-        var claims = SelectClaims(AiMediaKinds.Image, selection.ClaimIds, selection.CapabilityIds);
+        var claims = SelectClaims(AiMediaKinds.Image, selection.ClaimIds, selection.CapabilityIds, out var claimsExplicitlySelected);
         var resolvedLoadPolicy = ResolveLoadPolicy(settings, selection.LoadPolicy);
         var wants = await BuildWantAsync(settings, claims, selection.CategoriesToSkip, resolvedLoadPolicy, ct);
-        var plans = await _aiRunPlanner.PlanAsync(
+        var plans = await PlanWantsAsync(
             settings,
-            request.EntityType,
-            request.EntityId,
-            wants.Select(static want => want.ToPlannerWant()).ToArray(),
+            new PlanningScope(
+                runId,
+                AiMediaKinds.Image,
+                request.Paths.Count == 1 ? request.Paths[0] : $"{request.Paths.Count} image(s)",
+                request.EntityType,
+                request.EntityId,
+                HostFileId: null,
+                claimsExplicitlySelected,
+                request.DispatchResults ?? settings.DispatchResultsByDefault),
+            wants,
             request.ForceClaimIds,
             frameIntervalSeconds: null,
             threshold: request.Threshold ?? settings.DefaultThreshold,
-            ct: ct);
+            ct);
         var responsePlan = BuildResponsePlan(plans);
         var execution = BuildExecution(wants, plans);
         if (execution.Wants.Count == 0)
@@ -115,6 +124,8 @@ public sealed class AiCoreOrchestrator(
                 request.EntityId,
                 execution.Claims,
                 response,
+                request.ForceClaimIds,
+                hostFileId: null,
                 ct);
 
             await _aiRunJournal.RecordCompletionAsync(
@@ -162,11 +173,11 @@ public sealed class AiCoreOrchestrator(
     {
         if (targets.Count == 0)
         {
-            return new AiImageBatchInferenceResult([], [], template.DispatchResults);
+            return new AiImageBatchInferenceResult([], [], template.DispatchResults, template.ForceClaimIds);
         }
 
         var selection = ResolveRunSelection(settings, AiMediaKinds.Image, template.PresetId, template.CapabilityIds, template.ClaimIds, template.CategoriesToSkip, template.LoadPolicy, template.PipelineName);
-        var claims = SelectClaims(AiMediaKinds.Image, selection.ClaimIds, selection.CapabilityIds);
+        var claims = SelectClaims(AiMediaKinds.Image, selection.ClaimIds, selection.CapabilityIds, out var claimsExplicitlySelected);
         var resolvedLoadPolicy = ResolveLoadPolicy(settings, selection.LoadPolicy);
         var wants = await BuildWantAsync(settings, claims, selection.CategoriesToSkip, resolvedLoadPolicy, ct);
         var threshold = template.Threshold ?? settings.DefaultThreshold;
@@ -176,15 +187,22 @@ public sealed class AiCoreOrchestrator(
         foreach (var target in targets)
         {
             var mappedPath = AiPathMapper.MapPath(settings.PathMappings, target.Path);
-            var plans = await _aiRunPlanner.PlanAsync(
+            var plans = await PlanWantsAsync(
                 settings,
-                target.EntityType,
-                target.EntityId,
-                wants.Select(static want => want.ToPlannerWant()).ToArray(),
+                new PlanningScope(
+                    RunId: null,
+                    AiMediaKinds.Image,
+                    target.Path,
+                    target.EntityType,
+                    target.EntityId,
+                    HostFileId: null,
+                    claimsExplicitlySelected,
+                    template.DispatchResults ?? settings.DispatchResultsByDefault),
+                wants,
                 template.ForceClaimIds,
                 frameIntervalSeconds: null,
                 threshold: threshold,
-                ct: ct);
+                ct);
             planned.Add(new PlannedImageTarget(target, mappedPath, plans, BuildExecution(wants, plans), BuildResponsePlan(plans)));
         }
 
@@ -261,7 +279,7 @@ public sealed class AiCoreOrchestrator(
             }
         }
 
-        return new AiImageBatchInferenceResult(claimDescriptors, members, template.DispatchResults);
+        return new AiImageBatchInferenceResult(claimDescriptors, members, template.DispatchResults, template.ForceClaimIds);
     }
 
     // Persistence stage: write the whole batch's inferred results to the database in bulk — one artifact
@@ -287,7 +305,7 @@ public sealed class AiCoreOrchestrator(
                     executed.Select(static member => new AiArtifactReplaceTarget(member.Target.EntityType, member.Target.EntityId, member.Plans)).ToArray(),
                     ct);
 
-                dispatchByRunId = await MaybeDispatchBatchAsync(settings, inference.DispatchResults, executed, ct);
+                dispatchByRunId = await MaybeDispatchBatchAsync(settings, inference.DispatchResults, inference.ForceClaimIds, executed, ct);
 
                 await _aiRunJournal.RecordCompletionsAsync(
                     executed.Select(member => new AiRunJournalCompletion(
@@ -325,6 +343,7 @@ public sealed class AiCoreOrchestrator(
     private async Task<IReadOnlyDictionary<string, IReadOnlyList<AiDispatchResult>>> MaybeDispatchBatchAsync(
         AiCoreConnectionSettings settings,
         bool? dispatchOverride,
+        IReadOnlyList<string>? forceClaimIds,
         IReadOnlyList<InferredImageMember> members,
         CancellationToken ct)
     {
@@ -357,15 +376,12 @@ public sealed class AiCoreOrchestrator(
             foreach (var group in member.ExecutionClaims.GroupBy(static claim => claim.Descriptor.ExtensionId, StringComparer.OrdinalIgnoreCase))
             {
                 var first = group.First();
+                var groupClaims = group.Select(static item => item.Claim).ToArray();
                 var dispatchRequest = new AiDispatchRequest(
                     runContext,
-                    group.Select(static item => item.Claim).ToArray(),
+                    groupClaims,
                     parsedResult,
-                    new Dictionary<string, string>
-                    {
-                        ["source"] = "cove.community.ai.core",
-                        ["extensionId"] = first.Descriptor.ExtensionId,
-                    });
+                    BuildDispatchMetadata(first, groupClaims, forceClaimIds, hostFileId: null));
 
                 if (!perContributor.TryGetValue(first.Contributor, out var requests))
                 {
@@ -463,18 +479,25 @@ public sealed class AiCoreOrchestrator(
         var runId = Guid.NewGuid().ToString("n");
         var mappedPath = AiPathMapper.MapPath(settings.PathMappings, request.Path);
         var selection = ResolveRunSelection(settings, AiMediaKinds.Video, request.PresetId, request.CapabilityIds, request.ClaimIds, request.CategoriesToSkip, request.LoadPolicy, request.PipelineName);
-        var claims = SelectClaims(AiMediaKinds.Video, selection.ClaimIds, selection.CapabilityIds);
+        var claims = SelectClaims(AiMediaKinds.Video, selection.ClaimIds, selection.CapabilityIds, out var claimsExplicitlySelected);
         var resolvedLoadPolicy = ResolveLoadPolicy(settings, selection.LoadPolicy);
         var wants = await BuildWantAsync(settings, claims, selection.CategoriesToSkip, resolvedLoadPolicy, ct);
-        var plans = await _aiRunPlanner.PlanAsync(
+        var plans = await PlanWantsAsync(
             settings,
-            request.EntityType,
-            request.EntityId,
-            wants.Select(static want => want.ToPlannerWant()).ToArray(),
+            new PlanningScope(
+                runId,
+                AiMediaKinds.Video,
+                request.Path,
+                request.EntityType,
+                request.EntityId,
+                request.FileId,
+                claimsExplicitlySelected,
+                request.DispatchResults ?? settings.DispatchResultsByDefault),
+            wants,
             request.ForceClaimIds,
             frameIntervalSeconds: request.FrameInterval,
             threshold: request.Threshold ?? settings.DefaultThreshold,
-            ct: ct);
+            ct);
         var responsePlan = BuildResponsePlan(plans);
         var execution = BuildExecution(wants, plans);
         if (execution.Wants.Count == 0)
@@ -521,6 +544,8 @@ public sealed class AiCoreOrchestrator(
                 request.EntityId,
                 execution.Claims,
                 response,
+                request.ForceClaimIds,
+                request.FileId,
                 ct);
 
             await _aiRunJournal.RecordCompletionAsync(
@@ -546,18 +571,25 @@ public sealed class AiCoreOrchestrator(
         var runId = Guid.NewGuid().ToString("n");
         var mappedPaths = AiPathMapper.MapPaths(settings.PathMappings, request.Paths);
         var selection = ResolveRunSelection(settings, AiMediaKinds.Audio, request.PresetId, request.CapabilityIds, request.ClaimIds, categoriesToSkip: null, request.LoadPolicy, request.PipelineName);
-        var claims = SelectClaims(AiMediaKinds.Audio, selection.ClaimIds, selection.CapabilityIds);
+        var claims = SelectClaims(AiMediaKinds.Audio, selection.ClaimIds, selection.CapabilityIds, out var claimsExplicitlySelected);
         var resolvedLoadPolicy = ResolveLoadPolicy(settings, selection.LoadPolicy);
         var wants = await BuildWantAsync(settings, claims, categoriesToSkip: null, resolvedLoadPolicy, ct);
-        var plans = await _aiRunPlanner.PlanAsync(
+        var plans = await PlanWantsAsync(
             settings,
-            request.EntityType,
-            request.EntityId,
-            wants.Select(static want => want.ToPlannerWant()).ToArray(),
+            new PlanningScope(
+                runId,
+                AiMediaKinds.Audio,
+                request.Paths.Count == 1 ? request.Paths[0] : $"{request.Paths.Count} audio file(s)",
+                request.EntityType,
+                request.EntityId,
+                HostFileId: null,
+                claimsExplicitlySelected,
+                request.DispatchResults ?? settings.DispatchResultsByDefault),
+            wants,
             request.ForceClaimIds,
             frameIntervalSeconds: null,
             threshold: request.Threshold ?? settings.DefaultThreshold,
-            ct: ct);
+            ct);
         var responsePlan = BuildResponsePlan(plans);
         var execution = BuildExecution(wants, plans);
         if (execution.Wants.Count == 0)
@@ -600,6 +632,8 @@ public sealed class AiCoreOrchestrator(
                 request.EntityId,
                 execution.Claims,
                 response,
+                request.ForceClaimIds,
+                hostFileId: null,
                 ct);
 
             await _aiRunJournal.RecordCompletionAsync(
@@ -682,11 +716,14 @@ public sealed class AiCoreOrchestrator(
             resolvedPipelineName);
     }
 
-    private IReadOnlyList<ResolvedClaim> SelectClaims(string mediaKind, IReadOnlyList<string>? requestedClaimIds, IReadOnlyList<string>? requestedCapabilityIds)
+    // explicitlySelected is false when the caller named no claims or capabilities and every registered claim for the
+    // media kind is run by default (API and scheduled callers); planning contributors are told about it.
+    private IReadOnlyList<ResolvedClaim> SelectClaims(string mediaKind, IReadOnlyList<string>? requestedClaimIds, IReadOnlyList<string>? requestedCapabilityIds, out bool explicitlySelected)
     {
+        explicitlySelected = true;
         var contributors = ResolveContributors();
         var contributorClaims = contributors
-            .SelectMany(static contributor => contributor.Descriptor.Claims.Select(claim => new ResolvedClaim(contributor.Contributor, contributor.Descriptor, claim)))
+            .SelectMany(static contributor => contributor.Descriptor.Claims.Select(claim => new ResolvedClaim(contributor.Contributor, contributor.Descriptor, claim, contributor.PlansClaims)))
             .ToArray();
         var allClaims = contributorClaims
             .Where(claim => string.Equals(claim.Claim.MediaKind, mediaKind, StringComparison.OrdinalIgnoreCase))
@@ -758,6 +795,7 @@ public sealed class AiCoreOrchestrator(
                 throw new InvalidOperationException($"No AI capability claims are registered for media kind '{mediaKind}'.");
             }
 
+            explicitlySelected = false;
             return allClaims;
         }
 
@@ -791,6 +829,8 @@ public sealed class AiCoreOrchestrator(
         int? hostEntityId,
         IReadOnlyList<ResolvedClaim> claims,
         JsonElement response,
+        IReadOnlyList<string>? forceClaimIds,
+        int? hostFileId,
         CancellationToken ct)
     {
         var shouldDispatch = dispatchOverride ?? settings.DispatchResultsByDefault;
@@ -821,15 +861,12 @@ public sealed class AiCoreOrchestrator(
         foreach (var group in claims.GroupBy(static claim => claim.Descriptor.ExtensionId, StringComparer.OrdinalIgnoreCase))
         {
             var first = group.First();
+            var groupClaims = group.Select(static item => item.Claim).ToArray();
             var dispatchRequest = new AiDispatchRequest(
                 runContext,
-                group.Select(static item => item.Claim).ToArray(),
+                groupClaims,
                 parsedResult,
-                new Dictionary<string, string>
-                {
-                    ["source"] = "cove.community.ai.core",
-                    ["extensionId"] = first.Descriptor.ExtensionId,
-                });
+                BuildDispatchMetadata(first, groupClaims, forceClaimIds, hostFileId));
 
             _logger.LogDebug(
                 "Dispatching AI response for {MediaKind} to {ExtensionId} with {ClaimCount} claim(s)",
@@ -1163,6 +1200,279 @@ public sealed class AiCoreOrchestrator(
         }
     }
 
+    // Plans every want. A want whose contributor also implements IAiClaimPlanningContributor is planned by that
+    // contributor from what it has stored; every other want goes to the run-history planner in a single call with
+    // the same arguments as before, so a planning contributor cannot change how any other claim is planned.
+    private async Task<IReadOnlyList<AiRunExecutionPlan>> PlanWantsAsync(
+        AiCoreConnectionSettings settings,
+        PlanningScope scope,
+        IReadOnlyList<ResolvedWant> wants,
+        IReadOnlyList<string>? forceClaimIds,
+        double? frameIntervalSeconds,
+        double? threshold,
+        CancellationToken ct)
+    {
+        var plannerWants = wants.Select(static want => want.ToPlannerWant()).ToArray();
+        if (!wants.Any(static want => want.Claims[0].PlansClaims))
+        {
+            return await _aiRunPlanner.PlanAsync(
+                settings,
+                scope.HostEntityType,
+                scope.HostEntityId,
+                plannerWants,
+                forceClaimIds,
+                frameIntervalSeconds,
+                threshold,
+                ct);
+        }
+
+        var plans = await PlanWithContributorsAsync(scope, wants, plannerWants, forceClaimIds, ct);
+        var historyIndexes = Enumerable.Range(0, wants.Count).Where(index => plans[index] is null).ToArray();
+        if (historyIndexes.Length > 0)
+        {
+            var historyPlans = await _aiRunPlanner.PlanAsync(
+                settings,
+                scope.HostEntityType,
+                scope.HostEntityId,
+                historyIndexes.Select(index => plannerWants[index]).ToArray(),
+                forceClaimIds,
+                frameIntervalSeconds,
+                threshold,
+                ct);
+            for (var index = 0; index < historyIndexes.Length; index++)
+            {
+                plans[historyIndexes[index]] = historyPlans[index];
+            }
+        }
+
+        return plans.Select(static plan => plan!).ToArray();
+    }
+
+    // Asks each planning contributor once about all of its wanted claims. A want is Run when any of its claims is
+    // Run (Rerun when the contributor says it will replace results it already stored), Skip when every claim is
+    // Skip, and left null (history-planned) otherwise. Neither queues AI Core's artifact replacement: the
+    // contributor replaces its own results when dispatched.
+    private async Task<AiRunExecutionPlan?[]> PlanWithContributorsAsync(
+        PlanningScope scope,
+        IReadOnlyList<ResolvedWant> wants,
+        IReadOnlyList<AiRunPlannerWant> plannerWants,
+        IReadOnlyList<string>? forceClaimIds,
+        CancellationToken ct)
+    {
+        var plans = new AiRunExecutionPlan?[wants.Count];
+        var forceSet = NormalizeStringList(forceClaimIds).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var groups = Enumerable.Range(0, wants.Count)
+            .Where(index => wants[index].Claims[0].PlansClaims)
+            .GroupBy(index => wants[index].Claims[0].Contributor, ReferenceEqualityComparer.Instance);
+
+        foreach (var group in groups)
+        {
+            var indexes = group.ToArray();
+            var extensionId = wants[indexes[0]].ExtensionId;
+            var claims = indexes.SelectMany(index => wants[index].Claims.Select(static claim => claim.Claim)).ToArray();
+            var forcedClaimIds = claims.Where(claim => forceSet.Contains(claim.ClaimId)).Select(static claim => claim.ClaimId).ToArray();
+
+            Dictionary<string, ContributorClaimPlan> claimPlans;
+            try
+            {
+                var planning = StartClaimPlanning((IAiCapabilityContributor)group.Key!, scope, claims, forcedClaimIds, ct);
+                await planning;
+                claimPlans = ReadClaimPlans(planning);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "AI claim planning failed for {ExtensionId}; its claims are skipped for this run", extensionId);
+                claimPlans = new Dictionary<string, ContributorClaimPlan>(StringComparer.OrdinalIgnoreCase);
+                foreach (var claim in claims)
+                {
+                    claimPlans[claim.ClaimId] = new ContributorClaimPlan(ContributorClaimVerdict.Skip, $"Planning failed in {extensionId}: {ex.Message}", ReplacesExistingResults: false);
+                }
+            }
+
+            foreach (var index in indexes)
+            {
+                var want = plannerWants[index];
+                var wantPlans = want.Claims
+                    .Select(claim => claimPlans.TryGetValue(claim.ClaimId, out var plan) ? plan : null)
+                    .ToArray();
+                var forced = want.Claims.Any(claim => forceSet.Contains(claim.ClaimId));
+                var reasons = wantPlans
+                    .Select(static plan => plan?.Reason)
+                    .Where(static reason => !string.IsNullOrWhiteSpace(reason))
+                    .Select(static reason => reason!)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                var runPlans = wantPlans.Where(static plan => plan?.Verdict == ContributorClaimVerdict.Run).ToArray();
+
+                if (runPlans.Length > 0)
+                {
+                    var models = want.Models.Select(static model => model.ModelKey).ToArray();
+                    plans[index] = new AiRunExecutionPlan(
+                        want.ExtensionId,
+                        want.Capability,
+                        want.Scope,
+                        want.FromDetection,
+                        want.Claims,
+                        models,
+                        models,
+                        [],
+                        runPlans.Any(static plan => plan!.ReplacesExistingResults) ? AiRunPlanDecision.Rerun : AiRunPlanDecision.Run,
+                        reasons.Length > 0 ? reasons : [$"{want.ExtensionId} asked for this claim to run."],
+                        forced);
+                }
+                else if (wantPlans.All(static plan => plan?.Verdict == ContributorClaimVerdict.Skip))
+                {
+                    plans[index] = new AiRunExecutionPlan(
+                        want.ExtensionId,
+                        want.Capability,
+                        want.Scope,
+                        want.FromDetection,
+                        want.Claims,
+                        want.Models.Select(static model => model.ModelKey).ToArray(),
+                        [],
+                        [],
+                        AiRunPlanDecision.Skip,
+                        reasons.Length > 0 ? reasons : [$"{want.ExtensionId} asked for this claim to be skipped."],
+                        forced);
+                }
+            }
+        }
+
+        return plans;
+    }
+
+    // Metadata for one dispatch group. Planning contributors also learn which of their claims were forced and which
+    // Cove file was analysed; every other contributor keeps receiving exactly { source, extensionId }.
+    private static Dictionary<string, string> BuildDispatchMetadata(
+        ResolvedClaim first,
+        IReadOnlyList<AiCapabilityClaim> claims,
+        IReadOnlyList<string>? forceClaimIds,
+        int? hostFileId)
+    {
+        var metadata = new Dictionary<string, string>
+        {
+            ["source"] = "cove.community.ai.core",
+            ["extensionId"] = first.Descriptor.ExtensionId,
+        };
+
+        if (!first.PlansClaims)
+        {
+            return metadata;
+        }
+
+        var forceSet = NormalizeStringList(forceClaimIds).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        metadata[AiDispatchMetadataKeys.ForcedClaimIds] = string.Join(
+            ",",
+            claims.Where(claim => forceSet.Contains(claim.ClaimId)).Select(static claim => claim.ClaimId));
+        if (hostFileId is int fileId)
+        {
+            metadata[AiDispatchMetadataKeys.HostFileId] = fileId.ToString(CultureInfo.InvariantCulture);
+        }
+
+        return metadata;
+    }
+
+    // The planning types (IAiClaimPlanningContributor, AiClaimPlanningTarget, AiClaimPlanningDecision,
+    // AiClaimPlanningVerdict) exist only in AI.Extensions.Abstractions builds that include contributor planning. The
+    // host loads one copy of that assembly for every extension, so an older copy can win. AI Core must then still
+    // load, because the host disables an extension any of whose types fails to load, and plan every claim from run
+    // history. So those types are named only inside the plain methods below: never in a field, a closure, a cached
+    // lambda or an async state machine, all of which the host loads when it inspects AI Core. The methods that use
+    // them only run for a contributor that implements the interface, which only the newer copy can declare.
+    private static int _planningSupport; // 0 = not probed yet, 1 = the planning types exist, 2 = they do not
+
+    private static bool IsPlanningContributor(IAiCapabilityContributor contributor)
+        => PlanningSupported() && ImplementsPlanningContributor(contributor);
+
+    private static bool PlanningSupported()
+    {
+        var state = Volatile.Read(ref _planningSupport);
+        if (state == 0)
+        {
+            try
+            {
+                state = ProbePlanningTypes() ? 1 : 2;
+            }
+            catch (TypeLoadException)
+            {
+                state = 2;
+            }
+
+            Volatile.Write(ref _planningSupport, state);
+        }
+
+        return state == 1;
+    }
+
+    // Throws TypeLoadException when it is compiled, the first time it is called, if the planning types do not exist.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool ProbePlanningTypes()
+        => typeof(IAiClaimPlanningContributor).IsInterface;
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool ImplementsPlanningContributor(IAiCapabilityContributor contributor)
+        => contributor is IAiClaimPlanningContributor;
+
+    // Starts one contributor's planning call and hands it back as a plain Task, so the awaiting state machine never
+    // holds a planning type; ReadClaimPlans reads the result once it has completed.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static Task StartClaimPlanning(
+        IAiCapabilityContributor contributor,
+        PlanningScope scope,
+        IReadOnlyList<AiCapabilityClaim> claims,
+        IReadOnlyList<string> forcedClaimIds,
+        CancellationToken ct)
+        => ((IAiClaimPlanningContributor)contributor).PlanClaimsAsync(
+            new AiClaimPlanningTarget
+            {
+                RunId = scope.RunId,
+                MediaKind = scope.MediaKind,
+                Subject = scope.Subject,
+                HostEntityType = scope.HostEntityType,
+                HostEntityId = scope.HostEntityId,
+                HostFileId = scope.HostFileId,
+                Claims = claims,
+                ForcedClaimIds = forcedClaimIds,
+                ClaimsExplicitlySelected = scope.ClaimsExplicitlySelected,
+                DispatchResults = scope.DispatchResults,
+            },
+            ct);
+
+    // Reads a completed StartClaimPlanning call into AI Core's own types, keyed by claim id. A later decision for the
+    // same claim wins.
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static Dictionary<string, ContributorClaimPlan> ReadClaimPlans(Task completedPlanning)
+    {
+        var plans = new Dictionary<string, ContributorClaimPlan>(StringComparer.OrdinalIgnoreCase);
+        var decisions = ((Task<IReadOnlyList<AiClaimPlanningDecision>>)completedPlanning).Result;
+        if (decisions is null)
+        {
+            return plans;
+        }
+
+        foreach (var decision in decisions)
+        {
+            if (decision is null || string.IsNullOrWhiteSpace(decision.ClaimId))
+            {
+                continue;
+            }
+
+            var verdict = decision.Verdict switch
+            {
+                AiClaimPlanningVerdict.Run => ContributorClaimVerdict.Run,
+                AiClaimPlanningVerdict.Skip => ContributorClaimVerdict.Skip,
+                _ => ContributorClaimVerdict.Default,
+            };
+            plans[decision.ClaimId.Trim()] = new ContributorClaimPlan(verdict, decision.Reason, decision.ReplacesExistingResults);
+        }
+
+        return plans;
+    }
+
     private static ExecutionPlan BuildExecution(IReadOnlyList<ResolvedWant> wants, IReadOnlyList<AiRunExecutionPlan> plans)
     {
         var analyzeWants = new List<AnalyzeWantRequest>();
@@ -1400,9 +1710,21 @@ public sealed class AiCoreOrchestrator(
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-    private readonly record struct ResolvedContributor(IAiCapabilityContributor Contributor, AiCapabilityDescriptor Descriptor);
+    // PlansClaims is worked out once per contributor when contributors are resolved: whether it also implements
+    // IAiClaimPlanningContributor.
+    private readonly record struct ResolvedContributor(IAiCapabilityContributor Contributor, AiCapabilityDescriptor Descriptor, bool PlansClaims);
 
-    internal readonly record struct ResolvedClaim(IAiCapabilityContributor Contributor, AiCapabilityDescriptor Descriptor, AiCapabilityClaim Claim);
+    internal readonly record struct ResolvedClaim(IAiCapabilityContributor Contributor, AiCapabilityDescriptor Descriptor, AiCapabilityClaim Claim, bool PlansClaims);
+
+    private enum ContributorClaimVerdict
+    {
+        Default,
+        Run,
+        Skip,
+    }
+
+    // A planning contributor's decision about one claim, in AI Core's own types.
+    private sealed record ContributorClaimPlan(ContributorClaimVerdict Verdict, string? Reason, bool ReplacesExistingResults);
 
     // One image's inferred result, carried from the inference stage to the persistence stage. Self-contained
     // (cloned JsonElement, plan POCOs, resolved-claim value structs) so it can cross between two orchestrator
@@ -1425,6 +1747,16 @@ public sealed class AiCoreOrchestrator(
         string? PipelineName);
 
     private sealed record ExecutionPlan(IReadOnlyList<AnalyzeWantRequest> Wants, IReadOnlyList<ResolvedClaim> Claims);
+
+    private sealed record PlanningScope(
+        string? RunId,
+        string MediaKind,
+        string Subject,
+        string? HostEntityType,
+        int? HostEntityId,
+        int? HostFileId,
+        bool ClaimsExplicitlySelected,
+        bool DispatchResults);
 
     private sealed record PlannedImageTarget(
         AiRunImageTarget Target,
@@ -1473,11 +1805,13 @@ public sealed class AiImageBatchInferenceResult
     internal AiImageBatchInferenceResult(
         IReadOnlyList<AiCapabilityClaim> claimDescriptors,
         IReadOnlyList<AiCoreOrchestrator.InferredImageMember> members,
-        bool? dispatchResults)
+        bool? dispatchResults,
+        IReadOnlyList<string>? forceClaimIds)
     {
         ClaimDescriptorsInternal = claimDescriptors;
         MembersInternal = members;
         DispatchResults = dispatchResults;
+        ForceClaimIds = forceClaimIds;
     }
 
     internal IReadOnlyList<AiCapabilityClaim> ClaimDescriptorsInternal { get; }
@@ -1485,6 +1819,8 @@ public sealed class AiImageBatchInferenceResult
     internal IReadOnlyList<AiCoreOrchestrator.InferredImageMember> MembersInternal { get; }
 
     internal bool? DispatchResults { get; }
+
+    internal IReadOnlyList<string>? ForceClaimIds { get; }
 
     /// <summary>Number of image results in this batch (executed, server-errored, and fully-satisfied/skipped).</summary>
     public int MemberCount => MembersInternal.Count;

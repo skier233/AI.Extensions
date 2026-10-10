@@ -107,7 +107,10 @@ public sealed class AiRunTargetResolver(IVideoRepository videoRepository, IImage
                 Label: label,
                 Path: normalizedPath,
                 EntityId: video.Id,
-                EntityType: "video"));
+                EntityType: "video")
+            {
+                FileId = file.Id,
+            });
         }
 
         return results;
@@ -445,6 +448,7 @@ public sealed class AiRunQueueService(
                     CategoriesToSkip = request.CategoriesToSkip,
                     LoadPolicy = request.LoadPolicy,
                     DispatchResults = request.DispatchResults,
+                    FileId = target.FileId,
                 },
                 ct)).RunId,
             AiMediaKinds.Audio => (await orchestrator.RunAudioAsync(

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    AI.Extensions.Abstractions as it was before contributor planning: every source file except AiClaimPlanning.cs,
+    built under the same assembly name. AI.Extensions.Tests loads AI Core against it, as the host does when an
+    older extension's copy of the shared assembly wins. Nothing ships or references it as a library.
+  -->
+  <PropertyGroup>
+    <AssemblyName>AI.Extensions.Abstractions</AssemblyName>
+    <RootNamespace>AI.Extensions.Abstractions</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\shared\AI.Extensions.Abstractions\*.cs" Exclude="..\..\shared\AI.Extensions.Abstractions\AiClaimPlanning.cs" />
+  </ItemGroup>
+</Project>

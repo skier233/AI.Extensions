@@ -786,6 +786,622 @@ public sealed class AiCoreOrchestratorTests
         Assert.Equal(1, await db.TagApplications.CountAsync(application => application.SourceRunId == first.RunId && application.ModelKey == "Body"));
     }
 
+    [Fact]
+    public async Task RunVideoAsync_PlanningContributorSkipRemovesOnlyItsWantFromTheServerRequest()
+    {
+        var client = CreateTaggingAndShotsClient();
+        var shots = PlanningStubContributor.Always(AiClaimPlanningVerdict.Skip);
+        var orchestrator = CreateOrchestrator(client, CreateTaggingContributor("tagging.video.frame", AiMediaKinds.Video, "frame"), shots);
+
+        var response = await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                ClaimIds = ["tagging.video.frame", PlanningStubContributor.ClaimId],
+                DispatchResults = true,
+            });
+
+        var analyzeRequest = Assert.IsType<VideoAnalyzeRequest>(client.LastAnalyzeRequest);
+        var want = Assert.Single(analyzeRequest.Want ?? []);
+        Assert.Equal("tagging", want.Capability);
+        Assert.Equal(AiRunPlanDecision.Skip, response.Plan.Single(item => item.ClaimId == PlanningStubContributor.ClaimId).Decision);
+        Assert.Equal(AiRunPlanDecision.Run, response.Plan.Single(item => item.ClaimId == "tagging.video.frame").Decision);
+        Assert.Empty(shots.Dispatched);
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_PlanningContributorSkipWithNothingElseMakesNoServerCall()
+    {
+        var client = CreateTaggingAndShotsClient();
+        var shots = PlanningStubContributor.Always(AiClaimPlanningVerdict.Skip);
+        var orchestrator = CreateOrchestrator(client, shots);
+
+        var response = await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                ClaimIds = [PlanningStubContributor.ClaimId],
+            });
+
+        Assert.Equal(0, client.AnalyzeVideoCallCount);
+        Assert.Equal("skipped", response.Analysis.GetProperty("status").GetString());
+        Assert.Equal("stub Skip", Assert.Single(Assert.Single(response.Plan).Reasons));
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_PlanningContributorRunIgnoresCompletedRunHistory()
+    {
+        await using var provider = CreateProvider();
+        await using var scope = provider.CreateAsyncScope();
+        var client = CreateTaggingAndShotsClient();
+        var shots = PlanningStubContributor.Always(AiClaimPlanningVerdict.Run);
+        var orchestrator = CreatePlannerOrchestrator(scope.ServiceProvider, client, shots);
+        var request = new AiRunVideoRequest
+        {
+            Path = "E:/media/example.mp4",
+            EntityType = "video",
+            EntityId = 42,
+            ClaimIds = [PlanningStubContributor.ClaimId],
+            DispatchResults = true,
+        };
+
+        await orchestrator.RunVideoAsync(new AiCoreConnectionSettings().Normalize(), request);
+        var second = await orchestrator.RunVideoAsync(new AiCoreConnectionSettings().Normalize(), request);
+
+        // The run history now records this claim with the same model, which would skip a history-planned claim.
+        Assert.Equal(2, client.AnalyzeVideoCallCount);
+        Assert.Equal(AiRunPlanDecision.Run, Assert.Single(second.Plan).Decision);
+        Assert.Equal(2, shots.Dispatched.Count);
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_PlanningContributorSkipIgnoresThresholdIntervalAndVersionChanges()
+    {
+        await using var provider = CreateProvider();
+        await using var scope = provider.CreateAsyncScope();
+        var verdict = AiClaimPlanningVerdict.Run;
+        var shots = new PlanningStubContributor(target => target.Claims
+            .Select(claim => new AiClaimPlanningDecision { ClaimId = claim.ClaimId, Verdict = verdict })
+            .ToArray());
+        var firstClient = CreateTaggingAndShotsClient(shotsVersion: "1.0");
+        await CreatePlannerOrchestrator(scope.ServiceProvider, firstClient, shots).RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                ClaimIds = [PlanningStubContributor.ClaimId],
+                FrameInterval = 2.0,
+                Threshold = 0.5,
+            });
+
+        verdict = AiClaimPlanningVerdict.Skip;
+        var secondClient = CreateTaggingAndShotsClient(shotsVersion: "2.0");
+        var second = await CreatePlannerOrchestrator(scope.ServiceProvider, secondClient, shots).RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                ClaimIds = [PlanningStubContributor.ClaimId],
+                FrameInterval = 3.0,
+                Threshold = 0.7,
+            });
+
+        Assert.Equal(0, secondClient.AnalyzeVideoCallCount);
+        Assert.Equal(AiRunPlanDecision.Skip, Assert.Single(second.Plan).Decision);
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_ForcedPlanningClaimReachesTargetAndMetadataWithoutArtifactReplacement()
+    {
+        var client = CreateTaggingAndShotsClient();
+        var shots = PlanningStubContributor.Always(AiClaimPlanningVerdict.Run, replacesExistingResults: true);
+        var replace = new RecordingAiArtifactReplaceService();
+        var orchestrator = CreateOrchestrator(client, NoOpAiRunPlanner.Instance, replace, shots);
+
+        var response = await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                FileId = 77,
+                ClaimIds = [PlanningStubContributor.ClaimId],
+                ForceClaimIds = [PlanningStubContributor.ClaimId],
+                DispatchResults = true,
+            });
+
+        var target = Assert.Single(shots.Targets);
+        Assert.Equal([PlanningStubContributor.ClaimId], target.ForcedClaimIds);
+        Assert.Equal(77, target.HostFileId);
+        Assert.Equal("E:/media/example.mp4", target.Subject);
+        Assert.Equal(response.RunId, target.RunId);
+
+        var plan = Assert.Single(response.Plan);
+        Assert.Equal(AiRunPlanDecision.Rerun, plan.Decision);
+        Assert.True(plan.Forced);
+        var replacedPlan = Assert.Single(Assert.Single(replace.Calls));
+        Assert.Empty(replacedPlan.ReplacementArtifactKeys);
+
+        var dispatched = Assert.Single(shots.Dispatched);
+        Assert.True(dispatched.IsForced(PlanningStubContributor.ClaimId));
+        Assert.True(dispatched.TryGetHostFileId(out var fileId));
+        Assert.Equal(77, fileId);
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_ForcedPlanningClaimWithNothingToReplaceIsARun()
+    {
+        var shots = PlanningStubContributor.Always(AiClaimPlanningVerdict.Run);
+        var orchestrator = CreateOrchestrator(CreateTaggingAndShotsClient(), shots);
+
+        var response = await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                ClaimIds = [PlanningStubContributor.ClaimId],
+                ForceClaimIds = [PlanningStubContributor.ClaimId],
+            });
+
+        var plan = Assert.Single(response.Plan);
+        Assert.Equal(AiRunPlanDecision.Run, plan.Decision);
+        Assert.True(plan.Forced);
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_HistoryPlansGoBackToTheirOwnWantsAroundAPlanningContributor()
+    {
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels =
+            [
+                CreateTaggingModel("tagger-actions-best", ["Actions"], scope: "frame"),
+                CreateModel("face_detector_torchexport", ["face_detections"], "detection", "frame"),
+                CreateModel("face_embedding_torchexport", ["face_embeddings"], "embedding", "region"),
+                CreateModel("shots", ["shot_boundaries"], "temporal_segmentation", "asset"),
+            ],
+            EchoRequestedVideoModels = true,
+        };
+        var planner = new SpyAiRunPlanner(new LabellingAiRunPlanner());
+        var shots = PlanningStubContributor.Always(AiClaimPlanningVerdict.Run);
+        var orchestrator = CreateOrchestrator(
+            client,
+            planner,
+            NoOpAiArtifactReplaceService.Instance,
+            CreateTaggingContributor("tagging.video.frame", AiMediaKinds.Video, "frame"),
+            CreateFacesContributor(),
+            shots);
+
+        var response = await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                ForceClaimIds = ["tagging.video.frame", "faces.video.detection", PlanningStubContributor.ClaimId],
+            });
+
+        // Wants are ordered faces detection, faces embedding, shots, tagging: the planning want sits between history
+        // wants, so every history plan must be matched back to its own want, not to its position in the planner call.
+        var historyWants = Assert.Single(planner.Calls).Wants;
+        Assert.Equal(["faces.video.detection", "faces.video.embedding", "tagging.video.frame"], historyWants.SelectMany(static want => want.Claims).Select(static claim => claim.ClaimId));
+        Assert.Equal(
+            ["faces.video.detection", "faces.video.embedding", PlanningStubContributor.ClaimId, "tagging.video.frame"],
+            response.Plan.Select(static item => item.ClaimId));
+        foreach (var item in response.Plan.Where(static item => item.ClaimId != PlanningStubContributor.ClaimId))
+        {
+            Assert.Equal([$"planned for {item.ClaimId}"], item.Reasons);
+        }
+
+        // Each want is sent to the server with its own plan's models.
+        var serverWants = Assert.IsType<VideoAnalyzeRequest>(client.LastAnalyzeRequest).Want!;
+        Assert.Equal(
+            [
+                "detection/frame: face_detector_torchexport",
+                "embedding/region: face_embedding_torchexport",
+                "temporal_segmentation/asset: shots",
+                "tagging/frame: tagger-actions-best",
+            ],
+            serverWants.Select(static want => $"{want.Capability}/{want.Scope}: {string.Join(",", want.Models ?? [])}"));
+
+        Assert.Equal(["stub Run"], response.Plan.Single(static item => item.ClaimId == PlanningStubContributor.ClaimId).Reasons);
+        Assert.Equal([PlanningStubContributor.ClaimId], Assert.Single(shots.Targets).ForcedClaimIds);
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_TheAnalysedFileIdIsNotRecordedInTheRunRequest()
+    {
+        await using var provider = CreateProvider();
+        await using var scope = provider.CreateAsyncScope();
+        var orchestrator = CreatePlannerOrchestrator(scope.ServiceProvider, CreateTaggingAndShotsClient(), CreateTaggingContributor("tagging.video.frame", AiMediaKinds.Video, "frame"));
+
+        await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                FileId = 77,
+                ClaimIds = ["tagging.video.frame"],
+            });
+
+        var run = await scope.ServiceProvider.GetRequiredService<CoveContext>().AiRuns.SingleAsync();
+        Assert.False(run.Request!.RootElement.TryGetProperty("FileId", out _));
+    }
+
+    [Fact]
+    public void AiRunVideoRequest_FileIdIsNeverReadFromJson()
+    {
+        var request = JsonSerializer.Deserialize<AiRunVideoRequest>(
+            """{ "path": "E:/media/example.mp4", "fileId": 77, "FileId": 78 }""",
+            new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+
+        Assert.Equal("E:/media/example.mp4", request.Path);
+        Assert.Null(request.FileId);
+        Assert.DoesNotContain("77", JsonSerializer.Serialize(new AiRunVideoRequest { Path = "a", FileId = 77 }));
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_OrdinaryContributorsKeepTheirDispatchMetadata()
+    {
+        var client = CreateTaggingAndShotsClient();
+        var tagging = new RecordingContributor(CreateTaggingContributor("tagging.video.frame", AiMediaKinds.Video, "frame").Describe());
+        var shots = PlanningStubContributor.Always(AiClaimPlanningVerdict.Run);
+        var orchestrator = CreateOrchestrator(client, tagging, shots);
+
+        await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                FileId = 77,
+                ClaimIds = ["tagging.video.frame", PlanningStubContributor.ClaimId],
+                ForceClaimIds = ["tagging.video.frame", PlanningStubContributor.ClaimId],
+                DispatchResults = true,
+            });
+
+        var taggingMetadata = Assert.Single(tagging.Dispatched).Metadata!;
+        Assert.Equal(["extensionId", "source"], taggingMetadata.Keys.Order(StringComparer.Ordinal));
+        var shotsMetadata = Assert.Single(shots.Dispatched).Metadata!;
+        Assert.Equal(PlanningStubContributor.ClaimId, shotsMetadata[AiDispatchMetadataKeys.ForcedClaimIds]);
+        Assert.Equal("77", shotsMetadata[AiDispatchMetadataKeys.HostFileId]);
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_PlanningContributorIsToldWhenNothingWasForced()
+    {
+        var client = CreateTaggingAndShotsClient();
+        var shots = PlanningStubContributor.Always(AiClaimPlanningVerdict.Run);
+        var orchestrator = CreateOrchestrator(client, shots);
+
+        await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                ClaimIds = [PlanningStubContributor.ClaimId],
+                DispatchResults = true,
+            });
+
+        Assert.Empty(Assert.Single(shots.Targets).ForcedClaimIds);
+        var dispatched = Assert.Single(shots.Dispatched);
+        Assert.Equal(string.Empty, dispatched.Metadata![AiDispatchMetadataKeys.ForcedClaimIds]);
+        Assert.False(dispatched.IsForced(PlanningStubContributor.ClaimId));
+        Assert.False(dispatched.TryGetHostFileId(out _));
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_WithoutPlanningContributorsTheHistoryPlannerGetsOneCallWithEveryWant()
+    {
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels =
+            [
+                CreateTaggingModel("tagger-actions-best", ["Actions"], scope: "frame"),
+                CreateModel("face_detector_torchexport", ["face_detections"], "detection", "frame"),
+                CreateModel("face_embedding_torchexport", ["face_embeddings"], "embedding", "region"),
+            ],
+            EchoRequestedVideoModels = true,
+        };
+        var planner = new SpyAiRunPlanner(NoOpAiRunPlanner.Instance);
+        var orchestrator = CreateOrchestrator(
+            client,
+            planner,
+            NoOpAiArtifactReplaceService.Instance,
+            CreateTaggingContributor("tagging.video.frame", AiMediaKinds.Video, "frame"),
+            CreateFacesContributor());
+
+        await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                FrameInterval = 2.0,
+                Threshold = 0.4,
+                ForceClaimIds = ["tagging.video.frame"],
+            });
+
+        var call = Assert.Single(planner.Calls);
+        Assert.Equal("video", call.HostEntityType);
+        Assert.Equal(42, call.HostEntityId);
+        Assert.Equal(["tagging.video.frame"], call.ForceClaimIds);
+        Assert.Equal(2.0, call.FrameIntervalSeconds);
+        Assert.Equal(0.4, call.Threshold);
+        Assert.Equal(["cove.community.ai.faces", "ext:ai.tagging"], call.Wants.Select(static want => want.ExtensionId).Distinct().Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_HistoryPlannedWantsAreUnchangedByAPlanningContributor()
+    {
+        async Task<PlannerCall> PlanWith(params IAiCapabilityContributor[] extra)
+        {
+            var planner = new SpyAiRunPlanner(NoOpAiRunPlanner.Instance);
+            var contributors = new IAiCapabilityContributor[] { CreateTaggingContributor("tagging.video.frame", AiMediaKinds.Video, "frame") }.Concat(extra).ToArray();
+            await CreateOrchestrator(CreateTaggingAndShotsClient(), planner, NoOpAiArtifactReplaceService.Instance, contributors).RunVideoAsync(
+                new AiCoreConnectionSettings().Normalize(),
+                new AiRunVideoRequest
+                {
+                    Path = "E:/media/example.mp4",
+                    EntityType = "video",
+                    EntityId = 42,
+                    FrameInterval = 2.0,
+                    Threshold = 0.4,
+                    ForceClaimIds = ["tagging.video.frame", PlanningStubContributor.ClaimId],
+                });
+            return Assert.Single(planner.Calls);
+        }
+
+        var without = await PlanWith();
+        var with = await PlanWith(PlanningStubContributor.Always(AiClaimPlanningVerdict.Skip));
+
+        Assert.Equal(Describe(without), Describe(with));
+
+        static string Describe(PlannerCall call)
+            => JsonSerializer.Serialize(new
+            {
+                call.HostEntityType,
+                call.HostEntityId,
+                call.ForceClaimIds,
+                call.FrameIntervalSeconds,
+                call.Threshold,
+                Wants = call.Wants.Select(static want => new
+                {
+                    want.ExtensionId,
+                    want.Capability,
+                    want.Scope,
+                    want.FromDetection,
+                    Claims = want.Claims.Select(static claim => claim.ClaimId),
+                    Models = want.Models.Select(static model => new { model.ModelKey, model.ArtifactKeys, model.Category, model.Identifier, model.Version, model.Name, model.Categories }),
+                    want.AllowPartialExecution,
+                }),
+            });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RunVideoAsync_TaggingDecisionsAreIdenticalWithAndWithoutAPlanningContributor(bool forceTagging)
+    {
+        var without = await RunTaggingUpgradeScenarioAsync(forceTagging, withPlanningContributor: false);
+        var with = await RunTaggingUpgradeScenarioAsync(forceTagging, withPlanningContributor: true);
+
+        Assert.Equal(without, with);
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_ThrowingPlanningContributorDoesNotBlockTagging()
+    {
+        var client = CreateTaggingAndShotsClient();
+        var shots = new PlanningStubContributor(_ => throw new InvalidOperationException("storage offline"));
+        var orchestrator = CreateOrchestrator(client, CreateTaggingContributor("tagging.video.frame", AiMediaKinds.Video, "frame"), shots);
+
+        var response = await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                ClaimIds = ["tagging.video.frame", PlanningStubContributor.ClaimId],
+                DispatchResults = true,
+            });
+
+        var want = Assert.Single(Assert.IsType<VideoAnalyzeRequest>(client.LastAnalyzeRequest).Want ?? []);
+        Assert.Equal("tagging", want.Capability);
+        var shotsPlan = response.Plan.Single(item => item.ClaimId == PlanningStubContributor.ClaimId);
+        Assert.Equal(AiRunPlanDecision.Skip, shotsPlan.Decision);
+        Assert.Contains("storage offline", Assert.Single(shotsPlan.Reasons));
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_DefaultVerdictFallsBackToRunHistory()
+    {
+        var client = CreateTaggingAndShotsClient();
+        var planner = new SpyAiRunPlanner(NoOpAiRunPlanner.Instance);
+        var shots = PlanningStubContributor.Always(AiClaimPlanningVerdict.Default);
+        var orchestrator = CreateOrchestrator(client, planner, NoOpAiArtifactReplaceService.Instance, shots);
+
+        var response = await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                ClaimIds = [PlanningStubContributor.ClaimId],
+            });
+
+        var call = Assert.Single(planner.Calls);
+        Assert.Equal(PlanningStubContributor.ClaimId, Assert.Single(Assert.Single(call.Wants).Claims).ClaimId);
+        Assert.Equal("No-op planner executed all requested models.", Assert.Single(Assert.Single(response.Plan).Reasons));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RunVideoAsync_PlanningContributorLearnsWhetherClaimsWereSelected(bool selectClaims)
+    {
+        var shots = PlanningStubContributor.Always(AiClaimPlanningVerdict.Skip);
+        var orchestrator = CreateOrchestrator(CreateTaggingAndShotsClient(), shots);
+
+        await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                ClaimIds = selectClaims ? [PlanningStubContributor.ClaimId] : null,
+                DispatchResults = false,
+            });
+
+        var target = Assert.Single(shots.Targets);
+        Assert.Equal(selectClaims, target.ClaimsExplicitlySelected);
+        Assert.False(target.DispatchResults);
+    }
+
+    [Fact]
+    public async Task RunImageBatchAsync_ForcedPlanningClaimReachesBatchDispatchMetadata()
+    {
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels = [CreateModel("image-shots", ["image_shots"], "temporal_segmentation", "asset")],
+        };
+        var shots = new PlanningStubContributor(
+            target => target.Claims.Select(static claim => new AiClaimPlanningDecision { ClaimId = claim.ClaimId, Verdict = AiClaimPlanningVerdict.Run }).ToArray(),
+            AiMediaKinds.Image,
+            "image_shots");
+        var orchestrator = CreateOrchestrator(client, shots);
+
+        await orchestrator.RunImageBatchAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            [new AiRunImageTarget("E:/media/a.jpg", "image", 5)],
+            new AiRunImagesRequest
+            {
+                ClaimIds = [PlanningStubContributor.ClaimId],
+                ForceClaimIds = [PlanningStubContributor.ClaimId],
+                DispatchResults = true,
+            });
+
+        Assert.Null(Assert.Single(shots.Targets).HostFileId);
+        Assert.True(Assert.Single(shots.Dispatched).IsForced(PlanningStubContributor.ClaimId));
+    }
+
+    private static async Task<string> RunTaggingUpgradeScenarioAsync(bool forceTagging, bool withPlanningContributor)
+    {
+        await using var provider = CreateProvider();
+        await using var scope = provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+        db.Tags.Add(new Tag { Id = 9, Name = "Action", SortName = "Action" });
+        await db.SaveChangesAsync();
+
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels =
+            [
+                CreateTaggingModel("tagger-actions-v1", ["Actions"], scope: "frame", version: "1.0"),
+                CreateTaggingModel("tagger-actions-v2", ["Actions"], scope: "frame", version: "2.0"),
+                CreateTaggingModel("tagger-body", ["Body"], scope: "frame", version: "1.0"),
+                CreateModel("shots", ["shot_boundaries"], "temporal_segmentation", "asset"),
+            ],
+            EchoRequestedVideoModels = true,
+        };
+        var contributors = withPlanningContributor
+            ? new[] { CreateTaggingContributor("tagging.video.frame", AiMediaKinds.Video, "frame"), PlanningStubContributor.Always(AiClaimPlanningVerdict.Skip) }
+            : new[] { CreateTaggingContributor("tagging.video.frame", AiMediaKinds.Video, "frame") };
+        var orchestrator = CreatePlannerOrchestrator(scope.ServiceProvider, client, contributors);
+        var claimIds = withPlanningContributor ? new List<string> { "tagging.video.frame", PlanningStubContributor.ClaimId } : ["tagging.video.frame"];
+
+        AiCoreConnectionSettings Bindings(string actionsModel) => new AiCoreConnectionSettings
+        {
+            CapabilityModelBindings =
+            [
+                new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "frame", Category = "Actions", Model = actionsModel },
+                new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "frame", Category = "Body", Model = "tagger-body" },
+            ],
+        }.Normalize();
+
+        var first = await orchestrator.RunVideoAsync(
+            Bindings("tagger-actions-v1"),
+            new AiRunVideoRequest { Path = "E:/media/example.mp4", EntityType = "video", EntityId = 42, ClaimIds = claimIds, DispatchResults = true });
+
+        db.TagApplications.AddRange(
+            new TagApplication { HostType = AffinityHostType.Video, HostId = 42, TagId = 9, SourceKey = "ext:ai.tagging", SourceRunId = first.RunId, ModelKey = "Actions", Confidence = 0.9f },
+            new TagApplication { HostType = AffinityHostType.Video, HostId = 42, TagId = 9, SourceKey = "ext:ai.tagging", SourceRunId = first.RunId, ModelKey = "Body", Confidence = 0.9f });
+        await db.SaveChangesAsync();
+
+        var second = await orchestrator.RunVideoAsync(
+            Bindings("tagger-actions-v2"),
+            new AiRunVideoRequest
+            {
+                Path = "E:/media/example.mp4",
+                EntityType = "video",
+                EntityId = 42,
+                ClaimIds = claimIds,
+                ForceClaimIds = forceTagging ? ["tagging.video.frame"] : null,
+                DispatchResults = true,
+            });
+
+        var taggingPlan = second.Plan.Single(item => item.ClaimId == "tagging.video.frame");
+        var taggingWant = (Assert.IsType<VideoAnalyzeRequest>(client.LastAnalyzeRequest).Want ?? []).Single(want => want.Capability == "tagging");
+        return JsonSerializer.Serialize(new
+        {
+            taggingPlan.Decision,
+            taggingPlan.DesiredModels,
+            taggingPlan.ExecutionModels,
+            taggingPlan.Reasons,
+            taggingPlan.Forced,
+            ServerModels = taggingWant.Models,
+            ActionsLeft = await db.TagApplications.CountAsync(application => application.SourceRunId == first.RunId && application.ModelKey == "Actions"),
+            BodyLeft = await db.TagApplications.CountAsync(application => application.SourceRunId == first.RunId && application.ModelKey == "Body"),
+        });
+    }
+
+    private static RecordingAiServerClient CreateTaggingAndShotsClient(string? shotsVersion = null)
+        => new()
+        {
+            CatalogModels =
+            [
+                CreateTaggingModel("tagger-actions-best", ["Actions"], scope: "frame"),
+                CreateModel("shots", ["shot_boundaries"], "temporal_segmentation", "asset", version: shotsVersion),
+            ],
+            EchoRequestedVideoModels = true,
+        };
+
+    private static AiCoreOrchestrator CreateOrchestrator(
+        INsfwAiServerClient client,
+        IAiRunPlanner planner,
+        IAiArtifactReplaceService replaceService,
+        params IAiCapabilityContributor[] contributors)
+        => new(
+            client,
+            CreateExchange(contributors),
+            NoOpAiRunJournal.Instance,
+            planner,
+            replaceService,
+            NullLogger<AiCoreOrchestrator>.Instance);
+
     private static IExtensionServiceExchange CreateExchange(IReadOnlyList<IAiCapabilityContributor> contributors)
     {
         var exchange = new ExtensionServiceExchange();
@@ -1153,6 +1769,140 @@ public sealed class AiCoreOrchestratorTests
                     AiRunPlanDecision.Run,
                     ["No-op planner executed all requested models."],
                     false)).ToArray());
+    }
+
+    // A contributor that also plans its own claim, standing in for a shot-boundary extension.
+    private sealed class PlanningStubContributor(
+        Func<AiClaimPlanningTarget, IReadOnlyList<AiClaimPlanningDecision>> plan,
+        string mediaKind = AiMediaKinds.Video,
+        string category = "shot_boundaries") : IAiCapabilityContributor, IAiClaimPlanningContributor
+    {
+        public const string ClaimId = "shots.asset";
+
+        public List<AiClaimPlanningTarget> Targets { get; } = [];
+
+        public List<AiDispatchRequest> Dispatched { get; } = [];
+
+        public static PlanningStubContributor Always(AiClaimPlanningVerdict verdict, bool replacesExistingResults = false)
+            => new(target => target.Claims
+                .Select(claim => new AiClaimPlanningDecision
+                {
+                    ClaimId = claim.ClaimId,
+                    Verdict = verdict,
+                    Reason = $"stub {verdict}",
+                    ReplacesExistingResults = replacesExistingResults,
+                })
+                .ToArray());
+
+        public AiCapabilityDescriptor Describe()
+            => new(
+                "cove.community.ai.shots",
+                "AI Shots",
+                [
+                    new AiCapabilityClaim(ClaimId, "Shot Boundaries", mediaKind, "temporal_segmentation", "asset", "shot_boundaries")
+                    {
+                        CapabilityId = "shots",
+                        ModelBindingSlotId = "detector",
+                    },
+                ])
+            {
+                Capabilities =
+                [
+                    new AiCapabilityFeature(
+                        "shots",
+                        "Shot Boundaries",
+                        [ClaimId],
+                        [
+                            new AiModelBindingSlot(
+                                "detector",
+                                "Shot boundary model",
+                                "temporal_segmentation",
+                                RequiredCapabilities: ["temporal_segmentation"],
+                                RequiredScopes: ["asset"],
+                                RequiredCategories: [category]),
+                        ]),
+                ],
+            };
+
+        public Task<IReadOnlyList<AiClaimPlanningDecision>> PlanClaimsAsync(AiClaimPlanningTarget target, CancellationToken ct = default)
+        {
+            Targets.Add(target);
+            return Task.FromResult(plan(target));
+        }
+
+        public Task<AiDispatchResult> DispatchAsync(AiDispatchRequest request, CancellationToken ct = default)
+        {
+            Dispatched.Add(request);
+            return Task.FromResult(new AiDispatchResult("cove.community.ai.shots", request.Claims.Count));
+        }
+    }
+
+    private sealed class RecordingContributor(AiCapabilityDescriptor descriptor) : IAiCapabilityContributor
+    {
+        public List<AiDispatchRequest> Dispatched { get; } = [];
+
+        public AiCapabilityDescriptor Describe() => descriptor;
+
+        public Task<AiDispatchResult> DispatchAsync(AiDispatchRequest request, CancellationToken ct = default)
+        {
+            Dispatched.Add(request);
+            return Task.FromResult(new AiDispatchResult(descriptor.ExtensionId, request.Claims.Count));
+        }
+    }
+
+    private sealed record PlannerCall(
+        string? HostEntityType,
+        int? HostEntityId,
+        IReadOnlyList<AiRunPlannerWant> Wants,
+        IReadOnlyList<string>? ForceClaimIds,
+        double? FrameIntervalSeconds,
+        double? Threshold);
+
+    private sealed class SpyAiRunPlanner(IAiRunPlanner inner) : IAiRunPlanner
+    {
+        public List<PlannerCall> Calls { get; } = [];
+
+        public Task<IReadOnlyList<AiRunExecutionPlan>> PlanAsync(AiCoreConnectionSettings settings, string? hostEntityType, int? hostEntityId, IReadOnlyList<AiRunPlannerWant> wants, IReadOnlyList<string>? forceClaimIds, double? frameIntervalSeconds = null, double? threshold = null, CancellationToken ct = default)
+        {
+            Calls.Add(new PlannerCall(hostEntityType, hostEntityId, wants.ToArray(), forceClaimIds?.ToArray(), frameIntervalSeconds, threshold));
+            return inner.PlanAsync(settings, hostEntityType, hostEntityId, wants, forceClaimIds, frameIntervalSeconds, threshold, ct);
+        }
+    }
+
+    // Plans every want to run, with a reason naming the want's claims, so a test can tell which plan went where.
+    private sealed class LabellingAiRunPlanner : IAiRunPlanner
+    {
+        public Task<IReadOnlyList<AiRunExecutionPlan>> PlanAsync(AiCoreConnectionSettings settings, string? hostEntityType, int? hostEntityId, IReadOnlyList<AiRunPlannerWant> wants, IReadOnlyList<string>? forceClaimIds, double? frameIntervalSeconds = null, double? threshold = null, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlyList<AiRunExecutionPlan>>(
+                wants.Select(want => new AiRunExecutionPlan(
+                    want.ExtensionId,
+                    want.Capability,
+                    want.Scope,
+                    want.FromDetection,
+                    want.Claims,
+                    want.Models.Select(static model => model.ModelKey).ToArray(),
+                    want.Models.Select(static model => model.ModelKey).ToArray(),
+                    [],
+                    AiRunPlanDecision.Run,
+                    [$"planned for {string.Join(",", want.Claims.Select(static claim => claim.ClaimId))}"],
+                    false)).ToArray());
+    }
+
+    private sealed class RecordingAiArtifactReplaceService : IAiArtifactReplaceService
+    {
+        public List<IReadOnlyList<AiRunExecutionPlan>> Calls { get; } = [];
+
+        public Task ReplaceAsync(string? hostEntityType, int? hostEntityId, IReadOnlyList<AiRunExecutionPlan> plans, CancellationToken ct = default)
+        {
+            Calls.Add(plans);
+            return Task.CompletedTask;
+        }
+
+        public Task ReplaceBatchAsync(IReadOnlyList<AiArtifactReplaceTarget> targets, CancellationToken ct = default)
+        {
+            Calls.AddRange(targets.Select(static target => target.Plans));
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class NoOpAiArtifactReplaceService : IAiArtifactReplaceService

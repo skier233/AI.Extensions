@@ -154,6 +154,70 @@ public sealed class AiRunQueueServiceTests
         Assert.Equal(60, videoRepository.LastFindFilter?.PerPage);
     }
 
+    [Fact]
+    public async Task ResolveAsync_CarriesTheAnalysedFileId()
+    {
+        var videoRepository = new PagingVideoRepository(
+        [
+            new Video
+            {
+                Id = 7,
+                Title = "Video 7",
+                Files =
+                [
+                    new VideoFile { Id = 70, Path = "E:/test/short.mp4", Duration = 10 },
+                    new VideoFile { Id = 71, Path = "E:/test/long.mp4", Duration = 20 },
+                ],
+            },
+        ]);
+        var resolver = new AiRunTargetResolver(videoRepository, new ThrowingImageRepository());
+
+        var targets = await resolver.ResolveAsync(new AiQueueRunRequest
+        {
+            EntityType = "video",
+            MediaKind = AiMediaKinds.Video,
+            EntityIds = [7],
+        });
+
+        var target = Assert.Single(targets);
+        Assert.Equal("E:/test/long.mp4", target.Path);
+        Assert.Equal(71, target.FileId);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_PassesTheFileIdToTheVideoRun()
+    {
+        var orchestrator = new RecordingOrchestrator();
+        var service = new AiRunQueueService(
+            orchestrator,
+            new FixedTargetResolver([
+                new AiResolvedRunTarget(
+                    UnitId: "video:23",
+                    Label: "Video 23",
+                    Path: "E:/test/Content/Videos/example.mp4",
+                    EntityId: 23,
+                    EntityType: "video")
+                {
+                    FileId = 230,
+                },
+            ]),
+            new StubJobService(),
+            CreateScopeFactory(orchestrator),
+            NullLogger<AiRunQueueService>.Instance);
+
+        await service.ExecuteAsync(
+            new AiCoreConnectionSettings().Normalize(),
+            new AiQueueRunRequest
+            {
+                MediaKind = AiMediaKinds.Video,
+                EntityType = "video",
+                EntityIds = [23],
+            },
+            new NullJobProgress());
+
+        Assert.Equal(230, orchestrator.LastVideoRequest?.FileId);
+    }
+
     private static IServiceScopeFactory CreateScopeFactory(IAiCoreOrchestrator orchestrator)
         => new ServiceCollection()
             .AddScoped(_ => orchestrator)
@@ -172,6 +236,8 @@ public sealed class AiRunQueueServiceTests
         public AiCoreConnectionSettings? LastSettings { get; private set; }
 
         public int RunVideoCallCount { get; private set; }
+
+        public AiRunVideoRequest? LastVideoRequest { get; private set; }
 
         public bool IsDisposed { get; private set; }
 
@@ -197,6 +263,7 @@ public sealed class AiRunQueueServiceTests
 
             RunVideoCallCount++;
             LastSettings = settings;
+            LastVideoRequest = request;
             return Task.FromResult(new AiRunResponse("video", AiMediaKinds.Video, [], EmptyJson(), [], []));
         }
 
