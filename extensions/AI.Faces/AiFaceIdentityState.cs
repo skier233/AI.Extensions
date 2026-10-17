@@ -38,6 +38,10 @@ internal sealed class StoredFaceIdentity
 
     public StoredBoundingBox? CoverBoundingBox { get; set; }
 
+    // When the cover sample is a video frame, its time in CoverAssetId; null for stills, and for video samples stored
+    // before the time was recorded.
+    public double? CoverObservedAtSeconds { get; set; }
+
     public double CoverQualityScore { get; set; }
 
     public int ObservationCount { get; set; }

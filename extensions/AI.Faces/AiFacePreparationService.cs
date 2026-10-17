@@ -9,6 +9,8 @@ namespace AI.Faces;
 
 internal sealed class AiFacePreparationService
 {
+    // Face metadata key for the time of the cover sample within a video cover asset (see StoredFaceIdentity).
+    internal const string CoverObservedAtSecondsMetadataKey = "coverObservedAtSeconds";
     private const string SourceKey = "ext:ai.faces";
     private const double DefaultFrameSpanSeconds = 0.5;
     private const int MaxGapFrames = 3;
@@ -30,6 +32,7 @@ internal sealed class AiFacePreparationService
     private const int MaxRepresentativeEmbeddings = 6;
     private const int MaxAnchorsPerIdentity = 12;
     private const int MaxAssetIdsPerIdentity = 32;
+    private const double CoverBoxMatchTolerance = 0.0001;
 
     // Candidate identities loaded per query embedding for the incremental reconcile. Generous enough to
     // cover both the best identity match and the local merge neighborhood, while keeping the working set
@@ -211,13 +214,13 @@ internal sealed class AiFacePreparationService
                     continue;
                 }
 
-                identity = CreateIdentity(snapshot, request.Context.AssetId, track, referenceMatch);
+                identity = CreateIdentity(snapshot, request, track, referenceMatch);
                 wasCreated = true;
                 newIdentityCount++;
             }
 
             referenceApplied = TryApplyReferenceMatch(identity, referenceMatch);
-            UpdateIdentity(identity, request.Context.AssetId, track, identityEmbeddings);
+            UpdateIdentity(identity, request, track, identityEmbeddings);
             if (TryPromoteIdentity(request, identity, track, settings, referenceApplied))
             {
                 promotedIdentityCount++;
@@ -899,19 +902,20 @@ internal sealed class AiFacePreparationService
         return true;
     }
 
-    private static StoredFaceIdentity CreateIdentity(FaceIdentitySnapshot snapshot, string assetId, PreparedFaceTrack track, FaceReferenceMatch? referenceMatch)
+    private static StoredFaceIdentity CreateIdentity(FaceIdentitySnapshot snapshot, AiDispatchRequest request, PreparedFaceTrack track, FaceReferenceMatch? referenceMatch)
     {
         var identity = new StoredFaceIdentity
         {
             FaceKey = $"face-{snapshot.NextIdentityOrdinal:0000}",
             QualityScore = track.TrackQuality,
             ObservationCount = 0,
-            CoverAssetId = assetId,
+            CoverAssetId = request.Context.AssetId,
             CoverBoundingBox = new StoredBoundingBox(
                 track.BestSample.Detection.BoundingBox.X1,
                 track.BestSample.Detection.BoundingBox.Y1,
                 track.BestSample.Detection.BoundingBox.X2,
                 track.BestSample.Detection.BoundingBox.Y2),
+            CoverObservedAtSeconds = CoverSampleSeconds(request, track.BestSample),
         };
         TryApplyReferenceMatch(identity, referenceMatch);
 
@@ -1180,8 +1184,9 @@ internal sealed class AiFacePreparationService
         return snapshot.Identities.FirstOrDefault(candidate => string.Equals(candidate.FaceKey, identity.FaceKey, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static void UpdateIdentity(StoredFaceIdentity identity, string assetId, PreparedFaceTrack track, IReadOnlyList<RepresentativeFaceEmbedding> anchors)
+    private static void UpdateIdentity(StoredFaceIdentity identity, AiDispatchRequest request, PreparedFaceTrack track, IReadOnlyList<RepresentativeFaceEmbedding> anchors)
     {
+        var assetId = request.Context.AssetId;
         identity.ObservationCount += track.Samples.Count;
         RememberIdentityAsset(identity, assetId);
         var coverQualityScore = AiFaceQualityScorer.ScoreCoverQuality(track.Samples, track.BestSample);
@@ -1198,7 +1203,17 @@ internal sealed class AiFacePreparationService
                 track.BestSample.Detection.BoundingBox.Y1,
                 track.BestSample.Detection.BoundingBox.X2,
                 track.BestSample.Detection.BoundingBox.Y2);
+            identity.CoverObservedAtSeconds = CoverSampleSeconds(request, track.BestSample);
             identity.CoverQualityScore = coverQualityScore;
+        }
+        else if (identity.CoverObservedAtSeconds is null
+            && string.Equals(identity.CoverAssetId, assetId, StringComparison.OrdinalIgnoreCase)
+            && FindSampleAtCoverBox(track, identity.CoverBoundingBox!) is { } storedSample
+            && CoverSampleSeconds(request, storedSample) is { } storedSampleSeconds)
+        {
+            // A video sample stored before its time was recorded: this run of the same video has seen it again,
+            // so recover the time instead of leaving the frame impossible to find.
+            identity.CoverObservedAtSeconds = storedSampleSeconds;
         }
 
         foreach (var anchor in anchors.OrderByDescending(static anchor => anchor.QualityScore))
@@ -1266,6 +1281,13 @@ internal sealed class AiFacePreparationService
             ["observationCount"] = identity.ObservationCount.ToString(CultureInfo.InvariantCulture),
             ["coverQualityScore"] = identity.CoverQualityScore.ToString("R", CultureInfo.InvariantCulture),
         };
+        // Carried in metadata rather than as a new AiPreparedFaceIdentity member: AI.Core and AI.Faces share one
+        // loaded copy of AI.Extensions.Abstractions, so changing that record's shape is a binary break.
+        if (identity.CoverObservedAtSeconds is { } coverSeconds && !string.IsNullOrWhiteSpace(identity.CoverAssetId))
+        {
+            metadata[CoverObservedAtSecondsMetadataKey] = coverSeconds.ToString("R", CultureInfo.InvariantCulture);
+        }
+
         if (!string.IsNullOrWhiteSpace(identity.ReferenceExternalId))
         {
             metadata["referenceExternalId"] = identity.ReferenceExternalId;
@@ -1291,6 +1313,19 @@ internal sealed class AiFacePreparationService
             CoverBoundingBox: coverBoundingBox,
             Metadata: metadata));
     }
+
+    // A cover sample's time is kept only for videos; a still has no frame to seek.
+    private static double? CoverSampleSeconds(AiDispatchRequest request, FaceFrameSample sample)
+        => request.Result.MediaKind == AiMediaKinds.Video ? sample.TimeSeconds : null;
+
+    private static FaceFrameSample? FindSampleAtCoverBox(PreparedFaceTrack track, StoredBoundingBox coverBox)
+        => track.Samples
+            .Where(sample => Math.Abs(sample.Detection.BoundingBox.X1 - coverBox.X1) <= CoverBoxMatchTolerance
+                && Math.Abs(sample.Detection.BoundingBox.Y1 - coverBox.Y1) <= CoverBoxMatchTolerance
+                && Math.Abs(sample.Detection.BoundingBox.X2 - coverBox.X2) <= CoverBoxMatchTolerance
+                && Math.Abs(sample.Detection.BoundingBox.Y2 - coverBox.Y2) <= CoverBoxMatchTolerance)
+            .OrderByDescending(static sample => sample.Detection.Score)
+            .FirstOrDefault();
 
     private static bool HasUsableCover(StoredBoundingBox? coverBoundingBox)
     {

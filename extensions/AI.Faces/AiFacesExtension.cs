@@ -23,6 +23,9 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
     public const string UploadReferencePermission = "cove.community.ai.faces.reference.upload";
     public const string DeleteReferencePermission = "cove.community.ai.faces.reference.delete";
     public const string ApplyReferencePermission = "cove.community.ai.faces.reference.apply";
+    public const string BackfillCoversJobId = "backfill-face-covers";
+
+    private IServiceProvider? _services;
 
     // Id, Name, Version, Description, Author, Url, Categories, MinCoveVersion and Dependencies are
     // sourced from extension.json by FullExtensionBase — not duplicated here.
@@ -54,6 +57,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
         services.AddSingleton<AiAssetFaceClusterer>();
         services.AddSingleton<AiFaceIdentityReconciler>();
         services.AddSingleton<AiFaceReferenceBackfillService>();
+        services.AddSingleton<AiFaceCoverBackfillService>();
         services.AddSingleton(static services => new AiFacePreparationService(
             services.GetRequiredService<IFaceIdentityStore>(),
             services.GetRequiredService<AiAssetFaceClusterer>(),
@@ -76,6 +80,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
 
     public override Task InitializeAsync(IServiceProvider services, CancellationToken ct = default)
     {
+        _services = services;
         PublishContributions<IAiCapabilityContributor>(services);
         // These contracts are consumed by Cove host services (FacesController, AiDataPurgeService),
         // which since the extensions-runtime redesign can only see sibling/extension services through
@@ -95,6 +100,22 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
         services.GetRequiredService<AiFacePresenceSuppressionStore>().Attach(Store);
         services.GetRequiredService<AiFaceIdentityExclusionStore>().Attach(Store);
         return Task.CompletedTask;
+    }
+
+    // Listed under Settings → Operations → Extension Tasks; the host runs it as a cancellable job with progress.
+    protected override void DefineJobs()
+        => Job(
+            BackfillCoversJobId,
+            "Build missing AI face covers",
+            RunCoverBackfillAsync,
+            "Builds a cover for every face without one from its stored best sample, without re-running AI. A video frame stored before AI Faces recorded frame times is skipped until an AI run of that face records one.",
+            supportsParameters: false,
+            showInTaskList: true);
+
+    private async Task RunCoverBackfillAsync(IReadOnlyDictionary<string, string>? parameters, Cove.Plugins.IJobProgress progress, CancellationToken ct)
+    {
+        var services = _services ?? throw new InvalidOperationException("AI Faces is not initialized.");
+        await services.GetRequiredService<AiFaceCoverBackfillService>().BackfillAsync(progress, ct);
     }
 
     public override UIManifest GetUIManifest()
@@ -259,6 +280,7 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
             entity.Property(item => item.CoverY1).HasColumnName("cover_y1");
             entity.Property(item => item.CoverX2).HasColumnName("cover_x2");
             entity.Property(item => item.CoverY2).HasColumnName("cover_y2");
+            entity.Property(item => item.CoverObservedAtSeconds).HasColumnName("cover_observed_at_seconds");
             entity.Property(item => item.CoverQualityScore).HasColumnName("cover_quality_score");
             entity.Property(item => item.ObservationCount).HasColumnName("observation_count");
             entity.Property(item => item.AssetIdsJson).HasColumnName("asset_ids_json");
@@ -326,6 +348,12 @@ public sealed class AiFacesExtension : FullExtensionBase, IPermissionContributor
                 vector vector NOT NULL
             );
             CREATE INDEX IF NOT EXISTS ix_ext_ai_faces_identity_anchor_identity_id ON ext_ai_faces_identity_anchor (identity_id);
+            """);
+
+        // When the cover sample is a video frame, its time in that video, so the frame can be found again. Identities
+        // stored before this column existed keep null until a run records a new best sample or sees the stored one.
+        Migration("002_add_identity_cover_time", """
+            ALTER TABLE ext_ai_faces_identity ADD COLUMN IF NOT EXISTS cover_observed_at_seconds double precision NULL;
             """);
     }
 

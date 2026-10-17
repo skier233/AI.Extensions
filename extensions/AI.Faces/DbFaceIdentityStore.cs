@@ -286,6 +286,7 @@ internal sealed class DbFaceIdentityStore(
         entity.CoverY1 = stored.CoverBoundingBox?.Y1;
         entity.CoverX2 = stored.CoverBoundingBox?.X2;
         entity.CoverY2 = stored.CoverBoundingBox?.Y2;
+        entity.CoverObservedAtSeconds = stored.CoverObservedAtSeconds;
         entity.CoverQualityScore = stored.CoverQualityScore;
         entity.ObservationCount = stored.ObservationCount;
         entity.AssetIdsJson = SerializeAssetIds(stored.AssetIds);
@@ -322,6 +323,7 @@ internal sealed class DbFaceIdentityStore(
             CoverBoundingBox = entity is { CoverX1: { } x1, CoverY1: { } y1, CoverX2: { } x2, CoverY2: { } y2 }
                 ? new StoredBoundingBox(x1, y1, x2, y2)
                 : null,
+            CoverObservedAtSeconds = entity.CoverObservedAtSeconds,
             CoverQualityScore = entity.CoverQualityScore,
             ObservationCount = entity.ObservationCount,
             AssetIds = DeserializeAssetIds(entity.AssetIdsJson),

@@ -638,6 +638,461 @@ public sealed class AiPersistenceServiceTests
     }
 
     [Fact]
+    public async Task PersistFaces_GeneratesVideoRunCoverFromBestSampleInsideZipArchive()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"ai-faces-cover-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var archivePath = Path.Combine(tempRoot, "gallery.zip");
+            await CreateZipWithSolidImageAsync(archivePath, "set/017.jpg", new Rgba32(220, 30, 30));
+            var coverAssetId = $"{archivePath}/set/017.jpg";
+
+            await using var provider = CreateProvider(services =>
+            {
+                services.AddSingleton<IBlobService, TestBlobService>();
+                services.AddSingleton(new CoveConfiguration());
+            });
+
+            var service = new AiFacesPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
+            var request = CreateRequest(AiMediaKinds.Video, Path.Combine(tempRoot, "current.mp4"), "video", 42, "run-face-cover-zip", durationSeconds: 60);
+            var batch = new AiPreparedArtifactBatch();
+
+            batch.Faces.Add(new AiPreparedFaceIdentity(
+                "face-cover-zip",
+                "ext:ai.faces",
+                Label: "Cover Face",
+                IsProvisional: false,
+                QualityScore: 0.97,
+                CoverAssetId: coverAssetId,
+                CoverBoundingBox: new AiBoundingBox(0.25, 0.15, 0.75, 0.85)));
+            batch.Detections.Add(new AiPreparedDetection(
+                request.Context.AssetId,
+                "ext:ai.faces",
+                Class: "face",
+                ObservedAtSeconds: 10.0,
+                Score: 0.9,
+                BoundingBox: new AiBoundingBox(0.1, 0.2, 0.3, 0.4),
+                ModelKey: "scrfd_face",
+                RefKind: "face",
+                RefKey: "face-cover-zip",
+                GroupKey: "track-1"));
+
+            await service.PersistAsync(request, batch);
+
+            await using var scope = provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            var blobService = (TestBlobService)scope.ServiceProvider.GetRequiredService<IBlobService>();
+            var face = await db.Faces.SingleAsync();
+
+            Assert.False(string.IsNullOrWhiteSpace(face.CoverBlobId));
+            AssertCoverIsReddish(blobService.StoredBlobs[face.CoverBlobId!]);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task PersistFaces_KeepsBestSampleInsideZipArchiveForImageRunInsteadOfContextSubject()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"ai-faces-cover-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var archivePath = Path.Combine(tempRoot, "gallery.zip");
+            await CreateZipWithSolidImageAsync(archivePath, "017.jpg", new Rgba32(220, 30, 30));
+            var subjectPath = Path.Combine(tempRoot, "current.jpg");
+            using (var image = new Image<Rgba32>(640, 480, new Rgba32(30, 200, 30)))
+            {
+                await image.SaveAsJpegAsync(subjectPath);
+            }
+
+            await using var provider = CreateProvider(services =>
+            {
+                services.AddSingleton<IBlobService, TestBlobService>();
+                services.AddSingleton(new CoveConfiguration());
+            });
+
+            var service = new AiFacesPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
+            var request = CreateRequest(AiMediaKinds.Image, subjectPath, "image", 17, "run-face-cover-zip-image");
+            var batch = new AiPreparedArtifactBatch();
+
+            batch.Faces.Add(new AiPreparedFaceIdentity(
+                "face-cover-zip",
+                "ext:ai.faces",
+                Label: "Cover Face",
+                IsProvisional: false,
+                QualityScore: 0.97,
+                CoverAssetId: $"{archivePath}/017.jpg",
+                CoverBoundingBox: new AiBoundingBox(0.25, 0.15, 0.75, 0.85)));
+
+            await service.PersistAsync(request, batch);
+
+            await using var scope = provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            var blobService = (TestBlobService)scope.ServiceProvider.GetRequiredService<IBlobService>();
+            var face = await db.Faces.SingleAsync();
+
+            Assert.False(string.IsNullOrWhiteSpace(face.CoverBlobId));
+            AssertCoverIsReddish(blobService.StoredBlobs[face.CoverBlobId!]);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task PersistFaces_SkipsCoverWhenZipArchiveEntryIsMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"ai-faces-cover-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var archivePath = Path.Combine(tempRoot, "gallery.zip");
+            await CreateZipWithSolidImageAsync(archivePath, "017.jpg", new Rgba32(220, 30, 30));
+
+            await using var provider = CreateProvider(services =>
+            {
+                services.AddSingleton<IBlobService, TestBlobService>();
+                services.AddSingleton(new CoveConfiguration());
+            });
+
+            var service = new AiFacesPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
+            var request = CreateRequest(AiMediaKinds.Video, Path.Combine(tempRoot, "current.mp4"), "video", 42, "run-face-cover-zip-missing", durationSeconds: 60);
+            var batch = new AiPreparedArtifactBatch();
+
+            batch.Faces.Add(new AiPreparedFaceIdentity(
+                "face-cover-zip",
+                "ext:ai.faces",
+                Label: "Cover Face",
+                IsProvisional: false,
+                QualityScore: 0.97,
+                CoverAssetId: $"{archivePath}/missing.jpg",
+                CoverBoundingBox: new AiBoundingBox(0.25, 0.15, 0.75, 0.85)));
+
+            await service.PersistAsync(request, batch);
+
+            await using var scope = provider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            var face = await db.Faces.SingleAsync();
+
+            Assert.Null(face.CoverBlobId);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    private static readonly AiBoundingBox BestSampleBox = new(0.25, 0.15, 0.75, 0.85);
+    private static readonly AiBoundingBox CurrentDetectionBox = new(0.10, 0.20, 0.30, 0.40);
+
+    [Fact]
+    public async Task PersistFaces_VideoRunSeeksTheBestSampleInAnotherVideoAtItsStoredTime()
+    {
+        using var temp = new TempDirectory();
+        var current = temp.Touch("current.mp4");
+        var other = temp.Touch("other.mp4");
+
+        var item = await QueueCoverAsync(
+            CreateRequest(AiMediaKinds.Video, current, "video", 42, "run-cover"),
+            CoverFace(other, coverQuality: 0.9, seconds: 12.5),
+            CoverDetection(current, 3.0, BestSampleBox, coverQuality: 0.4));
+
+        Assert.Equal(new FaceCoverSource(other, BestSampleBox, 12.5), item!.Source);
+        Assert.Equal(0.9, item.IncomingCoverQuality);
+    }
+
+    [Fact]
+    public async Task PersistFaces_VideoRunCropsItsOwnDetectionWhenTheBestSampleInAnotherVideoHasNoTime()
+    {
+        using var temp = new TempDirectory();
+        var current = temp.Touch("current.mp4");
+        var other = temp.Touch("other.mp4");
+
+        var item = await QueueCoverAsync(
+            CreateRequest(AiMediaKinds.Video, current, "video", 42, "run-cover"),
+            CoverFace(other, coverQuality: 0.9, seconds: null),
+            CoverDetection(current, 3.0, CurrentDetectionBox, coverQuality: 0.4));
+
+        // The crop is this video's sample, so it carries that sample's quality: a later run that can reach the
+        // face's real best sample still outscores it and replaces the cover.
+        Assert.Equal(new FaceCoverSource(current, CurrentDetectionBox, 3.0), item!.Source);
+        Assert.Equal(0.4, item.IncomingCoverQuality);
+    }
+
+    [Fact]
+    public async Task PersistFaces_VideoRunCropsItsOwnDetectionWhenTheBestSampleFileIsMissing()
+    {
+        using var temp = new TempDirectory();
+        var current = temp.Touch("current.mp4");
+
+        var item = await QueueCoverAsync(
+            CreateRequest(AiMediaKinds.Video, current, "video", 42, "run-cover"),
+            CoverFace(Path.Combine(temp.Path, "gone.mp4"), coverQuality: 0.9, seconds: 12.5),
+            CoverDetection(current, 3.0, CurrentDetectionBox, coverQuality: 0.4));
+
+        Assert.Equal(new FaceCoverSource(current, CurrentDetectionBox, 3.0), item!.Source);
+        Assert.Equal(0.4, item.IncomingCoverQuality);
+    }
+
+    [Fact]
+    public async Task PersistFaces_VideoRunTakesTheTimeOfTheMatchingDetectionWhenTheBestSampleIsThisVideo()
+    {
+        using var temp = new TempDirectory();
+        var current = temp.Touch("current.mp4");
+
+        var item = await QueueCoverAsync(
+            CreateRequest(AiMediaKinds.Video, current, "video", 42, "run-cover"),
+            CoverFace(current, coverQuality: 0.9, seconds: null),
+            CoverDetection(current, 3.0, CurrentDetectionBox, coverQuality: 0.4, score: 0.95),
+            CoverDetection(current, 7.0, BestSampleBox, coverQuality: 0.9, score: 0.5));
+
+        Assert.Equal(new FaceCoverSource(current, BestSampleBox, 7.0), item!.Source);
+        Assert.Equal(0.9, item.IncomingCoverQuality);
+    }
+
+    [Fact]
+    public async Task PersistFaces_VideoRunUsesTheStoredTimeWhenTheBestSampleBoxIsNotInThisBatch()
+    {
+        using var temp = new TempDirectory();
+        var current = temp.Touch("current.mp4");
+
+        var item = await QueueCoverAsync(
+            CreateRequest(AiMediaKinds.Video, current, "video", 42, "run-cover"),
+            CoverFace(current, coverQuality: 0.9, seconds: 42.0),
+            CoverDetection(current, 3.0, CurrentDetectionBox, coverQuality: 0.4));
+
+        Assert.Equal(new FaceCoverSource(current, BestSampleBox, 42.0), item!.Source);
+        Assert.Equal(0.9, item.IncomingCoverQuality);
+    }
+
+    [Fact]
+    public async Task PersistFaces_VideoRunCropsAStillBestSampleWithoutSeeking()
+    {
+        using var temp = new TempDirectory();
+        var current = temp.Touch("current.mp4");
+        var still = temp.Touch("still.jpg");
+
+        var item = await QueueCoverAsync(
+            CreateRequest(AiMediaKinds.Video, current, "video", 42, "run-cover"),
+            CoverFace(still, coverQuality: 0.9, seconds: null),
+            CoverDetection(current, 3.0, BestSampleBox, coverQuality: 0.4));
+
+        Assert.Equal(new FaceCoverSource(still, BestSampleBox, null), item!.Source);
+        Assert.Equal(0.9, item.IncomingCoverQuality);
+    }
+
+    [Fact]
+    public async Task PersistFaces_ImageRunCropsItsOwnDetectionWhenTheBestSampleIsAVideoWithoutTime()
+    {
+        using var temp = new TempDirectory();
+        var current = temp.Touch("current.jpg");
+        var other = temp.Touch("other.mp4");
+
+        var item = await QueueCoverAsync(
+            CreateRequest(AiMediaKinds.Image, current, "image", 17, "run-cover"),
+            CoverFace(other, coverQuality: 0.9, seconds: null),
+            CoverDetection(current, null, CurrentDetectionBox, coverQuality: 0.4));
+
+        Assert.Equal(new FaceCoverSource(current, CurrentDetectionBox, null), item!.Source);
+        Assert.Equal(0.4, item.IncomingCoverQuality);
+    }
+
+    [Fact]
+    public async Task PersistFaces_ImageRunInsideAZipArchiveCropsItsOwnDetectionWhenTheBestSampleIsAVideoWithoutTime()
+    {
+        using var temp = new TempDirectory();
+        var archivePath = System.IO.Path.Combine(temp.Path, "gallery.zip");
+        await CreateZipWithSolidImageAsync(archivePath, "original/006.jpg", new Rgba32(220, 30, 30));
+        var current = $"{archivePath}/original/006.jpg";
+        var other = temp.Touch("other.mp4");
+
+        var item = await QueueCoverAsync(
+            CreateRequest(AiMediaKinds.Image, current, "image", 17, "run-cover"),
+            CoverFace(other, coverQuality: 0.9, seconds: null),
+            CoverDetection(current, null, CurrentDetectionBox, coverQuality: 0.4));
+
+        Assert.Equal(new FaceCoverSource(current, CurrentDetectionBox, null), item!.Source);
+        Assert.Equal(0.4, item.IncomingCoverQuality);
+    }
+
+    [FfmpegFact]
+    public async Task PersistFaces_VideoRunBuildsTheCoverFromTheBestSampleFrameInAnotherVideo()
+    {
+        using var temp = new TempDirectory();
+        var current = Path.Combine(temp.Path, "current.mp4");
+        var other = Path.Combine(temp.Path, "other.mp4");
+        TestVideos.CreateTwoColorVideo(current, new Rgba32(30, 30, 220), new Rgba32(30, 30, 220), switchAtSeconds: 2, totalSeconds: 4);
+        TestVideos.CreateTwoColorVideo(other, new Rgba32(220, 30, 30), new Rgba32(30, 200, 30), switchAtSeconds: 2, totalSeconds: 4);
+
+        await using var provider = CreateProvider(services =>
+        {
+            services.AddSingleton<IBlobService, TestBlobService>();
+            services.AddSingleton(new CoveConfiguration());
+        });
+        var service = new AiFacesPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
+        var batch = new AiPreparedArtifactBatch();
+        // The best sample is green, at 3 s in the other video. This video's own detection at 0.5 s has the same
+        // box, which used to send the seek to 0.5 s inside the other video and crop its red frame.
+        batch.Faces.Add(CoverFace(other, coverQuality: 0.9, seconds: 3.0));
+        batch.Detections.Add(CoverDetection(current, 0.5, BestSampleBox, coverQuality: 0.4));
+
+        await service.PersistAsync(CreateRequest(AiMediaKinds.Video, current, "video", 42, "run-cover"), batch);
+
+        await using var scope = provider.CreateAsyncScope();
+        var face = await scope.ServiceProvider.GetRequiredService<CoveContext>().Faces.SingleAsync();
+        var blobService = (TestBlobService)scope.ServiceProvider.GetRequiredService<IBlobService>();
+        Assert.False(string.IsNullOrWhiteSpace(face.CoverBlobId));
+        using var cover = SixLabors.ImageSharp.Image.Load<Rgba32>(blobService.StoredBlobs[face.CoverBlobId!]);
+        var pixel = cover[cover.Width / 2, cover.Height / 2];
+        Assert.True(pixel.G > 160 && pixel.R < 80 && pixel.B < 80, $"Expected the green frame at 3 s of the other video, got RGB({pixel.R}, {pixel.G}, {pixel.B}).");
+    }
+
+    [Fact]
+    public async Task PersistFaces_RebuildsACoverWithoutStoredQualityOnlyOnce()
+    {
+        // Covers built before the cover-quality field existed, or whose field definition was renamed, have a blob
+        // but no quality the persistence step can read. The next run rebuilds such a cover once and records the
+        // quality, so later runs with the same sample keep it.
+        using var temp = new TempDirectory();
+        var imagePath = Path.Combine(temp.Path, "cover-source.jpg");
+        using (var image = new Image<Rgba32>(640, 480, new Rgba32(220, 220, 220)))
+        {
+            await image.SaveAsJpegAsync(imagePath);
+        }
+
+        await using var provider = CreateProvider(services =>
+        {
+            services.AddSingleton<IBlobService, TestBlobService>();
+            services.AddSingleton(new CoveConfiguration());
+        });
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            db.Faces.Add(new Face { Label = "Cover Face", PrimarySourceKey = "face-cover", CoverBlobId = "legacy-blob" });
+            await db.SaveChangesAsync();
+        }
+
+        var service = new AiFacesPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
+        var coverBlobIds = new List<string?>();
+        for (var run = 0; run < 2; run++)
+        {
+            var batch = new AiPreparedArtifactBatch();
+            batch.Faces.Add(CoverFace(imagePath, coverQuality: 0.9, seconds: null));
+            await service.PersistAsync(CreateRequest(AiMediaKinds.Image, imagePath, "image", 17, $"run-cover-{run}"), batch);
+
+            await using var scope = provider.CreateAsyncScope();
+            coverBlobIds.Add((await scope.ServiceProvider.GetRequiredService<CoveContext>().Faces.AsNoTracking().SingleAsync()).CoverBlobId);
+        }
+
+        Assert.NotEqual("legacy-blob", coverBlobIds[0]);
+        Assert.Equal(coverBlobIds[0], coverBlobIds[1]);
+    }
+
+    private static async Task<FaceCoverWorkItem?> QueueCoverAsync(AiDispatchRequest request, AiPreparedFaceIdentity face, params AiPreparedDetection[] detections)
+    {
+        var queue = new RecordingFaceCoverQueue();
+        await using var provider = CreateProvider(services => services.AddSingleton<IAiFaceCoverQueue>(queue));
+        var service = new AiFacesPersistenceService(provider.GetRequiredService<IServiceScopeFactory>());
+        var batch = new AiPreparedArtifactBatch();
+        batch.Faces.Add(face);
+        foreach (var detection in detections)
+        {
+            batch.Detections.Add(detection);
+        }
+
+        await service.PersistAsync(request, batch);
+        return Assert.Single(queue.Items);
+    }
+
+    private static AiPreparedFaceIdentity CoverFace(string coverAssetId, double coverQuality, double? seconds)
+    {
+        var metadata = new Dictionary<string, string>
+        {
+            ["coverQualityScore"] = coverQuality.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+        };
+        if (seconds.HasValue)
+        {
+            metadata["coverObservedAtSeconds"] = seconds.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        return new AiPreparedFaceIdentity(
+            "face-cover",
+            "ext:ai.faces",
+            Label: "Cover Face",
+            IsProvisional: false,
+            QualityScore: 0.97,
+            CoverAssetId: coverAssetId,
+            CoverBoundingBox: BestSampleBox,
+            Metadata: metadata);
+    }
+
+    private static AiPreparedDetection CoverDetection(string assetId, double? seconds, AiBoundingBox box, double coverQuality, double score = 0.9)
+        => new(
+            assetId,
+            "ext:ai.faces",
+            Class: "face",
+            ObservedAtSeconds: seconds,
+            Score: score,
+            BoundingBox: box,
+            ModelKey: "scrfd_face",
+            RefKind: "face",
+            RefKey: "face-cover",
+            GroupKey: "track-1",
+            Metadata: new Dictionary<string, string>
+            {
+                ["coverQualityScore"] = coverQuality.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+            });
+
+    private sealed class RecordingFaceCoverQueue : IAiFaceCoverQueue
+    {
+        public List<FaceCoverWorkItem> Items { get; } = [];
+
+        public void Enqueue(IServiceProvider services, IReadOnlyList<FaceCoverWorkItem> items) => Items.AddRange(items);
+    }
+
+    private sealed class TempDirectory : IDisposable
+    {
+        public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"ai-faces-cover-{Guid.NewGuid():N}");
+
+        public TempDirectory() => Directory.CreateDirectory(Path);
+
+        // An empty file is enough where only the cover source is resolved and nothing is decoded.
+        public string Touch(string name)
+        {
+            var path = System.IO.Path.Combine(Path, name);
+            File.WriteAllBytes(path, []);
+            return path;
+        }
+
+        public void Dispose() => Directory.Delete(Path, recursive: true);
+    }
+
+    private static async Task CreateZipWithSolidImageAsync(string archivePath, string entryPath, Rgba32 color)
+    {
+        await using var file = File.Create(archivePath);
+        using var archive = new System.IO.Compression.ZipArchive(file, System.IO.Compression.ZipArchiveMode.Create, leaveOpen: false);
+        var entry = archive.CreateEntry(entryPath);
+        await using var entryStream = entry.Open();
+        using var image = new Image<Rgba32>(640, 480, color);
+        await image.SaveAsJpegAsync(entryStream);
+    }
+
+    private static void AssertCoverIsReddish(byte[] coverBytes)
+    {
+        using var cover = SixLabors.ImageSharp.Image.Load<Rgba32>(coverBytes);
+        var pixel = cover[cover.Width / 2, cover.Height / 2];
+        Assert.True(pixel.R > 180 && pixel.G < 80 && pixel.B < 80, $"Expected the cover to come from the archived sample, got RGB({pixel.R}, {pixel.G}, {pixel.B}).");
+    }
+
+    [Fact]
     public async Task PersistFaces_ReplacesFaceCoverWhenNewSampleIsBetter()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), $"ai-faces-cover-{Guid.NewGuid():N}");

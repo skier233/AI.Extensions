@@ -42,6 +42,9 @@ internal sealed class ExtAiFacesIdentityEntity
 
     public double? CoverY2 { get; set; }
 
+    // Time of the cover sample within CoverAssetId when that is a video (see StoredFaceIdentity).
+    public double? CoverObservedAtSeconds { get; set; }
+
     public double CoverQualityScore { get; set; }
 
     public int ObservationCount { get; set; }

@@ -305,6 +305,7 @@ internal sealed class AiFaceIdentityReconciler
         {
             target.CoverAssetId = duplicate.CoverAssetId;
             target.CoverBoundingBox = duplicate.CoverBoundingBox;
+            target.CoverObservedAtSeconds = duplicate.CoverObservedAtSeconds;
             target.CoverQualityScore = duplicate.CoverQualityScore;
         }
 

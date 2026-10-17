@@ -15,10 +15,8 @@ namespace AI.Faces;
 /// thread that ran the AI-server request.
 /// </summary>
 internal sealed record FaceCoverWorkItem(
-    string HostEntityType,
     int FaceId,
-    AiPreparedFaceIdentity CoverFace,
-    AiPreparedDetection? CoverDetection,
+    FaceCoverSource Source,
     double? IncomingCoverQuality);
 
 internal interface IAiFaceCoverQueue
