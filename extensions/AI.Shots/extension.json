@@ -1,0 +1,59 @@
+{
+  "id": "cove.community.ai.shots",
+  "name": "AI Shots",
+  "version": "0.7.0",
+  "description": "Shot-boundary detection for AI runs. Stores each analysed video file's shots in Cove, where every extension can read and edit them.",
+  "author": "skier233",
+  "url": "https://github.com/skier233/AI.Extensions",
+  "categories": [
+    "ai",
+    "metadata",
+    "automation",
+    "video"
+  ],
+  "tutorialTopics": [
+    {
+      "id": "cove.community.ai.shots",
+      "title": "AI Shots",
+      "description": "Split videos into their shots, so editors and other extensions can work shot by shot.",
+      "parentTopicId": "cove.ai",
+      "pages": [
+        "videos",
+        "video",
+        "settings"
+      ],
+      "order": 90,
+      "slides": [
+        {
+          "id": "run-shot-boundaries",
+          "title": "Tick Shot Boundaries in Run AI",
+          "caption": "Select videos, open Run AI and tick Shot Boundaries. It is never ticked for you: the model reads every frame of each video, so a run takes minutes per video at 4K.",
+          "bodyMarkdown": "Your AI server needs a **shot boundary** model for the feature to appear. Each analysed video file gets its own shots, with each shot's type and the kind of cut that starts it.",
+          "mockKind": "tagging"
+        },
+        {
+          "id": "existing-shots",
+          "title": "Existing shots are kept",
+          "caption": "A file that already has shots is skipped, so running again only analyses new files. To analyse a file again, tick Force rerun and replace stored data.",
+          "bodyMarkdown": "A forced rerun **replaces the file's shots, including any you edited by hand**. Leave Shot Boundaries unticked when you force a rerun of other features.",
+          "mockKind": "settings"
+        },
+        {
+          "id": "where-shots-go",
+          "title": "Where shots are kept",
+          "caption": "Shots are stored in Cove, not in AI Shots, so every extension can read and edit them.",
+          "bodyMarkdown": "**Settings → AI Data** counts them as *Shot Boundaries* and can purge them, for example to analyse a whole library again with a newer model.",
+          "mockKind": "extension"
+        }
+      ]
+    }
+  ],
+  "minCoveVersion": "1.6.0",
+  "entryDll": "AI.Shots.dll",
+  "sharedAssemblies": [
+    "AI.Extensions.Abstractions"
+  ],
+  "dependencies": {
+    "cove.community.ai.core": ">=0.7.0"
+  }
+}

@@ -61,6 +61,46 @@ public sealed class AiFaceIdentityReconcilerTests
         Assert.Equal(1, report.EvidencePromotedIdentityCount);
     }
 
+    [Theory]
+    [InlineData(0.4, 0.9, "video-b", 31.5)]
+    [InlineData(0.9, 0.4, "video-a", null)]
+    public void Reconcile_MergeKeepsTheBetterCoverWithItsOwnTimestamp(double targetCoverQuality, double duplicateCoverQuality, string expectedAsset, double? expectedSeconds)
+    {
+        // A cover's file, box and timestamp describe one sample. A merge must move them together, or a video
+        // timestamp from one file ends up paired with another file.
+        var snapshot = new FaceIdentitySnapshot
+        {
+            NextIdentityOrdinal = 3,
+            Identities =
+            [
+                CoverIdentity("face-0001", "video-a", new StoredBoundingBox(0.1, 0.1, 0.2, 0.2), seconds: null, targetCoverQuality, [1f, 0f]),
+                CoverIdentity("face-0002", "video-b", new StoredBoundingBox(0.3, 0.3, 0.5, 0.5), seconds: 31.5, duplicateCoverQuality, [0.999f, 0.001f]),
+            ],
+        };
+
+        new AiFaceIdentityReconciler().Reconcile(snapshot, referencePack: null, new AiFacesSettings());
+
+        var identity = Assert.Single(snapshot.Identities);
+        Assert.Equal("face-0001", identity.FaceKey);
+        Assert.Equal(expectedAsset, identity.CoverAssetId);
+        Assert.Equal(expectedSeconds, identity.CoverObservedAtSeconds);
+        Assert.Equal(Math.Max(targetCoverQuality, duplicateCoverQuality), identity.CoverQualityScore);
+    }
+
+    private static StoredFaceIdentity CoverIdentity(string faceKey, string coverAssetId, StoredBoundingBox box, double? seconds, double coverQuality, List<float> vector)
+        => new()
+        {
+            FaceKey = faceKey,
+            LifecycleStatus = StoredFaceIdentityLifecycle.Provisional,
+            ObservationCount = 2,
+            AssetIds = [coverAssetId],
+            CoverAssetId = coverAssetId,
+            CoverBoundingBox = box,
+            CoverObservedAtSeconds = seconds,
+            CoverQualityScore = coverQuality,
+            Anchors = [new StoredFaceAnchor { ModelKey = "face_embedding_torchexport", QualityScore = 20.0, Vector = vector }],
+        };
+
     [Fact]
     public void Reconcile_DoesNotMergeDifferentPromotedUnknownIdentities()
     {

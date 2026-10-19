@@ -16,6 +16,7 @@ $extensions = @(
     "AI.Faces",
     "AI.Visual",
     "AI.Audio",
+    "AI.Shots",
     "AI.Full"
 )
 

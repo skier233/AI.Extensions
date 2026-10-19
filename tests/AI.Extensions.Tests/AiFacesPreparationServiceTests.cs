@@ -1084,17 +1084,8 @@ public sealed class AiFacesPreparationServiceTests
                 await image.SaveAsPngAsync(imagePath);
             }
 
-            var preparedFace = new AiPreparedFaceIdentity(
-                "face-0001",
-                "ext:ai.faces",
-                Label: null,
-                IsProvisional: true,
-                QualityScore: 1.0,
-                CoverAssetId: imagePath,
-                CoverBoundingBox: new AiBoundingBox(0.31, 0.14, 0.07, 0.16),
-                Metadata: null);
-
-            await using var coverStream = await AiFaceCoverGenerator.CreateAsync("image", preparedFace, coverDetection: null, configuration: null);
+            var result = await AiFaceCoverGenerator.CreateAsync(new FaceCoverSource(imagePath, new AiBoundingBox(0.31, 0.14, 0.07, 0.16), ObservedAtSeconds: null), configuration: null, zipFileReader: null);
+            await using var coverStream = result.Cover;
 
             Assert.NotNull(coverStream);
 
@@ -1127,19 +1118,11 @@ public sealed class AiFacesPreparationServiceTests
                 await image.SaveAsPngAsync(imagePath);
             }
 
-            var preparedFace = new AiPreparedFaceIdentity(
-                "face-0001",
-                "ext:ai.faces",
-                Label: null,
-                IsProvisional: true,
-                QualityScore: 1.0,
-                CoverAssetId: imagePath,
-                CoverBoundingBox: new AiBoundingBox(0.20, 0.20, 0.36, 0.36),
-                Metadata: null);
-
-            await using var coverStream = await AiFaceCoverGenerator.CreateAsync("image", preparedFace, coverDetection: null, configuration: null);
+            var result = await AiFaceCoverGenerator.CreateAsync(new FaceCoverSource(imagePath, new AiBoundingBox(0.20, 0.20, 0.36, 0.36), ObservedAtSeconds: null), configuration: null, zipFileReader: null);
+            await using var coverStream = result.Cover;
 
             Assert.Null(coverStream);
+            Assert.Contains("blank", result.FailureReason, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
@@ -1149,6 +1132,141 @@ public sealed class AiFacesPreparationServiceTests
             }
         }
     }
+
+    [FfmpegFact]
+    public async Task CreateAsync_CropsTheVideoFrameAtTheGivenTimestamp()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"ai-face-cover-video-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            var videoPath = Path.Combine(tempRoot, "sample.mp4");
+            TestVideos.CreateTwoColorVideo(videoPath, new Rgba32(220, 30, 30), new Rgba32(30, 200, 30), switchAtSeconds: 2, totalSeconds: 4);
+            var box = new AiBoundingBox(0.25, 0.15, 0.75, 0.85);
+
+            var early = await AiFaceCoverGenerator.CreateAsync(new FaceCoverSource(videoPath, box, ObservedAtSeconds: 0.5), configuration: null, zipFileReader: null);
+            var late = await AiFaceCoverGenerator.CreateAsync(new FaceCoverSource(videoPath, box, ObservedAtSeconds: 3.0), configuration: null, zipFileReader: null);
+
+            await using var earlyCover = early.Cover;
+            await using var lateCover = late.Cover;
+            Assert.NotNull(earlyCover);
+            Assert.NotNull(lateCover);
+            using var earlyImage = await Image.LoadAsync<Rgba32>(earlyCover!);
+            using var lateImage = await Image.LoadAsync<Rgba32>(lateCover!);
+            var earlyPixel = earlyImage[earlyImage.Width / 2, earlyImage.Height / 2];
+            var latePixel = lateImage[lateImage.Width / 2, lateImage.Height / 2];
+            Assert.True(earlyPixel.R > 180 && earlyPixel.G < 80, $"Expected the frame at 0.5 s to be red, got RGB({earlyPixel.R}, {earlyPixel.G}, {earlyPixel.B}).");
+            Assert.True(latePixel.G > 160 && latePixel.R < 80, $"Expected the frame at 3 s to be green, got RGB({latePixel.R}, {latePixel.G}, {latePixel.B}).");
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Prepare_VideoRunStoresTheBestSampleTimestampWithTheCover()
+    {
+        var store = new InMemoryFaceIdentityStore();
+        var service = CreateService(store, ShortVideoPromotionSettings());
+
+        var batch = await service.PrepareAsync(BuildTwoFrameVideoRequest("video-cover-time"));
+
+        var face = Assert.Single(batch.Faces);
+        Assert.Equal(LargeCoverBox, face.CoverBoundingBox);
+        Assert.Equal("1", face.Metadata!["coverObservedAtSeconds"]);
+        var identity = Assert.Single((await store.LoadAsync()).Identities);
+        Assert.Equal("video-cover-time", identity.CoverAssetId);
+        Assert.Equal(1.0, identity.CoverObservedAtSeconds);
+    }
+
+    [Fact]
+    public async Task Prepare_ImageRunStoresNoCoverTimestamp()
+    {
+        var store = new InMemoryFaceIdentityStore();
+        await store.SaveAsync(new FaceIdentitySnapshot
+        {
+            NextIdentityOrdinal = 2,
+            Identities = [StoredCoverIdentity("video-earlier", new StoredBoundingBox(0.1, 0.1, 0.3, 0.4), coverQuality: 0.0, seconds: 42.0, modelKey: "arcface_512")],
+        });
+        var service = CreateService(store);
+
+        var batch = await service.PrepareAsync(BuildImageRequest("image-cover", 0.95, 24.0, [1f, 0f]));
+
+        // The still outscored the video sample, so the video's timestamp must not stay paired with the still.
+        var face = Assert.Single(batch.Faces);
+        Assert.Equal("image-cover", face.CoverAssetId);
+        Assert.False(face.Metadata!.ContainsKey("coverObservedAtSeconds"));
+        var identity = Assert.Single((await store.LoadAsync()).Identities);
+        Assert.Equal("image-cover", identity.CoverAssetId);
+        Assert.Null(identity.CoverObservedAtSeconds);
+    }
+
+    [Theory]
+    [InlineData("video-legacy", 1.0)]
+    [InlineData("video-other", null)]
+    public async Task Prepare_VideoRunAddsTheMissingTimestampToAStoredSampleFromTheSameVideo(string assetId, double? expectedSeconds)
+    {
+        // Identities stored before timestamps existed keep a video sample's file and box only. A later run of that
+        // video that sees the same box recovers the time; a run of another video can't and leaves it unknown.
+        var store = new InMemoryFaceIdentityStore();
+        await store.SaveAsync(new FaceIdentitySnapshot
+        {
+            NextIdentityOrdinal = 2,
+            Identities = [StoredCoverIdentity("video-legacy", new StoredBoundingBox(LargeCoverBox.X1, LargeCoverBox.Y1, LargeCoverBox.X2, LargeCoverBox.Y2), coverQuality: 1_000_000.0, seconds: null)],
+        });
+        var service = CreateService(store, ShortVideoPromotionSettings());
+
+        var batch = await service.PrepareAsync(BuildTwoFrameVideoRequest(assetId));
+
+        var face = Assert.Single(batch.Faces);
+        Assert.Equal("video-legacy", face.CoverAssetId);
+        Assert.Equal(expectedSeconds?.ToString("R", System.Globalization.CultureInfo.InvariantCulture), face.Metadata!.GetValueOrDefault("coverObservedAtSeconds"));
+        var identity = Assert.Single((await store.LoadAsync()).Identities);
+        Assert.Equal("video-legacy", identity.CoverAssetId);
+        Assert.Equal(1_000_000.0, identity.CoverQualityScore);
+        Assert.Equal(expectedSeconds, identity.CoverObservedAtSeconds);
+    }
+
+    private static readonly AiBoundingBox LargeCoverBox = new(0.18, 0.18, 0.40, 0.40);
+
+    // Two frames of one face: a larger box at 1 s, which wins the cover, then a smaller one at 2 s.
+    private static AiDispatchRequest BuildTwoFrameVideoRequest(string assetId)
+    {
+        IReadOnlyList<AiCapabilityClaim> claims =
+        [
+            new AiCapabilityClaim("faces.video.detection", "Video Face Detection", AiMediaKinds.Video, "detection", "frame", "frames"),
+            new AiCapabilityClaim("faces.video.embedding", "Video Face Identity Embeddings", AiMediaKinds.Video, "embedding", "region", "regions", FromDetection: "face_detector_torchexport"),
+        ];
+        var result = new AiAnalyzeResult
+        {
+            MediaKind = AiMediaKinds.Video,
+            AssetId = assetId,
+            FrameIntervalSeconds = 1,
+            Frames =
+            [
+                CreateVideoFrame(1, 1, LargeCoverBox),
+                CreateVideoFrame(2, 2, new AiBoundingBox(0.20, 0.20, 0.36, 0.36)),
+            ],
+        };
+
+        return AiTestData.CreateRequest(AiMediaKinds.Video, claims, result, assetId);
+    }
+
+    private static StoredFaceIdentity StoredCoverIdentity(string coverAssetId, StoredBoundingBox box, double coverQuality, double? seconds, string modelKey = "face_embedding_torchexport")
+        => new()
+        {
+            FaceKey = "face-0001",
+            LifecycleStatus = StoredFaceIdentityLifecycle.Promoted,
+            QualityScore = 32.0,
+            CoverAssetId = coverAssetId,
+            CoverBoundingBox = box,
+            CoverQualityScore = coverQuality,
+            CoverObservedAtSeconds = seconds,
+            AssetIds = [coverAssetId],
+            Anchors = [new StoredFaceAnchor { ModelKey = modelKey, QualityScore = 32.0, Vector = [1f, 0f] }],
+        };
 
         [Fact]
         public async Task Prepare_VideoTrackCreatesIdentityWhenBranchDetectionIndexLivesInOtherBlock()
@@ -1578,6 +1696,7 @@ public sealed class AiFacesPreparationServiceTests
                     CoverAssetId = identity.CoverAssetId,
                     CoverBoundingBox = identity.CoverBoundingBox,
                     CoverQualityScore = identity.CoverQualityScore,
+                    CoverObservedAtSeconds = identity.CoverObservedAtSeconds,
                     ObservationCount = identity.ObservationCount,
                     AssetIds = [.. identity.AssetIds],
                     Anchors = identity.Anchors.Select(static anchor => new StoredFaceAnchor

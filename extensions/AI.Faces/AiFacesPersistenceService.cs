@@ -4,9 +4,11 @@ using System.Text.Json;
 using AI.Extensions.Abstractions;
 
 using Cove.Core.Entities;
+using Cove.Core.Entities.Galleries.Zip;
 using Cove.Core.Interfaces;
 
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 using Pgvector;
 
@@ -111,7 +113,7 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         var persistedEmbeddings = PersistEmbeddings(embeddingRepo, batch, facesByKey, request);
         // Resolve which faces need a cover crop now (cheap, no image work). The actual decode/crop/encode runs
         // on a background pool (see enqueue below) so it doesn't hold this AI-request worker.
-        var coverWorkItems = BuildFaceCoverWorkItems(hostEntityType, request, batch, facesByKey);
+        var coverWorkItems = BuildFaceCoverWorkItems(hostEntityType, request, batch, facesByKey, scope.ServiceProvider.GetService<ILogger<AiFacesPersistenceService>>());
 
         await faceRepo.SaveChangesAsync(ct);
 
@@ -367,36 +369,77 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
     // Resolves the cover crops to generate for this run (cheap: no image decode, no DB). The expensive
     // decode/crop/encode is done later by AiFaceCoverQueue on a background pool. The ShouldGenerateCover gate
     // and the current-quality read are deferred to GenerateAndStoreCoverAsync (background), so this stays pure.
-    private static List<FaceCoverWorkItem> BuildFaceCoverWorkItems(string hostEntityType, AiDispatchRequest request, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey)
+    private static List<FaceCoverWorkItem> BuildFaceCoverWorkItems(string hostEntityType, AiDispatchRequest request, AiPreparedArtifactBatch batch, IReadOnlyDictionary<string, Face> facesByKey, ILogger? logger)
     {
         var items = new List<FaceCoverWorkItem>(batch.Faces.Count);
         foreach (var preparedFace in batch.Faces)
         {
             if (!facesByKey.TryGetValue(preparedFace.FaceKey, out var face) || face.Id <= 0) continue;
 
-            var incomingCoverQuality = ReadPreparedCoverQuality(preparedFace);
-            var coverDetection = ResolveCoverDetection(batch, preparedFace);
-            var coverFace = ResolveCoverFace(hostEntityType, request, preparedFace);
-
-            // When the image cover source was substituted to the current host image (ResolveCoverFace,
-            // images only), the crop box must come from a detection on THIS image too. The stored
-            // CoverBoundingBox is the face's best-quality sample, which may belong to a *different* image
-            // the face also appears in — cropping the current image at those coordinates lands on the
-            // wrong region, the result is detected as blank, and the cover is silently skipped (leaving
-            // the fingerprint placeholder). Videos don't hit this: they keep asset+box+timestamp together
-            // with no substitution. Re-anchor the box to the current host's detection to keep them in sync.
-            if (hostEntityType == "image"
-                && coverDetection is not null
-                && !string.Equals(coverFace.CoverAssetId, preparedFace.CoverAssetId, StringComparison.Ordinal))
+            var detections = batch.Detections
+                .Where(d => !string.IsNullOrWhiteSpace(d.RefKey) && d.RefKey.Equals(preparedFace.FaceKey, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (ResolveBestSampleSource(hostEntityType, request, preparedFace, detections) is { } bestSample)
             {
-                coverFace = coverFace with { CoverBoundingBox = coverDetection.BoundingBox };
+                items.Add(new FaceCoverWorkItem(face.Id, bestSample, ReadPreparedCoverQuality(preparedFace)));
+                continue;
             }
 
-            items.Add(new FaceCoverWorkItem(hostEntityType, face.Id, coverFace, coverDetection, incomingCoverQuality));
+            // The best sample can't be read from here: its file is missing, or it is a frame of a video whose time
+            // wasn't stored. Crop this host's own best sample of the face instead, with that sample's frame and box
+            // and its own quality, so a later run that can reach the real best sample still outscores it.
+            var ownSample = detections
+                .OrderByDescending(static d => ReadDetectionCoverQuality(d) ?? double.MinValue)
+                .ThenByDescending(static d => d.Score)
+                .FirstOrDefault();
+            var currentPath = ResolveCurrentFilePath(request);
+            var ownSeconds = hostEntityType == "video" ? ownSample?.ObservedAtSeconds : null;
+            if (ownSample is null || currentPath is null || (hostEntityType == "video" && ownSeconds is null))
+            {
+                logger?.LogInformation(
+                    "AI.Faces skipped the cover for face {FaceId}: its best sample {CoverAssetId} can't be read and this {HostEntityType} has no usable sample of it.",
+                    face.Id, preparedFace.CoverAssetId, hostEntityType);
+                continue;
+            }
+
+            items.Add(new FaceCoverWorkItem(face.Id, new FaceCoverSource(currentPath, ownSample.BoundingBox, ownSeconds), ReadDetectionCoverQuality(ownSample)));
         }
 
         return items;
     }
+
+    // The face's best sample as a readable source, or null when this run can't read it. The decode path follows
+    // the sample's file, not the host type of this run: a still (an image file or a zipped gallery image) is
+    // cropped as a still, and a video is seeked only to a time that belongs to that same file.
+    private static FaceCoverSource? ResolveBestSampleSource(string hostEntityType, AiDispatchRequest request, AiPreparedFaceIdentity preparedFace, IReadOnlyList<AiPreparedDetection> detections)
+    {
+        if (preparedFace.CoverBoundingBox is not { } box || string.IsNullOrWhiteSpace(preparedFace.CoverAssetId)) return null;
+
+        var coverPath = preparedFace.CoverAssetId.Trim();
+        // The sample may be this run's own file under the AI server's asset id; read it through the local subject.
+        var isCurrentFile = string.Equals(coverPath, request.Context.AssetId, StringComparison.Ordinal)
+            || string.Equals(coverPath, request.Context.Subject, StringComparison.Ordinal);
+        var readablePath = isCurrentFile && ResolveCurrentFilePath(request) is { } currentPath ? currentPath : coverPath;
+
+        if (AiFaceCoverGenerator.IsStillImagePath(coverPath) || (isCurrentFile && hostEntityType == "image"))
+        {
+            return AiFaceCoverGenerator.SourceExists(readablePath) ? new FaceCoverSource(readablePath, box, null) : null;
+        }
+
+        if (!File.Exists(readablePath)) return null;
+
+        // Samples stored before their time was recorded can still be found when this run is of the same video and
+        // saw the same box again.
+        var seconds = ReadPreparedCoverSeconds(preparedFace)
+            ?? (isCurrentFile && hostEntityType == "video"
+                ? detections.Where(d => BoundingBoxesMatch(d.BoundingBox, box)).OrderByDescending(static d => d.Score).FirstOrDefault()?.ObservedAtSeconds
+                : null);
+        return seconds is null ? null : new FaceCoverSource(readablePath, box, seconds);
+    }
+
+    // The run's own file as a readable source. An image from a zipped gallery is an "<archive>.zip/<entry>" path.
+    private static string? ResolveCurrentFilePath(AiDispatchRequest request)
+        => !string.IsNullOrWhiteSpace(request.Context.Subject) && AiFaceCoverGenerator.SourceExists(request.Context.Subject) ? request.Context.Subject : null;
 
     // Background worker entry point (called by AiFaceCoverQueue on its own scope/thread): decode the source
     // image, crop the face, encode the cover JPEG, store it, and stamp the face — loading the face fresh so it
@@ -409,6 +452,7 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         var faceRepo = services.GetRequiredService<IFaceRepository>();
         var customFieldRepo = services.GetRequiredService<ICustomFieldRepository>();
         var configuration = services.GetService<CoveConfiguration>();
+        var zipFileReader = services.GetService<IZipFileReader>();
 
         var face = await faceRepo.GetFaceAsync(item.FaceId, tracking: true, ct);
         if (face is null) return false;
@@ -416,8 +460,15 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         var currentCoverQuality = await customFieldRepo.FindNumberValueAsync(CustomFieldEntityTypes.Face, face.Id, CoverBlobQualityScoreField, ct);
         if (!ShouldGenerateCover(face, item.IncomingCoverQuality, currentCoverQuality is null ? null : (double?)currentCoverQuality)) return false;
 
-        await using var coverStream = await AiFaceCoverGenerator.CreateAsync(item.HostEntityType, item.CoverFace, item.CoverDetection, configuration, ct);
-        if (coverStream is null) return false;
+        var cover = await AiFaceCoverGenerator.CreateAsync(item.Source, configuration, zipFileReader, ct);
+        await using var coverStream = cover.Cover;
+        if (coverStream is null)
+        {
+            services.GetService<ILogger<AiFacesPersistenceService>>()?.LogInformation(
+                "AI.Faces could not build the cover for face {FaceId} from {CoverPath}{CoverTime}: {Reason}.",
+                face.Id, item.Source.Path, item.Source.ObservedAtSeconds is { } seconds ? $" at {seconds.ToString("0.###", CultureInfo.InvariantCulture)} s" : string.Empty, cover.FailureReason);
+            return false;
+        }
 
         var previousBlobId = face.CoverBlobId;
         face.CoverBlobId = await blobService.StoreBlobAsync(coverStream, "image/jpeg", ct);
@@ -425,12 +476,7 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
 
         if (item.IncomingCoverQuality.HasValue)
         {
-            var definition = await customFieldRepo.FindOrCreateDefinitionAsync(new CustomFieldDefinition
-            {
-                Key = CoverBlobQualityScoreField, Label = "AI Faces Cover Quality",
-                Type = CustomFieldTypes.Number, EntityTypes = [CustomFieldEntityTypes.Face],
-                Filterable = false, Sortable = false, DisplayOrder = -1000,
-            }, ct);
+            var definition = await EnsureCoverBlobQualityDefinitionAsync(customFieldRepo, ct);
             await customFieldRepo.UpsertNumberValueAsync(CustomFieldEntityTypes.Face, face.Id, definition.Id, Convert.ToDecimal(item.IncomingCoverQuality.Value, CultureInfo.InvariantCulture), ct);
         }
 
@@ -441,6 +487,14 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
 
         return true;
     }
+
+    internal static Task<CustomFieldDefinition> EnsureCoverBlobQualityDefinitionAsync(ICustomFieldRepository customFieldRepo, CancellationToken ct)
+        => customFieldRepo.FindOrCreateDefinitionAsync(new CustomFieldDefinition
+        {
+            Key = CoverBlobQualityScoreField, Label = "AI Faces Cover Quality",
+            Type = CustomFieldTypes.Number, EntityTypes = [CustomFieldEntityTypes.Face],
+            Filterable = false, Sortable = false, DisplayOrder = -1000,
+        }, ct);
 
     internal static async Task RefreshFaceStatsAsync(IFaceRepository faceRepo, IDetectionRepository detectionRepo, IReadOnlyCollection<int> faceIds, CancellationToken ct)
     {
@@ -497,31 +551,6 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
         }
     }
 
-    private static AiPreparedDetection? ResolveCoverDetection(AiPreparedArtifactBatch batch, AiPreparedFaceIdentity preparedFace)
-    {
-        var candidates = batch.Detections.Where(d => !string.IsNullOrWhiteSpace(d.RefKey) && d.RefKey.Equals(preparedFace.FaceKey, StringComparison.OrdinalIgnoreCase));
-        if (preparedFace.CoverBoundingBox is { } coverBox)
-        {
-            var exact = candidates.Where(d => BoundingBoxesMatch(d.BoundingBox, coverBox)).OrderByDescending(static d => d.Score).FirstOrDefault();
-            if (exact is not null) return exact;
-        }
-        return candidates.OrderByDescending(static d => d.Score).FirstOrDefault();
-    }
-
-    private static AiPreparedFaceIdentity ResolveCoverFace(string hostEntityType, AiDispatchRequest request, AiPreparedFaceIdentity preparedFace)
-    {
-        if (hostEntityType != "image"
-            || string.IsNullOrWhiteSpace(preparedFace.CoverAssetId)
-            || File.Exists(preparedFace.CoverAssetId)
-            || string.IsNullOrWhiteSpace(request.Context.Subject)
-            || !File.Exists(request.Context.Subject))
-        {
-            return preparedFace;
-        }
-
-        return preparedFace with { CoverAssetId = request.Context.Subject };
-    }
-
     private static bool BoundingBoxesMatch(AiBoundingBox left, AiBoundingBox right)
         => Math.Abs(left.X1 - right.X1) <= 0.0001 && Math.Abs(left.Y1 - right.Y1) <= 0.0001 && Math.Abs(left.X2 - right.X2) <= 0.0001 && Math.Abs(left.Y2 - right.Y2) <= 0.0001;
 
@@ -556,6 +585,14 @@ internal sealed class AiFacesPersistenceService(IServiceScopeFactory scopeFactor
 
     private static double? ReadPreparedCoverQuality(AiPreparedFaceIdentity preparedFace)
         => preparedFace.Metadata is not null && preparedFace.Metadata.TryGetValue("coverQualityScore", out var value)
+            && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
+
+    private static double? ReadPreparedCoverSeconds(AiPreparedFaceIdentity preparedFace)
+        => preparedFace.Metadata is not null && preparedFace.Metadata.TryGetValue(AiFacePreparationService.CoverObservedAtSecondsMetadataKey, out var value)
+            && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) && double.IsFinite(parsed) ? parsed : null;
+
+    private static double? ReadDetectionCoverQuality(AiPreparedDetection detection)
+        => detection.Metadata is not null && detection.Metadata.TryGetValue("coverQualityScore", out var value)
             && double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
 
     private static double? ReadCustomDouble(Dictionary<string, object>? fields, string key)

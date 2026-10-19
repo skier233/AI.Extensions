@@ -11,6 +11,7 @@
     "build:ui:AI.Core": "node scripts/build-extension-ui.mjs AI.Core",
     "build:ui:AI.Tagging": "node scripts/build-extension-ui.mjs AI.Tagging",
     "build:ui:AI.Faces": "node scripts/build-extension-ui.mjs AI.Faces",
+    "test:ui": "node --test \"tests/ui/**/*.test.mjs\"",
     "build:ui:AI.Review": "node scripts/build-extension-ui.mjs AI.Review",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

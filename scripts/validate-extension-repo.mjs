@@ -15,10 +15,10 @@ function isLowerKebab(value) {
   return value === value.toLowerCase() && !value.includes(" ");
 }
 
-function readMsBuildProperties(filePath) {
-  if (!fs.existsSync(filePath)) return {};
+function readMsBuildProperties(filePath, inherited = {}) {
+  if (!fs.existsSync(filePath)) return { ...inherited };
 
-  const props = {};
+  const props = { ...inherited };
   const content = fs.readFileSync(filePath, "utf8");
   const pattern = /<([A-Za-z_][A-Za-z0-9_.-]*)(?:\s+[^>]*)?>([^<]*)<\/\1>/g;
   for (const match of content.matchAll(pattern)) {
@@ -32,21 +32,45 @@ function readMsBuildProperties(filePath) {
 
 function parseVersion(value) {
   if (typeof value !== "string") return null;
-  const match = value.match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
+  const match = value.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?$/);
   if (!match) return null;
-  return match.slice(1).map(part => Number.parseInt(part, 10));
+  return {
+    core: match.slice(1, 4).map(part => Number.parseInt(part, 10)),
+    prerelease: match[4] ? match[4].split(".") : [],
+  };
+}
+
+// SemVer 2.0 precedence of prerelease identifiers: a release sorts after its prereleases; numeric identifiers
+// compare numerically and sort before alphanumeric ones; a longer list wins when every shared identifier is equal.
+function comparePrerelease(left, right) {
+  if (left.length === 0 || right.length === 0) return right.length - left.length;
+
+  for (let i = 0; i < Math.min(left.length, right.length); i++) {
+    const leftNumeric = /^\d+$/.test(left[i]);
+    const rightNumeric = /^\d+$/.test(right[i]);
+    if (leftNumeric && rightNumeric) {
+      const difference = Number(left[i]) - Number(right[i]);
+      if (difference !== 0) return difference;
+    } else if (leftNumeric !== rightNumeric) {
+      return leftNumeric ? -1 : 1;
+    } else if (left[i] !== right[i]) {
+      return left[i] < right[i] ? -1 : 1;
+    }
+  }
+
+  return left.length - right.length;
 }
 
 function compareVersions(left, right) {
-  const leftParts = parseVersion(left);
-  const rightParts = parseVersion(right);
-  if (!leftParts || !rightParts) return null;
+  const leftVersion = parseVersion(left);
+  const rightVersion = parseVersion(right);
+  if (!leftVersion || !rightVersion) return null;
 
   for (let i = 0; i < 3; i++) {
-    if (leftParts[i] !== rightParts[i]) return leftParts[i] - rightParts[i];
+    if (leftVersion.core[i] !== rightVersion.core[i]) return leftVersion.core[i] - rightVersion.core[i];
   }
 
-  return 0;
+  return comparePrerelease(leftVersion.prerelease, rightVersion.prerelease);
 }
 
 function validateVersionFloor(label, field, value, minimum) {
@@ -168,6 +192,19 @@ for (const entry of entries) {
   } else {
     for (const category of manifest.categories) {
       if (!isLowerKebab(category)) errors.push(entry.id + ": category must be lowercase kebab-case: " + category);
+    }
+  }
+
+  // A project may compile against a newer Cove than the repo-wide floor (AI Shots does), but never against a newer
+  // Cove than its manifest admits: the host would load it into a Cove missing the API it was built against.
+  if (!isManifestOnly && fs.existsSync(projectPath) && manifest.minCoveVersion) {
+    const projectProps = readMsBuildProperties(projectPath, buildProps);
+    for (const field of ["CoveSdkVersion", "CoveCoreVersion"]) {
+      const value = projectProps[field];
+      const comparison = value ? compareVersions(value, manifest.minCoveVersion) : null;
+      if (comparison != null && comparison > 0) {
+        errors.push(entry.id + ": " + entry.name + ".csproj compiles against Cove " + value + " (" + field + ") but extension.json minCoveVersion is " + manifest.minCoveVersion);
+      }
     }
   }
 

@@ -57,7 +57,16 @@ public sealed record AiCapabilityFeature(
     IReadOnlyList<string> ClaimIds,
     IReadOnlyList<AiModelBindingSlot>? ModelBindingSlots = null,
     string? Description = null
-);
+)
+{
+    /// <summary>
+    /// False keeps the feature unticked whenever the Run AI dialog picks a selection for the user: when it opens,
+    /// restores the last run's selection, changes media kind or clears the preset. The user then ticks it for each run
+    /// that should include it. For features that are expensive on every item or whose forced rerun replaces results
+    /// users edit by hand.
+    /// </summary>
+    public bool SelectedByDefault { get; init; } = true;
+}
 
 public sealed record AiCapabilityDescriptor(
     string ExtensionId,

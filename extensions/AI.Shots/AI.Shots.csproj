@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>AI.Shots</AssemblyName>
+    <RootNamespace>AI.Shots</RootNamespace>
+    <!--
+      AI Shots needs IVideoShotService, so it compiles against the Cove packages at $(AiShotsCoveVersion) (see
+      ..\..\Directory.Build.props) rather than the repo-wide CoveMinVersion or a sibling Cove checkout.
+    -->
+    <CoveSdkVersion>$(AiShotsCoveVersion)</CoveSdkVersion>
+    <CoveCoreVersion>$(AiShotsCoveVersion)</CoveCoreVersion>
+    <UseLocalCoveSource>false</UseLocalCoveSource>
+    <UseLocalCoveCore>false</UseLocalCoveCore>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\shared\AI.Extensions.Abstractions\AI.Extensions.Abstractions.csproj" />
+  </ItemGroup>
+
+  <!-- Cove host contracts are referenced centrally and compile-only by ..\..\Directory.Build.targets. -->
+</Project>

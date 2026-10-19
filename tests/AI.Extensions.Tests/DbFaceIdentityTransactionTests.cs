@@ -67,6 +67,62 @@ public sealed class DbFaceIdentityTransactionTests
         Assert.Equal(2, anchorsChanged.Anchors.Count);
     }
 
+    [Fact]
+    public async Task CommitAsync_RoundTripsTheCoverTimestamp()
+    {
+        await using var provider = CreateProvider();
+        await using (var scope = provider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+            db.Set<ExtAiFacesIdentityEntity>().Add(DbFaceIdentityStore.NewEntity(CreateIdentity("face-0001", [1f, 0f]), DateTime.UtcNow));
+            await db.SaveChangesAsync();
+        }
+
+        await using (var transaction = await provider.GetRequiredService<IFaceIdentityStore>().BeginFullAsync())
+        {
+            var existing = Assert.Single(transaction.Snapshot.Identities);
+            Assert.Null(existing.CoverObservedAtSeconds);
+            existing.CoverObservedAtSeconds = 12.5;
+
+            var created = CreateIdentity("face-0002", [0f, 1f]);
+            created.CoverAssetId = "video-b";
+            created.CoverBoundingBox = new StoredBoundingBox(0.1, 0.1, 0.3, 0.3);
+            created.CoverObservedAtSeconds = 47.25;
+            transaction.Snapshot.Identities.Add(created);
+            await transaction.CommitAsync();
+        }
+
+        await using (var transaction = await provider.GetRequiredService<IFaceIdentityStore>().BeginFullAsync())
+        {
+            var identities = transaction.Snapshot.Identities.ToDictionary(static identity => identity.FaceKey);
+            Assert.Equal(12.5, identities["face-0001"].CoverObservedAtSeconds);
+            Assert.Equal(47.25, identities["face-0002"].CoverObservedAtSeconds);
+
+            // A still that replaces the video sample clears the timestamp, and that must persist too.
+            identities["face-0001"].CoverObservedAtSeconds = null;
+            await transaction.CommitAsync();
+        }
+
+        await using var verificationScope = provider.CreateAsyncScope();
+        var stored = await verificationScope.ServiceProvider.GetRequiredService<CoveContext>()
+            .Set<ExtAiFacesIdentityEntity>()
+            .SingleAsync(identity => identity.FaceKey == "face-0001");
+        Assert.Null(stored.CoverObservedAtSeconds);
+    }
+
+    private static ServiceProvider CreateProvider()
+    {
+        var services = new ServiceCollection();
+        var databaseName = $"ai-face-identity-transaction-{Guid.NewGuid():N}";
+        var databaseRoot = new InMemoryDatabaseRoot();
+        services.AddDbContext<CoveContext>(options => options.UseInMemoryDatabase(databaseName, databaseRoot));
+        services.AddScoped<DbContext>(static sp => sp.GetRequiredService<CoveContext>());
+        services.AddSingleton<StoreBackedFaceIdentityStateStore>();
+        services.AddSingleton<IFaceIdentityStateStore>(static sp => sp.GetRequiredService<StoreBackedFaceIdentityStateStore>());
+        services.AddSingleton<IFaceIdentityStore, DbFaceIdentityStore>();
+        return services.BuildServiceProvider();
+    }
+
     private static async Task<Dictionary<string, int[]>> LoadAnchorIdsAsync(ServiceProvider provider)
     {
         await using var scope = provider.CreateAsyncScope();

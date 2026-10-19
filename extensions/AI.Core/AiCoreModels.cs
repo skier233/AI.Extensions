@@ -570,6 +570,13 @@ public sealed class AiRunVideoRequest
     public bool? DispatchResults { get; init; }
 
     public List<string>? ForceClaimIds { get; init; }
+
+    /// <summary>
+    /// The Cove file behind <see cref="Path"/>, set only by AI Core's own queue, which resolved it. Passed to planning
+    /// contributors. Never read from a request body, and left out of the request an AI run records.
+    /// </summary>
+    [JsonIgnore]
+    public int? FileId { get; init; }
 }
 
 public sealed class AiRunAudioRequest
@@ -999,7 +1006,11 @@ public sealed record AiResolvedRunTarget(
     string Path,
     int? EntityId = null,
     string? EntityType = null
-);
+)
+{
+    /// <summary>The Cove file behind <see cref="Path"/>, when the target was resolved from an entity.</summary>
+    public int? FileId { get; init; }
+}
 
 public sealed record AiQueuedRunResponse(
     string JobId,
