@@ -1,0 +1,17 @@
+/* AI Review: Cove's components carry their own look; only the key hint keycap is the extension's. */
+
+.ai-review-keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  padding: 0 0.35rem;
+  border: 1px solid var(--color-border, #2c2f3a);
+  border-bottom-width: 2px;
+  border-radius: 0.35rem;
+  background: var(--color-surface, #1b1d26);
+  color: var(--color-foreground, #e6e8ef);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.35rem;
+}

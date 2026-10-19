@@ -27,6 +27,12 @@
       "manifestOnly": true
     },
     {
+      "name": "AI.Review",
+      "id": "cove.community.ai.review",
+      "path": "extensions/AI.Review",
+      "tagPrefix": "ai-review/"
+    },
+    {
       "name": "AI.Tagging",
       "id": "cove.community.ai.tagging",
       "path": "extensions/AI.Tagging",

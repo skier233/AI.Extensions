@@ -12,6 +12,7 @@ $repoRoot = Split-Path -Parent $scriptRoot
 $extensions = @(
     "AI.Core",
     "AI.Tagging",
+    "AI.Review",
     "AI.Faces",
     "AI.Visual",
     "AI.Audio",

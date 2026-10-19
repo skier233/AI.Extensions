@@ -786,6 +786,186 @@ public sealed class AiCoreOrchestratorTests
         Assert.Equal(1, await db.TagApplications.CountAsync(application => application.SourceRunId == first.RunId && application.ModelKey == "Body"));
     }
 
+    [Fact]
+    public async Task RunVideoAsync_SupersedingOneCategoryOfMergedModelKeepsItsOtherCategory()
+    {
+        await using var provider = CreateProvider();
+        await using var scope = provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+        db.Tags.Add(new Tag { Id = 10, Name = "Action", SortName = "Action" });
+        await db.SaveChangesAsync();
+
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels =
+            [
+                CreateTaggingModel("tagger-merged", ["Actions", "Body"], scope: "frame", version: "1.0"),
+                CreateTaggingModel("tagger-actions-v2", ["Actions"], scope: "frame", version: "2.0"),
+                CreateTaggingModel("tagger-body-old", ["Body"], scope: "frame", version: "0.5"),
+            ],
+            EchoRequestedVideoModels = true,
+        };
+        var orchestrator = CreatePlannerOrchestrator(scope.ServiceProvider, client, CreateTaggingContributor("tagging.video.frame", AiMediaKinds.Video, "frame"));
+
+        AiRunVideoRequest Request() => new()
+        {
+            Path = "E:/media/example.mp4",
+            EntityType = "video",
+            EntityId = 42,
+            ClaimIds = ["tagging.video.frame"],
+            DispatchResults = true,
+        };
+
+        var first = await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings
+            {
+                CapabilityModelBindings =
+                [
+                    new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "frame", Category = "Actions", Model = "tagger-merged" },
+                    new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "frame", Category = "Body", Model = "tagger-merged" },
+                ],
+            }.Normalize(),
+            Request());
+
+        db.TagApplications.AddRange(
+            new TagApplication { HostType = AffinityHostType.Video, HostId = 42, TagId = 10, SourceKey = "ext:ai.tagging", SourceRunId = first.RunId, ModelKey = "Actions", Confidence = 0.9f },
+            new TagApplication { HostType = AffinityHostType.Video, HostId = 42, TagId = 10, SourceKey = "ext:ai.tagging", SourceRunId = first.RunId, ModelKey = "Body", Confidence = 0.9f });
+        await db.SaveChangesAsync();
+
+        // Actions moves to a newer single-category model; Body moves to an older one, which the
+        // prior merged run still beats, so only the Actions slot re-runs.
+        var second = await orchestrator.RunVideoAsync(
+            new AiCoreConnectionSettings
+            {
+                CapabilityModelBindings =
+                [
+                    new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "frame", Category = "Actions", Model = "tagger-actions-v2" },
+                    new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "frame", Category = "Body", Model = "tagger-body-old" },
+                ],
+            }.Normalize(),
+            Request());
+
+        var want = Assert.Single(Assert.IsType<VideoAnalyzeRequest>(client.LastAnalyzeRequest).Want ?? []);
+        Assert.Equal(["tagger-actions-v2"], want.Models);
+        Assert.Equal(AiRunPlanDecision.Rerun, Assert.Single(second.Plan).Decision);
+        Assert.Equal(0, await db.TagApplications.CountAsync(application => application.SourceRunId == first.RunId && application.ModelKey == "Actions"));
+        Assert.Equal(1, await db.TagApplications.CountAsync(application => application.SourceRunId == first.RunId && application.ModelKey == "Body"));
+    }
+
+    [Fact]
+    public async Task RunVideoAsync_UpgradingFaceModelStillClearsArtifactsStoredUnderConfigName()
+    {
+        await using var provider = CreateProvider();
+        await using var scope = provider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<CoveContext>();
+        var contributor = CreateFacesContributor();
+
+        RecordingAiServerClient Client(string detectorVersion) => new()
+        {
+            CatalogModels =
+            [
+                CreateModel("face_detector_torchexport", ["face_detections"], "detection", "frame", version: detectorVersion),
+                CreateModel("face_embedding_torchexport", ["face_embeddings"], "embedding", "region", version: "1.0"),
+            ],
+            EchoRequestedVideoModels = true,
+        };
+
+        AiRunVideoRequest Request() => new()
+        {
+            Path = "E:/media/example.mp4",
+            EntityType = "video",
+            EntityId = 42,
+            ClaimIds = ["faces.video.detection", "faces.video.embedding"],
+            DispatchResults = false,
+        };
+
+        await CreatePlannerOrchestrator(scope.ServiceProvider, Client("1.0"), contributor)
+            .RunVideoAsync(new AiCoreConnectionSettings().Normalize(), Request());
+
+        db.Faces.Add(new Face { Id = 100, Label = "Existing face", PrimarySourceKey = "ext:ai.faces" });
+        db.FaceAppearances.AddRange(
+            new FaceAppearance { FaceId = 100, HostType = FaceAppearanceHostType.Video, HostId = 42, SourceKey = "ext:ai.faces", Payload = JsonDocument.Parse("""{"modelKey":"face_detector_torchexport"}"""), SampleCount = 1 },
+            new FaceAppearance { FaceId = 100, HostType = FaceAppearanceHostType.Video, HostId = 42, SourceKey = "ext:ai.faces", Payload = JsonDocument.Parse("""{"modelKey":"face_embedding_torchexport"}"""), SampleCount = 1 });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+
+        var upgraded = Client("2.0");
+        var rerun = await CreatePlannerOrchestrator(scope.ServiceProvider, upgraded, contributor)
+            .RunVideoAsync(new AiCoreConnectionSettings().Normalize(), Request());
+
+        Assert.Equal(1, upgraded.AnalyzeVideoCallCount);
+        Assert.Contains(rerun.Plan, plan => plan.Decision == AiRunPlanDecision.Rerun);
+        var remaining = await db.FaceAppearances.AsNoTracking().ToListAsync();
+        var appearance = Assert.Single(remaining);
+        Assert.Equal("face_embedding_torchexport", appearance.Payload!.RootElement.GetProperty("modelKey").GetString());
+    }
+
+    [Fact]
+    public async Task RunImagesAsync_DropsSingleCategoryModelWhoseCategoryAMergedPickAlreadyProduces()
+    {
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels =
+            [
+                CreateTaggingModel("tagger-actions", ["Actions"]),
+                CreateTaggingModel("tagger-merged", ["Actions", "Body"]),
+            ],
+        };
+        var orchestrator = CreateOrchestrator(client, CreateTaggingContributor("tagging.image.asset", AiMediaKinds.Image, "asset"));
+
+        await orchestrator.RunImagesAsync(
+            new AiCoreConnectionSettings
+            {
+                CapabilityModelBindings =
+                [
+                    new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "asset", Category = "Actions", Model = "tagger-actions" },
+                    new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "asset", Category = "Body", Model = "tagger-merged" },
+                ],
+            }.Normalize(),
+            new AiRunImagesRequest
+            {
+                Paths = ["E:/media/example.jpg"],
+                ClaimIds = ["tagging.image.asset"],
+                DispatchResults = false,
+            });
+
+        var want = Assert.Single(Assert.IsType<ImageAnalyzeRequest>(client.LastAnalyzeRequest).Want ?? []);
+        Assert.Equal(["tagger-merged"], want.Models);
+    }
+
+    [Fact]
+    public async Task RunImagesAsync_KeepsBothModelsWhenEachOwnsACategoryTheOtherLacks()
+    {
+        var client = new RecordingAiServerClient
+        {
+            CatalogModels =
+            [
+                CreateTaggingModel("tagger-actions-pose", ["Actions", "Pose"]),
+                CreateTaggingModel("tagger-actions-body", ["Actions", "Body"]),
+            ],
+        };
+        var orchestrator = CreateOrchestrator(client, CreateTaggingContributor("tagging.image.asset", AiMediaKinds.Image, "asset"));
+
+        await orchestrator.RunImagesAsync(
+            new AiCoreConnectionSettings
+            {
+                CapabilityModelBindings =
+                [
+                    new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "asset", Category = "Pose", Model = "tagger-actions-pose" },
+                    new AiCapabilityModelBinding { CapabilityId = "tagging", SlotId = "category", Scope = "asset", Category = "Body", Model = "tagger-actions-body" },
+                ],
+            }.Normalize(),
+            new AiRunImagesRequest
+            {
+                Paths = ["E:/media/example.jpg"],
+                ClaimIds = ["tagging.image.asset"],
+                DispatchResults = false,
+            });
+
+        var want = Assert.Single(Assert.IsType<ImageAnalyzeRequest>(client.LastAnalyzeRequest).Want ?? []);
+        Assert.Equal(["tagger-actions-body", "tagger-actions-pose"], want.Models);
+    }
+
     private static IExtensionServiceExchange CreateExchange(IReadOnlyList<IAiCapabilityContributor> contributors)
     {
         var exchange = new ExtensionServiceExchange();

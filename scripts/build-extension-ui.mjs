@@ -17,6 +17,7 @@ const runtimeAliases = {
   "@tanstack/react-query": "@cove/runtime/react-query",
   "lucide-react": "@cove/runtime/lucide-react",
   "@cove/runtime/components": "@cove/runtime/components",
+  "@cove/runtime/api": "@cove/runtime/api",
 };
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -37,7 +38,7 @@ const outFile = path.join(distDir, "bundle.js");
 const cssOutFile = path.join(distDir, "bundle.css");
 const sharedThemeFile = path.join(rootDir, "shared", "theme.css");
 const tailwindCliEntry = path.join(rootDir, "node_modules", "@tailwindcss", "cli", "dist", "index.mjs");
-const themeScopeSelector = ":where(.ai-core-shell,.ai-core-settings-panel,.ai-core-modal-backdrop,.ai-tagging-settings-panel,.ai-faces-settings-panel)";
+const themeScopeSelector = ":where(.ai-core-shell,.ai-core-settings-panel,.ai-core-modal-backdrop,.ai-tagging-settings-panel,.ai-faces-settings-panel,.ai-review-shell)";
 
 function findMatchingBrace(css, openIndex) {
   let depth = 1;

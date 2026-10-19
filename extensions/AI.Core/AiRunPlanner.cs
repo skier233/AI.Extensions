@@ -112,14 +112,12 @@ internal sealed class AiRunPlanner(IAiRunRepository runRepo) : IAiRunPlanner
                 .Select(model => PlanModel(model, relevantRuns, forced, frameIntervalSeconds, threshold))
                 .ToArray();
 
+            var replacements = BuildReplacementKeys(perModel, relevantRuns);
+
             if (!want.AllowPartialExecution && perModel.Any(static item => item.Decision != AiRunPlanDecision.Skip))
             {
                 var executionModels = want.Models.Select(static model => model.ModelKey).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-                var replacementArtifactKeys = perModel
-                    .Where(static item => item.Decision == AiRunPlanDecision.Rerun)
-                    .SelectMany(static item => item.ReplacementArtifactKeys)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToArray();
+                var replacementArtifactKeys = replacements;
                 var reasons = perModel
                     .Where(static item => item.Decision != AiRunPlanDecision.Skip)
                     .SelectMany(static item => item.Reasons)
@@ -144,11 +142,6 @@ internal sealed class AiRunPlanner(IAiRunRepository runRepo) : IAiRunPlanner
             var execution = perModel
                 .Where(static item => item.Decision != AiRunPlanDecision.Skip)
                 .Select(static item => item.ModelKey)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-            var replacements = perModel
-                .Where(static item => item.Decision == AiRunPlanDecision.Rerun)
-                .SelectMany(static item => item.ReplacementArtifactKeys)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
             var reasonsForExecution = perModel
@@ -203,28 +196,27 @@ internal sealed class AiRunPlanner(IAiRunRepository runRepo) : IAiRunPlanner
         // categories (the per-category slot for tagging, the face_detections /
         // face_embeddings slot for faces, etc.).
         var slotPrevious = GetSlotKeys(desiredModel)
-            .Select(slot => FindMostRecentPrevious(relevantRuns, slot))
+            .Select(slot => (Slot: slot, Previous: FindMostRecentPrevious(relevantRuns, slot)))
             .ToArray();
 
         if (forced)
         {
-            var forcedReplacements = slotPrevious
-                .Where(static previous => previous is not null)
-                .SelectMany(static previous => previous!.ReplacementKeys)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+            var forcedSlots = slotPrevious
+                .Where(static item => item.Previous is not null)
+                .Select(static item => new ReplacedSlot(item.Slot, item.Previous!))
                 .ToArray();
             return new PlannedModelDecision(
                 desiredModel.ModelKey,
-                forcedReplacements.Length > 0 ? AiRunPlanDecision.Rerun : AiRunPlanDecision.Run,
-                forcedReplacements,
+                forcedSlots.Length > 0 ? AiRunPlanDecision.Rerun : AiRunPlanDecision.Run,
+                forcedSlots,
                 [$"Force rerun requested for model '{desiredModel.ModelKey}'."]);
         }
 
-        var replacementKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var replacedSlots = new List<ReplacedSlot>();
         var reasons = new List<string>();
         var needsRun = false;
 
-        foreach (var previous in slotPrevious)
+        foreach (var (slot, previous) in slotPrevious)
         {
             if (previous is null)
             {
@@ -239,11 +231,7 @@ internal sealed class AiRunPlanner(IAiRunRepository runRepo) : IAiRunPlanner
             }
 
             needsRun = true;
-            foreach (var key in previous.ReplacementKeys)
-            {
-                replacementKeys.Add(key);
-            }
-
+            replacedSlots.Add(new ReplacedSlot(slot, previous));
             reasons.Add(reason);
         }
 
@@ -254,9 +242,41 @@ internal sealed class AiRunPlanner(IAiRunRepository runRepo) : IAiRunPlanner
 
         return new PlannedModelDecision(
             desiredModel.ModelKey,
-            replacementKeys.Count > 0 ? AiRunPlanDecision.Rerun : AiRunPlanDecision.Run,
-            replacementKeys.ToArray(),
+            replacedSlots.Count > 0 ? AiRunPlanDecision.Rerun : AiRunPlanDecision.Run,
+            replacedSlots,
             reasons.Count > 0 ? reasons : [$"Model '{desiredModel.ModelKey}' is not satisfied by a prior AI run for this host."]);
+    }
+
+    // Keys the replaced slots' prior artifacts are stored under, so a replacing run can clear them.
+    // Tagging stores artifacts under the category, so only the slots actually being re-run are
+    // cleared: a merged prior model M(a,b) superseded for slot a alone must keep its b output.
+    // Faces/embeddings store artifacts under the model config_name, which spans all of that
+    // model's slots, so the config_name is only cleared once every slot the prior model still
+    // occupies on this host is being re-run.
+    private static string[] BuildReplacementKeys(IReadOnlyList<PlannedModelDecision> perModel, IReadOnlyList<AiRun> relevantRuns)
+    {
+        var replacedSlots = perModel
+            .Where(static item => item.Decision == AiRunPlanDecision.Rerun)
+            .SelectMany(static item => item.ReplacedSlots)
+            .ToArray();
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var replaced in replacedSlots)
+        {
+            keys.Add(replaced.Slot);
+        }
+
+        foreach (var group in replacedSlots.GroupBy(static item => item.Previous.ModelKey, StringComparer.OrdinalIgnoreCase))
+        {
+            var rerunSlots = group.Select(static item => item.Slot).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var occupiedSlots = group.First().Previous.Slots
+                .Where(slot => string.Equals(FindMostRecentPrevious(relevantRuns, slot)?.ModelKey, group.Key, StringComparison.OrdinalIgnoreCase));
+            if (occupiedSlots.All(rerunSlots.Contains))
+            {
+                keys.Add(group.Key);
+            }
+        }
+
+        return keys.ToArray();
     }
 
     // Skip / Rerun verdict for a requested model against one prior run for the same slot.
@@ -363,25 +383,12 @@ internal sealed class AiRunPlanner(IAiRunRepository runRepo) : IAiRunPlanner
                         model.Version,
                         run.FrameIntervalSec,
                         ExtractThreshold(run),
-                        BuildReplacementKeys(model));
+                        modelSlots);
                 }
             }
         }
 
         return null;
-    }
-
-    // Keys the prior run's artifacts may be stored under, so a replacing run can clear them.
-    // Faces store the model config_name; tagging stores the category — include both.
-    private static IReadOnlyList<string> BuildReplacementKeys(RunModelInfo model)
-    {
-        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { model.ModelKey };
-        foreach (var category in model.Categories)
-        {
-            keys.Add(category);
-        }
-
-        return keys.ToArray();
     }
 
     // A different threshold means a re-run. If either side has no recorded threshold we
@@ -555,8 +562,10 @@ internal sealed class AiRunPlanner(IAiRunRepository runRepo) : IAiRunPlanner
     private sealed record PlannedModelDecision(
         string ModelKey,
         AiRunPlanDecision Decision,
-        IReadOnlyList<string> ReplacementArtifactKeys,
+        IReadOnlyList<ReplacedSlot> ReplacedSlots,
         IReadOnlyList<string> Reasons);
+
+    private sealed record ReplacedSlot(string Slot, PreviousModel Previous);
 
     private sealed record RunModelInfo(
         string ModelKey,
@@ -570,5 +579,5 @@ internal sealed class AiRunPlanner(IAiRunRepository runRepo) : IAiRunPlanner
         string? Version,
         double? FrameIntervalSeconds,
         double? Threshold,
-        IReadOnlyList<string> ReplacementKeys);
+        IReadOnlyList<string> Slots);
 }

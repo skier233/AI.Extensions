@@ -23,6 +23,7 @@
     <ProjectReference Include="..\..\shared\AI.Extensions.Abstractions\AI.Extensions.Abstractions.csproj" />
     <ProjectReference Include="..\..\extensions\AI.Core\AI.Core.csproj" />
     <ProjectReference Include="..\..\extensions\AI.Tagging\AI.Tagging.csproj" />
+    <ProjectReference Include="..\..\extensions\AI.Review\AI.Review.csproj" />
     <ProjectReference Include="..\..\extensions\AI.Visual\AI.Visual.csproj" />
     <ProjectReference Include="..\..\extensions\AI.Audio\AI.Audio.csproj" />
     <ProjectReference Include="..\..\extensions\AI.Faces\AI.Faces.csproj" />

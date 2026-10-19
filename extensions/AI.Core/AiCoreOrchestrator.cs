@@ -862,7 +862,7 @@ public sealed class AiCoreOrchestrator(
             var modelSource = string.Equals(loadPolicy, AiLoadPolicies.UseLoaded, StringComparison.Ordinal)
                 ? await _aiServerClient.GetLoadedModelsAsync(settings, ct)
                 : catalogModels;
-            taggingModelsByScope = ResolveTaggingModelsByScope(modelSource, categoriesToSkip, settings.CapabilityModelBindings);
+            taggingModelsByScope = ResolveTaggingModelsByScope(modelSource, categoriesToSkip, settings.CapabilityModelBindings, _logger);
         }
 
         return claims
@@ -1214,7 +1214,8 @@ public sealed class AiCoreOrchestrator(
     private static IReadOnlyDictionary<string, List<AiModelCatalogEntry>> ResolveTaggingModelsByScope(
         IReadOnlyList<AiModelCatalogEntry> models,
         IReadOnlyList<string>? categoriesToSkip,
-        IReadOnlyList<AiCapabilityModelBinding>? bindings)
+        IReadOnlyList<AiCapabilityModelBinding>? bindings,
+        ILogger? logger = null)
     {
         var skippedCategories = new HashSet<string>(
             categoriesToSkip?.Where(static category => !string.IsNullOrWhiteSpace(category)).Select(static category => category.Trim())
@@ -1319,6 +1320,8 @@ public sealed class AiCoreOrchestrator(
                         selectedModels[selectedModel.ConfigName] = selectedModel;
                     }
                 }
+
+                DropRedundantTaggingModels(scope, selectedModels, skippedCategories, logger);
             }
 
             if (selectedModels.Count == 0 && uncategorizedCandidatesByScope.TryGetValue(scope, out var uncategorizedCandidates))
@@ -1340,6 +1343,62 @@ public sealed class AiCoreOrchestrator(
         }
 
         return resolved;
+
+        // Models are picked per category, but the server returns every category a model covers.
+        // So when a merged model M(a,b) is picked for b and X(a) is picked for a, running both
+        // would write category a twice. Drop any picked model whose every emitted category is
+        // already emitted by another picked model (narrowest models first, so the merged model
+        // that is still needed for its other categories is the one kept). This wins over an
+        // explicit binding for the dropped model's category, since the merged model has to run
+        // anyway and its output for that category cannot be suppressed. Two models that each
+        // also own a category the other lacks (X(a,c) + M(a,b)) both still run.
+        static void DropRedundantTaggingModels(
+            string scope,
+            Dictionary<string, AiModelCatalogEntry> selectedModels,
+            IReadOnlySet<string> skippedCategories,
+            ILogger? logger)
+        {
+            if (selectedModels.Count < 2)
+            {
+                return;
+            }
+
+            var emitted = selectedModels.ToDictionary(
+                static item => item.Key,
+                item => item.Value.Categories
+                    .Where(static category => !string.IsNullOrWhiteSpace(category))
+                    .Select(static category => category.Trim())
+                    .Where(category => !skippedCategories.Contains(category))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase),
+                StringComparer.OrdinalIgnoreCase);
+
+            var dropOrder = emitted
+                .OrderBy(static item => item.Value.Count)
+                .ThenBy(static item => item.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(static item => item.Key)
+                .ToArray();
+            foreach (var configName in dropOrder)
+            {
+                var categories = emitted[configName];
+                var others = emitted
+                    .Where(other => !string.Equals(other.Key, configName, StringComparison.OrdinalIgnoreCase))
+                    .ToArray();
+                if (categories.Count == 0 || !categories.All(category => others.Any(other => other.Value.Contains(category))))
+                {
+                    continue;
+                }
+
+                var coveringModels = others.Where(other => other.Value.Overlaps(categories)).ToArray();
+
+                emitted.Remove(configName);
+                selectedModels.Remove(configName);
+                logger?.LogDebug(
+                    "Dropped tagging model {Model} for scope {Scope}: its categories are already produced by {CoveringModels}.",
+                    configName,
+                    scope,
+                    string.Join(", ", coveringModels.Select(static other => other.Key)));
+            }
+        }
 
         static string CreateTaggingPreferenceKey(string scope, string category)
             => $"{NormalizeTaggingScope(scope)}\u001F{(category ?? string.Empty).Trim()}";

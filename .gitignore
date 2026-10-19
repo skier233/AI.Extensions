@@ -8,6 +8,8 @@ dist/
 !extensions/AI.Tagging/dist/**
 !extensions/AI.Faces/dist/
 !extensions/AI.Faces/dist/**
+!extensions/AI.Review/dist/
+!extensions/AI.Review/dist/**
 .vs/
 .artifacts/**
 artifacts/**

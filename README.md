@@ -13,6 +13,7 @@ Most of the models and their development are funded through Patreon, but **facia
 | **AI Core** | Connects Cove to your AI server and runs the work. Required by everything else. | Free |
 | **AI Faces** | Recognizes the people in your videos and images, groups each person together, and suggests which performer they are. | **Free** |
 | **AI Tagging** | Automatically tags your content, with timing so tags can show as segments on the player bar. | Free model included; main models on Patreon |
+| **AI Review** | Flip through one tag's AI segments as frames, mark false and true positives with one key, delete the false positives from Cove, and export the frames (with a manifest) to improve the models. | Free |
 | **AI Visual** | Search your library by meaning ("sunset on a beach") and find look-alike videos and images. | Patreon |
 | **AI Audio** | Finds other videos that sound like the one you're watching. | Patreon |
 

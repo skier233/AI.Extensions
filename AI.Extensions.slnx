@@ -4,6 +4,7 @@
     <Project Path="extensions/AI.Core/AI.Core.csproj" />
     <Project Path="extensions/AI.Faces/AI.Faces.csproj" />
     <Project Path="extensions/AI.Full/AI.Full.csproj" />
+    <Project Path="extensions/AI.Review/AI.Review.csproj" />
     <Project Path="extensions/AI.Tagging/AI.Tagging.csproj" />
     <Project Path="extensions/AI.Visual/AI.Visual.csproj" />
   </Folder>

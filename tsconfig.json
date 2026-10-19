@@ -1,0 +1,34 @@
+{
+  // Type-checks the extension UI bundles. The build (esbuild) only transpiles, so without this the props we pass
+  // to host components — which change as Cove evolves — would only fail at runtime, in the browser, after a deploy.
+  //
+  // The `@cove/runtime/*` specifiers are provided by the host at runtime via an import map; here they're mapped to
+  // the SIBLING cove checkout's sources, the same local-dev arrangement `Directory.Build.props` uses for the C# side.
+  // Without that checkout this check can't run (`npm run typecheck` will report the missing paths) — CI builds
+  // extensions against the published package and doesn't run it.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "baseUrl": ".",
+    "paths": {
+      "@cove/runtime/components": ["../cove/ui/src/components/extension-shared.ts"],
+      "@tanstack/react-query": ["../cove/ui/node_modules/@tanstack/react-query/build/modern/index.d.ts"],
+      "@cove/runtime/react": ["./node_modules/@types/react/index.d.ts"],
+      "@cove/runtime/react-dom": ["./node_modules/@types/react-dom/index.d.ts"],
+      "@cove/runtime/react-dom-client": ["./node_modules/@types/react-dom/client.d.ts"],
+      "@cove/runtime/lucide-react": ["./node_modules/lucide-react/dist/lucide-react.d.ts"],
+      "@cove/runtime/*": ["../cove/ui/src/generated/extensions/runtime/v1/*"]
+    }
+  },
+  "include": ["typings/**/*.d.ts", "extensions/AI.Review/ui/**/*.ts", "extensions/AI.Review/ui/**/*.tsx"]
+}
