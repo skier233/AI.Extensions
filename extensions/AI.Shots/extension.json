@@ -48,7 +48,7 @@
       ]
     }
   ],
-  "minCoveVersion": "1.6.0",
+  "minCoveVersion": "1.7.0",
   "entryDll": "AI.Shots.dll",
   "sharedAssemblies": [
     "AI.Extensions.Abstractions"
