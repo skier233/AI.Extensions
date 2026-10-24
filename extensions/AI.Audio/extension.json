@@ -51,7 +51,7 @@
       ]
     }
   ],
-  "minCoveVersion": "1.5.0",
+  "minCoveVersion": "1.7.0",
   "entryDll": "AI.Audio.dll",
   "sharedAssemblies": [
     "AI.Extensions.Abstractions"
