@@ -833,17 +833,45 @@ internal sealed class AiFacePreparationService
             return 0.0;
         }
 
-        var scores = new List<double>();
+        // Allocation-free form of
+        //   per anchor: max over stored anchors of CosineSimilarity (Enumerable.Max semantics);
+        //   result: average of the top two per-anchor scores (OrderByDescending/Take(2)/Average).
+        // Gives bit-identical results to the LINQ version for the same CosineSimilarity values.
+        var storedAnchors = identity.Anchors;
+        var comparer = Comparer<double>.Default;
+        var first = 0.0;
+        var second = 0.0;
+        var scoreCount = 0;
         foreach (var anchor in anchors)
         {
-            var bestSimilarity = identity.Anchors
-                .Select(storedAnchor => CosineSimilarity(anchor.Vector, storedAnchor.Vector))
-                .DefaultIfEmpty(0.0)
-                .Max();
-            scores.Add(bestSimilarity);
+            var bestSimilarity = CosineSimilarity(anchor.Vector, storedAnchors[0].Vector);
+            for (var index = 1; index < storedAnchors.Count; index++)
+            {
+                var similarity = CosineSimilarity(anchor.Vector, storedAnchors[index].Vector);
+                if (similarity > bestSimilarity || double.IsNaN(bestSimilarity))
+                {
+                    bestSimilarity = similarity;
+                }
+            }
+
+            if (scoreCount == 0)
+            {
+                first = bestSimilarity;
+            }
+            else if (comparer.Compare(bestSimilarity, first) > 0)
+            {
+                second = first;
+                first = bestSimilarity;
+            }
+            else if (scoreCount == 1 || comparer.Compare(bestSimilarity, second) > 0)
+            {
+                second = bestSimilarity;
+            }
+
+            scoreCount++;
         }
 
-        return scores.OrderByDescending(static score => score).Take(Math.Min(2, scores.Count)).Average();
+        return scoreCount == 1 ? first : (first + second) / 2;
     }
 
     private static FaceReferenceMatch? TryMatchReference(IReadOnlyList<RepresentativeFaceEmbedding> anchors, SaieReferencePack? referencePack, AiFacesSettings settings)
@@ -1737,14 +1765,25 @@ internal sealed class AiFacePreparationService
             return 0.0;
         }
 
-        double dot = 0.0;
-        double leftNorm = 0.0;
-        double rightNorm = 0.0;
-        for (var index = 0; index < left.Count; index++)
+        double dot;
+        double leftNorm;
+        double rightNorm;
+        // SIMD path for array/List-backed vectors (see FaceVectorMath); other lists keep the scalar loop.
+        if (FaceVectorMath.TryGetSpan(left, out var leftSpan) && FaceVectorMath.TryGetSpan(right, out var rightSpan))
         {
-            dot += left[index] * right[index];
-            leftNorm += left[index] * left[index];
-            rightNorm += right[index] * right[index];
+            (dot, leftNorm, rightNorm) = FaceVectorMath.DotAndNorms(leftSpan, rightSpan);
+        }
+        else
+        {
+            dot = 0.0;
+            leftNorm = 0.0;
+            rightNorm = 0.0;
+            for (var index = 0; index < left.Count; index++)
+            {
+                dot += left[index] * right[index];
+                leftNorm += left[index] * left[index];
+                rightNorm += right[index] * right[index];
+            }
         }
 
         if (leftNorm <= 0 || rightNorm <= 0)
